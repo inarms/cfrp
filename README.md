@@ -1,6 +1,6 @@
 # cfrp - C++ Fast Reverse Proxy
 
-A high-performance, asynchronous reverse proxy implemented in C++17 using Standalone Asio. `cfrp` is designed to be a lightweight and efficient alternative for exposing local services behind a NAT or firewall to the internet, similar to the `frp` project.
+A high-performance, asynchronous reverse proxy implemented in C++17 using Standalone Asio. `cfrp` is designed to be a lightweight and efficient alternative for exposing local services behind a NAT or firewall to the internet, inspired by the popular [fatedier/frp](https://github.com/fatedier/frp) project.
 
 ## Features
 
