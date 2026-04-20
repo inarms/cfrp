@@ -1,0 +1,5 @@
+# Example Server Configuration
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+# ... other server settings
