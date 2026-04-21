@@ -302,10 +302,6 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
         std::cout << "Control stream opened. Sending login request..." << std::endl;
         DoLogin();
         DoReadHeader();
-
-        if (!conf_d_path_.empty()) {
-            StartConfMonitor();
-        }
     } else {
         HandleDisconnect("Handshake/Connect failed: " + ec.message());
     }
@@ -336,6 +332,7 @@ void Client::ScheduleReconnect() {
 }
 
 void Client::SendMessage(protocol::MessageType type, const protocol::json& body) {
+    auto self(shared_from_this());
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
     uint32_t final_len = static_cast<uint32_t>(encoded.size());
@@ -358,7 +355,7 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
     std::memcpy(data->data() + sizeof(final_len), to_send_body.data(), to_send_body.size());
     
     if (control_stream_) {
-        control_stream_->async_write(asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
+        control_stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
             if (ec) {
                 std::cerr << "Failed to send message: " << ec.message() << std::endl;
             }
@@ -367,8 +364,9 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
 }
 
 void Client::DoReadHeader() {
+    auto self(shared_from_this());
     control_stream_->async_read(asio::buffer(&header_, sizeof(header_)),
-        [this](std::error_code ec, std::size_t) {
+        [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 uint32_t length = header_.body_length & protocol::LENGTH_MASK;
                 DoReadBody(length);
@@ -379,10 +377,11 @@ void Client::DoReadHeader() {
 }
 
 void Client::DoReadBody(uint32_t length) {
+    auto self(shared_from_this());
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
     body_data_.resize(length);
     control_stream_->async_read(asio::buffer(body_data_),
-        [this, is_compressed](std::error_code ec, std::size_t) {
+        [this, self, is_compressed](std::error_code ec, std::size_t) {
             if (!ec) {
                 try {
                     std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
@@ -437,8 +436,13 @@ void Client::HandleMessage(const protocol::Message& msg) {
 }
 
 void Client::RegisterProxies() {
+    // 1. Register static proxies from main config
     for (const auto& proxy : proxies_) {
         RegisterProxy(proxy);
+    }
+    // 2. Start monitoring dynamic proxies (if configured)
+    if (!conf_d_path_.empty()) {
+        StartConfMonitor();
     }
 }
 
@@ -461,6 +465,7 @@ void Client::StartConfMonitor() {
 }
 
 void Client::PollConfDirectory() {
+    auto self(shared_from_this());
     std::map<std::string, ProxyConfig> new_proxies;
     
     try {
@@ -471,6 +476,9 @@ void Client::PollConfDirectory() {
                         auto data = toml::parse_file(entry.path().string());
                         ProxyConfig pc;
                         pc.name = data["name"].value_or("");
+                        if (pc.name.empty()) {
+                            pc.name = entry.path().stem().string();
+                        }
                         pc.type = data["type"].value_or("tcp");
                         pc.local_ip = data["local_ip"].value_or("127.0.0.1");
                         pc.local_port = static_cast<uint16_t>(data["local_port"].value_or(0));
@@ -480,7 +488,7 @@ void Client::PollConfDirectory() {
                             new_proxies[pc.name] = pc;
                         }
                     } catch (const std::exception& e) {
-                        std::cerr << "[Client] Failed to parse config file [" << entry.path() << "]: " << e.what() << std::endl;
+                        std::cerr << "[Client] Error parsing [" << entry.path().filename() << "]: " << e.what() << std::endl;
                     }
                 }
             }
@@ -490,7 +498,6 @@ void Client::PollConfDirectory() {
     }
 
     // Diff
-    // 1. Removed
     for (auto const& [name, pc] : dynamic_proxies_) {
         if (new_proxies.find(name) == new_proxies.end()) {
             std::cout << "[Client] Removing dynamic proxy [" << name << "]" << std::endl;
@@ -498,14 +505,12 @@ void Client::PollConfDirectory() {
         }
     }
 
-    // 2. Added or Changed
     for (auto const& [name, pc] : new_proxies) {
         auto it = dynamic_proxies_.find(name);
         if (it == dynamic_proxies_.end()) {
             std::cout << "[Client] Adding dynamic proxy [" << name << "]" << std::endl;
             RegisterProxy(pc);
         } else {
-            // Check if details changed
             bool changed = (it->second.type != pc.type || 
                             it->second.local_ip != pc.local_ip ||
                             it->second.local_port != pc.local_port ||
@@ -520,8 +525,9 @@ void Client::PollConfDirectory() {
 
     dynamic_proxies_ = new_proxies;
 
+    // Cross-platform polling every 5 seconds
     conf_timer_.expires_after(std::chrono::seconds(5));
-    conf_timer_.async_wait([this](std::error_code ec) {
+    conf_timer_.async_wait([this, self](std::error_code ec) {
         if (!ec) {
             PollConfDirectory();
         }
@@ -529,6 +535,7 @@ void Client::PollConfDirectory() {
 }
 
 void Client::HandleNewUserConn(const std::string& proxy_name, const std::string& ticket) {
+    auto self(shared_from_this());
     auto it = std::find_if(proxies_.begin(), proxies_.end(), [&](const ProxyConfig& pc) {
         return pc.name == proxy_name;
     });
@@ -560,7 +567,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
     auto local_socket = std::make_shared<tcp::socket>(io_context_);
     
     local_socket->async_connect(tcp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port),
-        [this, local_socket, ticket, pc](std::error_code ec) {
+        [this, self, local_socket, ticket, pc](std::error_code ec) {
             if (!ec) {
                 if (!mux_session_) return;
                 auto work_stream = mux_session_->open_stream();
@@ -571,7 +578,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                 ticket_buf->resize(65, ' ');
                 
                 work_stream->async_write(asio::buffer(*ticket_buf),
-                    [this, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
+                    [this, self, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
                         if (!ec) {
                             std::cout << "Bridging local service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
                             auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
@@ -589,6 +596,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
 
 void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& ticket) {
     if (!mux_session_) return;
+    auto self(shared_from_this());
     auto work_stream = mux_session_->open_stream();
     
     auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
@@ -597,7 +605,7 @@ void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& tick
     ticket_buf->resize(65, ' ');
     
     work_stream->async_write(asio::buffer(*ticket_buf),
-        [this, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
+        [this, self, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
             if (!ec) {
                 std::cout << "Bridging local UDP service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
                 auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, udp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port), compression_);
