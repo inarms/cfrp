@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = config["client"]["server_port"].value_or(7001);
             std::string token = config["client"]["token"].value_or("");
-            bool compression = config["client"]["compression"].value_or(false);
+            bool compression = config["client"]["compression"].value_or(true);
 
             cfrp::client::SslConfig ssl_config;
             if (auto ssl = config["client"]["ssl"].as_table()) {

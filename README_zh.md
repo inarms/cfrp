@@ -109,7 +109,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `server_addr`: 服务端 IP 或域名。
 - `server_port`: 服务端控制端口。
 - `token`: 身份验证密钥。
-- `compression`: 为所有连接启用 Zstd 压缩 (默认 `false`)。
+- `compression`: 为所有连接启用 Zstd 压缩 (默认 `true`)。
 - `[client.ssl]`: SSL 设置。
   - `enable`: 启用 SSL/TLS。
   - `verify_peer`: 验证服务端证书。

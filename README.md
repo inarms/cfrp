@@ -110,7 +110,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
-- `compression`: Enable Zstd compression for all connections (default `false`).
+- `compression`: Enable Zstd compression for all connections (default `true`).
 - `[client.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS.
   - `verify_peer`: Verify server certificate.
