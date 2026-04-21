@@ -17,8 +17,8 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 
 ## Architecture
 
-1. **Control Channel**: A persistent TCP connection (optionally SSL) between the client and server for command exchange.
-2. **Work Connections**: Dynamic TCP connections established on-demand to bridge traffic.
+1. **Control Channel**: A persistent TCP connection (optionally SSL) between the client and server for command exchange. Uses **MessagePack** binary serialization for minimal overhead.
+2. **Work Connections**: Dynamic TCP connections established on-demand to bridge traffic. Supports **automatic compression detection**, allowing the server to handle both compressed and raw traffic from different clients simultaneously.
 3. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
 
 ## Getting Started
