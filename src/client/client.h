@@ -11,6 +11,7 @@ namespace cfrp {
 namespace client {
 
 using asio::ip::tcp;
+using asio::ip::udp;
 
 struct SslConfig {
     bool enable = false;
@@ -42,6 +43,26 @@ private:
     char data2_[8192];
 };
 
+class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
+public:
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint);
+    void Start();
+
+private:
+    void DoReadFromStream();
+    void DoReadFromLocal();
+    void StartTimer();
+    void ResetTimer();
+
+    asio::steady_timer timer_;
+    std::shared_ptr<common::AsyncStream> stream_;
+    udp::socket socket_;
+    udp::endpoint local_endpoint_;
+    uint16_t packet_len_;
+    std::vector<uint8_t> read_buf_;
+    uint8_t local_recv_buf_[65535];
+};
+
 class Client {
 public:
     Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config);
@@ -58,6 +79,7 @@ private:
     void DoLogin();
     void RegisterProxies();
     void HandleNewUserConn(const std::string& proxy_name, const std::string& ticket);
+    void HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& ticket);
     void HandleDisconnect(const std::string& reason);
     void ScheduleReconnect();
 

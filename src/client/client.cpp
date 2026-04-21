@@ -34,6 +34,88 @@ void Bridge::DoRead(int direction) {
         });
 }
 
+// --- UdpBridge ---
+UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint)
+    : timer_(io_context), stream_(std::move(stream)), socket_(io_context, udp::endpoint(udp::v4(), 0)), local_endpoint_(local_endpoint) {
+    read_buf_.resize(65535);
+}
+
+void UdpBridge::Start() {
+    StartTimer();
+    DoReadFromStream();
+    DoReadFromLocal();
+}
+
+void UdpBridge::StartTimer() {
+    timer_.expires_after(std::chrono::seconds(60));
+    auto self(shared_from_this());
+    timer_.async_wait([this, self](std::error_code ec) {
+        if (!ec) {
+            std::cout << "UDP bridge timed out" << std::endl;
+            stream_->close();
+        }
+    });
+}
+
+void UdpBridge::ResetTimer() {
+    timer_.expires_after(std::chrono::seconds(60));
+}
+
+void UdpBridge::DoReadFromStream() {
+    auto self(shared_from_this());
+    stream_->async_read(asio::buffer(&packet_len_, sizeof(packet_len_)),
+        [this, self](std::error_code ec, std::size_t) {
+            if (!ec) {
+                uint16_t len = asio::detail::socket_ops::network_to_host_short(packet_len_);
+                if (len > read_buf_.size()) {
+                    stream_->close();
+                    return;
+                }
+                stream_->async_read(asio::buffer(read_buf_.data(), len),
+                    [this, self, len](std::error_code ec, std::size_t) {
+                        if (!ec) {
+                            ResetTimer();
+                            socket_.async_send_to(asio::buffer(read_buf_.data(), len), local_endpoint_,
+                                [this, self](std::error_code ec, std::size_t) {
+                                    if (!ec) {
+                                        DoReadFromStream();
+                                    }
+                                });
+                        } else {
+                            stream_->close();
+                        }
+                    });
+            } else {
+                stream_->close();
+            }
+        });
+}
+
+void UdpBridge::DoReadFromLocal() {
+    auto self(shared_from_this());
+    socket_.async_receive_from(asio::buffer(local_recv_buf_, sizeof(local_recv_buf_)), local_endpoint_,
+        [this, self](std::error_code ec, std::size_t length) {
+            if (!ec) {
+                ResetTimer();
+                auto buf = std::make_shared<std::vector<uint8_t>>();
+                uint16_t len = asio::detail::socket_ops::host_to_network_short(static_cast<uint16_t>(length));
+                buf->resize(sizeof(len) + length);
+                std::memcpy(buf->data(), &len, sizeof(len));
+                std::memcpy(buf->data() + sizeof(len), local_recv_buf_, length);
+
+                stream_->async_write(asio::buffer(*buf), [this, self, buf](std::error_code ec, std::size_t) {
+                    if (!ec) {
+                        DoReadFromLocal();
+                    } else {
+                        stream_->close();
+                    }
+                });
+            } else {
+                stream_->close();
+            }
+        });
+}
+
 // --- Client ---
 Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config)
     : server_addr_(server_addr),
@@ -201,6 +283,7 @@ void Client::RegisterProxies() {
     for (const auto& proxy : proxies_) {
         protocol::json body;
         body["name"] = proxy.name;
+        body["type"] = proxy.type;
         body["remote_port"] = proxy.remote_port;
         SendMessage(protocol::MessageType::RegisterProxy, body);
     }
@@ -213,6 +296,11 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
 
     if (it == proxies_.end()) {
         std::cerr << "Unknown proxy name: " << proxy_name << std::endl;
+        return;
+    }
+
+    if (it->type == "udp") {
+        HandleNewUdpUserConn(*it, ticket);
         return;
     }
 
@@ -257,6 +345,42 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                     });
             } else {
                 std::cerr << "Failed to connect to local service (" << pc.local_ip << ":" << pc.local_port << "): " << ec.message() << std::endl;
+            }
+        });
+}
+
+void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& ticket) {
+    auto work_socket_raw = std::make_shared<tcp::socket>(io_context_);
+
+    work_socket_raw->async_connect(tcp::endpoint(asio::ip::make_address(server_addr_), server_port_ + 1),
+        [this, work_socket_raw, ticket, pc](std::error_code ec) {
+            if (!ec) {
+                std::shared_ptr<common::AsyncStream> work_stream;
+                if (ssl_config_.enable) {
+                    work_stream = std::make_shared<common::SslStream>(std::move(*work_socket_raw), *ssl_ctx_);
+                } else {
+                    work_stream = std::make_shared<common::TcpStream>(std::move(*work_socket_raw));
+                }
+                
+                work_stream->async_handshake(asio::ssl::stream_base::client, [this, work_stream, ticket, pc](std::error_code ec) {
+                    if (!ec) {
+                        auto ticket_buf = std::make_shared<std::string>(ticket);
+                        ticket_buf->resize(64, ' ');
+                        
+                        work_stream->async_write(asio::buffer(*ticket_buf),
+                            [this, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
+                                if (!ec) {
+                                    std::cout << "Bridging local UDP service and server work connection" << std::endl;
+                                    auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, udp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port));
+                                    bridge->Start();
+                                }
+                            });
+                    } else {
+                        std::cerr << "SSL handshake failed for UDP work connection: " << ec.message() << std::endl;
+                    }
+                });
+            } else {
+                std::cerr << "Failed to connect to server work port for UDP: " << ec.message() << std::endl;
             }
         });
 }

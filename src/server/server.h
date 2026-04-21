@@ -7,6 +7,7 @@
 #include <string>
 #include <map>
 #include <mutex>
+#include <deque>
 #include "common/protocol.h"
 #include "common/stream.h"
 
@@ -14,6 +15,7 @@ namespace cfrp {
 namespace server {
 
 using asio::ip::tcp;
+using asio::ip::udp;
 
 struct SslConfig {
     bool enable = false;
@@ -37,6 +39,50 @@ private:
     char data1_[8192];
     char data2_[8192];
 };
+
+// --- UDP Support ---
+
+class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
+public:
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint);
+    void Start();
+
+private:
+    void DoReadFromStream();
+    void DoWriteToStream(const std::vector<uint8_t>& data);
+    void HandleUdpPacket(const std::vector<uint8_t>& data);
+    void StartTimer();
+    void ResetTimer();
+
+    asio::steady_timer timer_;
+    std::shared_ptr<common::AsyncStream> stream_;
+    udp::socket& socket_;
+    udp::endpoint remote_endpoint_;
+    uint16_t packet_len_;
+    std::vector<uint8_t> read_buf_;
+};
+
+class UdpProxyListener : public std::enable_shared_from_this<UdpProxyListener> {
+public:
+    UdpProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name);
+    void Start();
+    void Stop();
+    void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
+    udp::socket& socket() { return socket_; }
+
+private:
+    void DoReceive();
+
+    Server& server_;
+    udp::socket socket_;
+    udp::endpoint sender_endpoint_;
+    std::weak_ptr<ControlSession> session_;
+    std::string proxy_name_;
+    std::map<udp::endpoint, std::string> endpoint_to_ticket_;
+    uint8_t recv_buf_[65535];
+};
+
+// --- Listeners & Sessions ---
 
 class ProxyListener : public std::enable_shared_from_this<ProxyListener> {
 public:
@@ -74,6 +120,7 @@ private:
     protocol::Header header_;
     std::vector<char> body_data_;
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
+    std::vector<std::shared_ptr<UdpProxyListener>> udp_proxies_;
     bool authenticated_ = false;
 };
 
@@ -83,6 +130,8 @@ public:
     void Run();
 
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
+    void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
+    
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
 
@@ -97,7 +146,13 @@ private:
     SslConfig ssl_config_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
+    struct UdpSessionInfo {
+        std::shared_ptr<UdpProxyListener> listener;
+        udp::endpoint endpoint;
+    };
+
     std::map<std::string, tcp::socket> pending_user_conns_;
+    std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::mutex map_mutex_;
 };
 
