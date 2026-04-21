@@ -1,4 +1,5 @@
 #include "server.h"
+#include "common/quic_stream.h"
 #include <iostream>
 #include <chrono>
 #include <zstd.h>
@@ -311,15 +312,8 @@ void ProxyListener::DoAccept() {
 
 // --- ControlSession ---
 void ControlSession::Start() {
-    try {
-        auto endpoint = stream_->lowest_layer().remote_endpoint();
-        std::stringstream ss;
-        ss << endpoint;
-        client_endpoint_ = ss.str();
-    } catch (...) {
-        client_endpoint_ = "unknown";
-    }
-    std::cout << "[Server] New client connecting from " << client_endpoint_ << "..." << std::endl;
+    client_endpoint_ = stream_->remote_endpoint_string();
+    std::cout << "[Server] New " << stream_->protocol_name() << " client connecting from " << client_endpoint_ << "..." << std::endl;
     DoReadHeader();
 }
 
@@ -373,6 +367,11 @@ void ControlSession::DoReadHeader() {
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 uint32_t length = header_.body_length & protocol::LENGTH_MASK;
+                if (length > protocol::MAX_MESSAGE_SIZE) {
+                    std::cerr << "Message too large: " << length << std::endl;
+                    Stop();
+                    return;
+                }
                 DoReadBody(length);
             } else {
                 std::cout << "Control session closed: " << ec.message() << std::endl;
@@ -484,7 +483,7 @@ void ControlSession::HandleLogin(const protocol::json& body) {
     protocol::json resp;
     if (token == server_.GetToken()) {
         client_name_ = server_.AllocateClientName(requested_name);
-        std::cout << "[Server] Client authenticated successfully: " << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
+        std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
         std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
         authenticated_ = true;
         resp["status"] = "ok";
@@ -501,9 +500,11 @@ void ControlSession::HandleLogin(const protocol::json& body) {
 }
 
 // --- Server ---
-Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config)
-    : acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
+Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol)
+    : io_context_(io_context),
+      acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       token_(token),
+      protocol_(protocol),
       ssl_config_(ssl_config) {
     
     if (ssl_config_.enable) {
@@ -513,14 +514,155 @@ Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::stri
         ssl_ctx_->use_private_key_file(ssl_config_.key_file, asio::ssl::context::pem);
         std::cout << "SSL enabled on server." << std::endl;
     }
+
+    if (protocol_ == "quic") {
+        if (!common::QuicStream::InitializeMsQuic(true, ssl_config_.cert_file, ssl_config_.key_file)) {
+            throw std::runtime_error("Failed to initialize MsQuic");
+        }
+        std::cout << "QUIC enabled on server." << std::endl;
+    }
     
-    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (TCP Mux Enabled)" << std::endl;
+    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (" << protocol_ << " Mux Enabled)" << std::endl;
 }
 
 void Server::Run() {
     std::cout << "Starting cfrp server loop..." << std::endl;
+    work_guard_.emplace(asio::make_work_guard(io_context_));
+    
+    // Always start TCP acceptor
     DoAccept();
-    io_context_.run();
+    
+    // Start QUIC listener if configured
+    if (protocol_ == "quic") {
+        StartQuicListener();
+    }
+}
+
+void Server::Stop() {
+    std::error_code ec;
+    acceptor_.close(ec);
+    
+    if (quic_listener_) {
+        common::QuicStream::MsQuic->ListenerStop(quic_listener_);
+        common::QuicStream::MsQuic->ListenerClose(quic_listener_);
+        quic_listener_ = nullptr;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        for (auto ctx : active_quic_conns_) {
+            std::lock_guard<std::mutex> conn_lock(ctx->mutex);
+            for (auto& session : ctx->sessions) {
+                session->stop();
+            }
+        }
+    }
+
+    work_guard_.reset();
+}
+
+void Server::StartQuicListener() {
+    QUIC_ADDR addr = {0};
+    auto endpoint = acceptor_.local_endpoint();
+    QuicAddrSetFamily(&addr, QUIC_ADDRESS_FAMILY_INET);
+    QuicAddrSetPort(&addr, endpoint.port());
+
+    QUIC_BUFFER alpn;
+    alpn.Buffer = (uint8_t*)"cfrp";
+    alpn.Length = 4;
+
+    QUIC_STATUS status = common::QuicStream::MsQuic->ListenerOpen(common::QuicStream::Registration, QuicListenerCallback, this, &quic_listener_);
+    if (QUIC_SUCCEEDED(status)) {
+        status = common::QuicStream::MsQuic->ListenerStart(quic_listener_, &alpn, 1, &addr);
+    }
+
+    if (QUIC_FAILED(status)) {
+        throw std::runtime_error("Failed to start QUIC listener, status: " + std::to_string(status));
+    }
+}
+
+QUIC_STATUS QUIC_API Server::QuicListenerCallback(HQUIC Listener, void* Context, QUIC_LISTENER_EVENT* Event) {
+    auto self = (Server*)Context;
+    if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
+        auto conn_ctx = new ConnectionContext{self, {}, {}};
+        {
+            std::lock_guard<std::mutex> lock(self->map_mutex_);
+            self->active_quic_conns_.push_back(conn_ctx);
+        }
+        common::QuicStream::TrackConnection(Event->NEW_CONNECTION.Connection);
+        common::QuicStream::MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)QuicConnectionCallback, conn_ctx);
+        QUIC_STATUS status = common::QuicStream::MsQuic->ConnectionSetConfiguration(Event->NEW_CONNECTION.Connection, common::QuicStream::Configuration);
+        if (QUIC_FAILED(status)) {
+            {
+                std::lock_guard<std::mutex> lock(self->map_mutex_);
+                self->active_quic_conns_.erase(std::remove(self->active_quic_conns_.begin(), self->active_quic_conns_.end(), conn_ctx), self->active_quic_conns_.end());
+            }
+            common::QuicStream::UntrackConnection(Event->NEW_CONNECTION.Connection);
+            delete conn_ctx;
+        }
+        return status;
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
+QUIC_STATUS QUIC_API Server::QuicConnectionCallback(HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
+    auto conn_ctx = (ConnectionContext*)Context;
+    auto self = conn_ctx->server;
+
+    switch (Event->Type) {
+        case QUIC_CONNECTION_EVENT_CONNECTED:
+            std::cout << "[Server] QUIC connection established." << std::endl;
+            return QUIC_STATUS_SUCCESS;
+        case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
+            auto stream_handle = Event->PEER_STREAM_STARTED.Stream;
+            std::cout << "[Server] QUIC peer stream started." << std::endl;
+            auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), stream_handle);
+            
+            asio::post(self->io_context_, [self, conn_ctx, quic_stream]() {
+                auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true);
+                {
+                    std::lock_guard<std::mutex> lock(conn_ctx->mutex);
+                    conn_ctx->sessions.push_back(mux_session);
+                }
+                mux_session->start([self, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                    self->HandleNewMuxStream(mux_session, new_stream);
+                });
+            });
+            return QUIC_STATUS_SUCCESS;
+        }
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
+            std::cout << "[Server] QUIC shutdown initiated by transport: " << std::hex << Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status << std::dec << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(conn_ctx->mutex);
+                for (auto& session : conn_ctx->sessions) {
+                    session->stop();
+                }
+                conn_ctx->sessions.clear();
+            }
+            return QUIC_STATUS_SUCCESS;
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
+            std::cout << "[Server] QUIC shutdown initiated by peer (Client exited)." << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(conn_ctx->mutex);
+                for (auto& session : conn_ctx->sessions) {
+                    session->stop();
+                }
+                conn_ctx->sessions.clear();
+            }
+            return QUIC_STATUS_SUCCESS;
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+            std::cout << "[Server] QUIC connection shutdown complete." << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(self->map_mutex_);
+                self->active_quic_conns_.erase(std::remove(self->active_quic_conns_.begin(), self->active_quic_conns_.end(), conn_ctx), self->active_quic_conns_.end());
+            }
+            common::QuicStream::UntrackConnection(Connection);
+            common::QuicStream::MsQuic->ConnectionClose(Connection);
+            delete conn_ctx;
+            return QUIC_STATUS_SUCCESS;
+        default:
+            return QUIC_STATUS_SUCCESS;
+    }
 }
 
 void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket) {

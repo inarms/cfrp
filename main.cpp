@@ -4,6 +4,7 @@
 #include <toml++/toml.h>
 #include "server/server.h"
 #include "client/client.h"
+#include "common/quic_stream.h"
 
 int main(int argc, char** argv) {
     CLI::App app{"cfrp - A C++ Fast Reverse Proxy"};
@@ -13,6 +14,19 @@ int main(int argc, char** argv) {
 
     CLI11_PARSE(app, argc, argv);
 
+    asio::io_context io_context;
+    
+    std::shared_ptr<cfrp::server::Server> server;
+    std::shared_ptr<cfrp::client::Client> client;
+
+    asio::signal_set signals(io_context, SIGINT, SIGTERM);
+    signals.async_wait([&](auto, int) {
+        std::cout << "\nStopping cfrp..." << std::endl;
+        if (server) server->Stop();
+        if (client) client->Stop();
+        io_context.stop();
+    });
+
     try {
         auto config = toml::parse_file(config_path);
 
@@ -20,6 +34,7 @@ int main(int argc, char** argv) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = config["server"]["token"].value_or("");
+            std::string protocol = config["server"]["protocol"].value_or("quic");
             
             cfrp::server::SslConfig ssl_config;
             if (auto ssl = config["server"]["ssl"].as_table()) {
@@ -28,7 +43,7 @@ int main(int argc, char** argv) {
                 ssl_config.key_file = (*ssl)["key_file"].value_or("");
             }
             
-            auto server = std::make_shared<cfrp::server::Server>(bind_addr, bind_port, token, ssl_config);
+            server = std::make_shared<cfrp::server::Server>(io_context, bind_addr, bind_port, token, ssl_config, protocol);
             server->Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
@@ -36,6 +51,7 @@ int main(int argc, char** argv) {
             std::string token = config["client"]["token"].value_or("");
             std::string client_name = config["client"]["name"].value_or("");
             std::string conf_d = config["client"]["conf_d"].value_or("");
+            std::string protocol = config["client"]["protocol"].value_or("quic");
             bool compression = config["client"]["compression"].value_or(true);
 
             cfrp::client::SslConfig ssl_config;
@@ -45,7 +61,7 @@ int main(int argc, char** argv) {
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("");
             }
 
-            auto client = std::make_shared<cfrp::client::Client>(server_addr, server_port, token, client_name, ssl_config, compression, conf_d);
+            client = std::make_shared<cfrp::client::Client>(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol);
 
             if (auto proxies = config["client"]["proxies"].as_array()) {
                 for (auto& elem : *proxies) {
@@ -67,6 +83,8 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        io_context.run();
+
     } catch (const toml::parse_error& err) {
         std::cerr << "Parsing failed:\n" << err << std::endl;
         return 1;
@@ -75,5 +93,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    cfrp::common::QuicStream::DeinitializeMsQuic();
     return 0;
 }

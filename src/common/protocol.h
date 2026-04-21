@@ -9,6 +9,11 @@ namespace protocol {
 
 using json = nlohmann::json;
 
+enum class TransportProtocol {
+    TCP = 0,
+    QUIC = 1
+};
+
 enum class MessageType {
     Login = 0,
     LoginResp = 1,
@@ -26,6 +31,7 @@ struct Header {
 
 const uint32_t COMPRESSION_FLAG = 0x80000000;
 const uint32_t LENGTH_MASK = 0x7FFFFFFF;
+const uint32_t MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB limit
 
 // Simple helper to wrap messages in MessagePack
 struct Message {

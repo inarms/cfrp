@@ -4,6 +4,8 @@
 #include <asio/ssl.hpp>
 #include <string>
 #include <vector>
+#include <optional>
+#include <msquic.h>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
@@ -70,13 +72,19 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path);
+    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol = "quic");
     void Run();
+    void Stop();
     void AddProxy(const ProxyConfig& proxy);
 
 private:
     void DoConnect();
     void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
+    
+    // QUIC Support
+    void DoQuicConnect();
+    static QUIC_STATUS QUIC_API QuicConnectionCallback(HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event);
+
     void SendMessage(protocol::MessageType type, const protocol::json& body);
     void DoReadHeader();
     void DoReadBody(uint32_t length);
@@ -93,7 +101,8 @@ private:
     void RegisterProxy(const ProxyConfig& pc);
     void UnregisterProxy(const std::string& name);
 
-    asio::io_context io_context_;
+    asio::io_context& io_context_;
+    std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work_guard_;
     std::shared_ptr<common::mux::Session> mux_session_;
     std::shared_ptr<common::mux::MuxStream> control_stream_;
     
@@ -101,9 +110,12 @@ private:
     uint16_t server_port_;
     std::string token_;
     std::string name_;
+    std::string protocol_;
     SslConfig ssl_config_;
     bool compression_ = false;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
+    
+    HQUIC quic_connection_ = nullptr;
     
     tcp::endpoint endpoint_;
     std::vector<ProxyConfig> proxies_;

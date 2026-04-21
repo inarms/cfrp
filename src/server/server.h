@@ -8,6 +8,8 @@
 #include <map>
 #include <mutex>
 #include <deque>
+#include <optional>
+#include <msquic.h>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
@@ -136,8 +138,9 @@ private:
 
 class Server {
 public:
-    Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config);
+    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "quic");
     void Run();
+    void Stop();
 
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
     void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
@@ -152,11 +155,27 @@ private:
     void DoAccept();
     void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
 
-    asio::io_context io_context_;
+    // QUIC Support
+    struct ConnectionContext {
+        Server* server;
+        std::vector<std::shared_ptr<common::mux::Session>> sessions;
+        std::mutex mutex;
+    };
+
+    void StartQuicListener();
+    static QUIC_STATUS QUIC_API QuicListenerCallback(HQUIC Listener, void* Context, QUIC_LISTENER_EVENT* Event);
+    static QUIC_STATUS QUIC_API QuicConnectionCallback(HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event);
+
+    asio::io_context& io_context_;
+    std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work_guard_;
     tcp::acceptor acceptor_;
     std::string token_;
+    std::string protocol_;
     SslConfig ssl_config_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
+    
+    HQUIC quic_listener_ = nullptr;
+    std::vector<ConnectionContext*> active_quic_conns_;
     
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;

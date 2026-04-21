@@ -1,4 +1,5 @@
 #include "client.h"
+#include "common/quic_stream.h"
 #include <iostream>
 #include <zstd.h>
 #include <filesystem>
@@ -223,11 +224,13 @@ void UdpBridge::DoReadFromLocal() {
 }
 
 // --- Client ---
-Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path)
-    : server_addr_(server_addr),
+Client::Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol)
+    : io_context_(io_context),
+      server_addr_(server_addr),
       server_port_(server_port),
       token_(token),
       name_(name),
+      protocol_(protocol),
       ssl_config_(ssl_config),
       compression_(compression),
       conf_d_path_(conf_d_path),
@@ -249,13 +252,33 @@ Client::Client(const std::string& server_addr, uint16_t server_port, const std::
         }
         std::cout << "SSL enabled on client." << std::endl;
     }
+
+    if (protocol_ == "quic") {
+        if (!common::QuicStream::InitializeMsQuic(false)) {
+            throw std::runtime_error("Failed to initialize MsQuic");
+        }
+    }
     
-    std::cout << "Client initialized (TCP Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
+    std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
 }
 
 void Client::Run() {
+    work_guard_.emplace(asio::make_work_guard(io_context_));
     DoConnect();
-    io_context_.run();
+}
+
+void Client::Stop() {
+    if (mux_session_) {
+        mux_session_->stop();
+        mux_session_.reset();
+    }
+    if (quic_connection_) {
+        common::QuicStream::UntrackConnection(quic_connection_);
+        common::QuicStream::MsQuic->ConnectionShutdown(quic_connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT, 0);
+        common::QuicStream::MsQuic->ConnectionClose(quic_connection_);
+        quic_connection_ = nullptr;
+    }
+    work_guard_.reset();
 }
 
 void Client::AddProxy(const ProxyConfig& proxy) {
@@ -263,6 +286,11 @@ void Client::AddProxy(const ProxyConfig& proxy) {
 }
 
 void Client::DoConnect() {
+    if (protocol_ == "quic") {
+        DoQuicConnect();
+        return;
+    }
+
     std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << "..." << std::endl;
     
     tcp::socket socket(io_context_);
@@ -287,9 +315,59 @@ void Client::DoConnect() {
         });
 }
 
+void Client::DoQuicConnect() {
+    std::cout << "Connecting to server via QUIC " << server_addr_ << ":" << server_port_ << "..." << std::endl;
+    
+    QUIC_STATUS status = common::QuicStream::MsQuic->ConnectionOpen(common::QuicStream::Registration, QuicConnectionCallback, this, &quic_connection_);
+    if (QUIC_FAILED(status)) {
+        HandleDisconnect("Failed to open QUIC connection");
+        return;
+    }
+
+    status = common::QuicStream::MsQuic->ConnectionStart(quic_connection_, common::QuicStream::Configuration, QUIC_ADDRESS_FAMILY_UNSPEC, server_addr_.c_str(), server_port_);
+    if (QUIC_FAILED(status)) {
+        HandleDisconnect("Failed to start QUIC connection");
+        return;
+    }
+    common::QuicStream::TrackConnection(quic_connection_);
+}
+
+QUIC_STATUS QUIC_API Client::QuicConnectionCallback(HQUIC Connection, void* Context, QUIC_CONNECTION_EVENT* Event) {
+    auto self = (Client*)Context;
+    switch (Event->Type) {
+        case QUIC_CONNECTION_EVENT_CONNECTED: {
+            std::cout << "QUIC connection established." << std::endl;
+            HQUIC stream_handle = nullptr;
+            QUIC_STATUS status = common::QuicStream::MsQuic->StreamOpen(Connection, QUIC_STREAM_OPEN_FLAG_NONE, common::QuicStream::StreamCallback, nullptr, &stream_handle);
+            if (QUIC_SUCCEEDED(status)) {
+                status = common::QuicStream::MsQuic->StreamStart(stream_handle, QUIC_STREAM_START_FLAG_NONE);
+                if (QUIC_SUCCEEDED(status)) {
+                    auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), stream_handle);
+                    asio::post(self->io_context_, [self, quic_stream]() {
+                        self->OnConnect(std::error_code(), quic_stream);
+                    });
+                }
+            }
+            return QUIC_STATUS_SUCCESS;
+        }
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
+            self->HandleDisconnect("QUIC connection closed by transport: " + std::to_string(Event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status));
+            return QUIC_STATUS_SUCCESS;
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
+            self->HandleDisconnect("QUIC connection closed by peer");
+            return QUIC_STATUS_SUCCESS;
+        case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
+            common::QuicStream::UntrackConnection(Connection);
+            common::QuicStream::MsQuic->ConnectionClose(Connection);
+            return QUIC_STATUS_SUCCESS;
+        default:
+            return QUIC_STATUS_SUCCESS;
+    }
+}
+
 void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream) {
     if (!ec) {
-        std::cout << "Connected to server. Initializing MuxSession..." << std::endl;
+        std::cout << "Connected to server via " << underlying_stream->protocol_name() << ". Initializing MuxSession..." << std::endl;
         reconnect_delay_sec_ = 0;
         
         mux_session_ = std::make_shared<common::mux::Session>(underlying_stream, false);
@@ -312,6 +390,10 @@ void Client::HandleDisconnect(const std::string& reason) {
     if (mux_session_) {
         mux_session_->stop();
         mux_session_.reset();
+    }
+    if (quic_connection_) {
+        common::QuicStream::MsQuic->ConnectionShutdown(quic_connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+        quic_connection_ = nullptr;
     }
     ScheduleReconnect();
 }
@@ -369,6 +451,10 @@ void Client::DoReadHeader() {
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 uint32_t length = header_.body_length & protocol::LENGTH_MASK;
+                if (length > protocol::MAX_MESSAGE_SIZE) {
+                    HandleDisconnect("Message too large: " + std::to_string(length));
+                    return;
+                }
                 DoReadBody(length);
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());

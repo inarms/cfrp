@@ -56,7 +56,7 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     auto self(shared_from_this());
     auto session = session_.lock();
     if (!session) {
-        asio::post(lowest_layer().get_executor(), [handler]() {
+        asio::post(get_executor(), [handler]() {
             handler(asio::error::connection_reset, 0);
         });
         return;
@@ -88,7 +88,7 @@ void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::
 }
 
 void MuxStream::async_handshake(asio::ssl::stream_base::handshake_type, std::function<void(std::error_code)> handler) {
-    asio::post(lowest_layer().get_executor(), [handler]() {
+    asio::post(get_executor(), [handler]() {
         handler(std::error_code());
     });
 }
@@ -110,16 +110,29 @@ void MuxStream::close() {
     }
 
     for (auto& pr : pending_reads_) {
-        asio::post(lowest_layer().get_executor(), [handler = std::move(pr.handler)]() {
+        asio::post(get_executor(), [handler = std::move(pr.handler)]() {
             handler(asio::error::operation_aborted, 0);
         });
     }
     pending_reads_.clear();
 }
 
-asio::ip::tcp::socket& MuxStream::lowest_layer() {
+asio::any_io_executor MuxStream::get_executor() {
     auto session = session_.lock();
-    return session->lowest_layer();
+    if (session) return session->get_executor();
+    throw asio::system_error(asio::error::operation_aborted);
+}
+
+std::string MuxStream::remote_endpoint_string() {
+    auto session = session_.lock();
+    if (session) return session->remote_endpoint_string();
+    return "unknown";
+}
+
+std::string MuxStream::protocol_name() {
+    auto session = session_.lock();
+    if (session) return session->protocol_name();
+    return "unknown";
 }
 
 void MuxStream::handle_data(std::vector<uint8_t> data) {
@@ -128,7 +141,7 @@ void MuxStream::handle_data(std::vector<uint8_t> data) {
     do_read_from_buffer();
     
     auto session = session_.lock();
-    if (session && read_buffer_.size() < 128 * 1024) {
+    if (session && (read_buffer_.size() - read_buffer_offset_) < 128 * 1024) {
         Header h;
         h.version = 0;
         h.type = (uint8_t)Type::WindowUpdate;
@@ -148,32 +161,53 @@ void MuxStream::handle_close() {
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
     for (auto& pr : pending_reads_) {
-        if (read_buffer_.empty()) {
-            asio::post(lowest_layer().get_executor(), [handler = std::move(pr.handler)]() {
+        if (read_buffer_offset_ == read_buffer_.size()) {
+            asio::post(get_executor(), [handler = std::move(pr.handler)]() {
                 handler(asio::error::eof, 0);
             });
         }
     }
-    if (read_buffer_.empty()) pending_reads_.clear();
+    if (read_buffer_offset_ == read_buffer_.size()) {
+        pending_reads_.clear();
+        read_buffer_.clear();
+        read_buffer_offset_ = 0;
+    }
 }
 
 void MuxStream::do_read_from_buffer() {
-    while (!pending_reads_.empty() && !read_buffer_.empty()) {
-        auto& pr = pending_reads_.front();
-        size_t to_copy = std::min(pr.buffer.size(), read_buffer_.size());
-        
-        if (pr.read_all && to_copy < pr.buffer.size()) {
-            break;
-        }
+    if (pending_reads_.empty() || (read_buffer_.size() - read_buffer_offset_) == 0) return;
 
-        std::copy(read_buffer_.begin(), read_buffer_.begin() + to_copy, static_cast<uint8_t*>(pr.buffer.data()));
-        read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + to_copy);
-        
-        auto handler = std::move(pr.handler);
-        pending_reads_.pop_front();
-        
-        asio::post(lowest_layer().get_executor(), [handler, to_copy]() {
-            handler(std::error_code(), to_copy);
+    auto& pr = pending_reads_.front();
+    size_t available = read_buffer_.size() - read_buffer_offset_;
+    size_t needed = pr.buffer.size();
+    
+    if (pr.read_all && available < needed) {
+        return; // Wait for more data
+    }
+
+    size_t to_copy = std::min(available, needed);
+    std::memcpy(pr.buffer.data(), read_buffer_.data() + read_buffer_offset_, to_copy);
+    read_buffer_offset_ += to_copy;
+    
+    auto handler = std::move(pr.handler);
+    pending_reads_.pop_front();
+    
+    asio::post(get_executor(), [handler, to_copy]() {
+        handler(std::error_code(), to_copy);
+    });
+
+    if (read_buffer_offset_ == read_buffer_.size()) {
+        read_buffer_.clear();
+        read_buffer_offset_ = 0;
+    }
+
+    // If more reads are pending and data is still available, they will be handled
+    // by the next call or after this callback returns.
+    if (!pending_reads_.empty() && (read_buffer_.size() - read_buffer_offset_) > 0) {
+        auto self_mux = std::static_pointer_cast<MuxStream>(shared_from_this());
+        asio::post(get_executor(), [self_mux]() {
+            std::lock_guard<std::mutex> lock(self_mux->mutex_);
+            self_mux->do_read_from_buffer();
         });
     }
 }
@@ -265,6 +299,11 @@ void Session::do_read_header() {
 }
 
 void Session::do_read_body(Header h) {
+    if (h.length > 10 * 1024 * 1024) {
+        std::cerr << "[Mux] Stream error: body length too large: " << h.length << ". Closing session." << std::endl;
+        stop();
+        return;
+    }
     auto self = shared_from_this();
     auto body = std::make_shared<std::vector<uint8_t>>(h.length);
     underlying_stream_->async_read(asio::buffer(*body),

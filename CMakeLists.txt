@@ -13,6 +13,7 @@ find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(zstd CONFIG REQUIRED)
+find_package(msquic CONFIG REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
@@ -22,10 +23,19 @@ add_executable(cfrp
     src/server/server.cpp
     src/client/client.cpp
     src/common/mux.cpp
+    src/common/quic_stream.cpp
 )
 
 target_include_directories(cfrp PRIVATE src)
-target_link_libraries(cfrp PRIVATE CLI11::CLI11 PkgConfig::tomlplusplus asio::asio OpenSSL::SSL OpenSSL::Crypto zstd::libzstd)
+target_link_libraries(cfrp PRIVATE 
+    CLI11::CLI11 
+    PkgConfig::tomlplusplus 
+    asio::asio 
+    OpenSSL::SSL 
+    OpenSSL::Crypto 
+    zstd::libzstd
+    msquic
+)
 
 # Copy configuration files to the build directory
 file(COPY 

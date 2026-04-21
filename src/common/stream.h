@@ -29,7 +29,9 @@ public:
                                  std::function<void(std::error_code)> handler) = 0;
 
     virtual void close() = 0;
-    virtual tcp::socket& lowest_layer() = 0;
+    virtual asio::any_io_executor get_executor() = 0;
+    virtual std::string remote_endpoint_string() = 0;
+    virtual std::string protocol_name() = 0;
 };
 
 class TcpStream : public AsyncStream {
@@ -64,8 +66,19 @@ public:
         socket_.close(ec);
     }
 
-    tcp::socket& lowest_layer() override {
-        return socket_;
+    asio::any_io_executor get_executor() override {
+        return socket_.get_executor();
+    }
+
+    std::string remote_endpoint_string() override {
+        std::error_code ec;
+        auto endpoint = socket_.remote_endpoint(ec);
+        if (ec) return "unknown";
+        return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+    }
+
+    std::string protocol_name() override {
+        return "TCP";
     }
 
 private:
@@ -102,8 +115,19 @@ public:
         stream_.next_layer().close(ec);
     }
 
-    tcp::socket& lowest_layer() override {
-        return stream_.next_layer();
+    asio::any_io_executor get_executor() override {
+        return stream_.get_executor();
+    }
+
+    std::string remote_endpoint_string() override {
+        std::error_code ec;
+        auto endpoint = stream_.next_layer().remote_endpoint(ec);
+        if (ec) return "unknown";
+        return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+    }
+
+    std::string protocol_name() override {
+        return "SSL";
     }
 
 private:
