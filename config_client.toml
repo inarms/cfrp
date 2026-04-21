@@ -4,6 +4,11 @@ server_addr = "127.0.0.1"
 server_port = 7001
 token = "secret_token"
 
+[client.ssl]
+enable = false
+verify_peer = false
+# ca_file = "ca.crt"
+
 [[client.proxies]]
 name = "ssh"
 type = "tcp"

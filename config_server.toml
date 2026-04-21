@@ -3,4 +3,10 @@
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "secret_token"
+
+[server.ssl]
+enable = false
+cert_file = "server.crt"
+key_file = "server.key"
+
 # ... other server settings

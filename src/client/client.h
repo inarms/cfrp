@@ -1,14 +1,22 @@
 #pragma once
 
 #include <asio.hpp>
+#include <asio/ssl.hpp>
 #include <string>
 #include <vector>
 #include "common/protocol.h"
+#include "common/stream.h"
 
 namespace cfrp {
 namespace client {
 
 using asio::ip::tcp;
+
+struct SslConfig {
+    bool enable = false;
+    bool verify_peer = false;
+    std::string ca_file;
+};
 
 struct ProxyConfig {
     std::string name;
@@ -22,21 +30,21 @@ class Client;
 
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
-    Bridge(tcp::socket s1, tcp::socket s2);
+    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2);
     void Start();
 
 private:
     void DoRead(int direction);
 
-    tcp::socket s1_;
-    tcp::socket s2_;
+    std::shared_ptr<common::AsyncStream> s1_;
+    std::shared_ptr<common::AsyncStream> s2_;
     char data1_[8192];
     char data2_[8192];
 };
 
 class Client {
 public:
-    Client(const std::string& server_addr, uint16_t server_port, const std::string& token);
+    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config);
     void Run();
     void AddProxy(const ProxyConfig& proxy);
 
@@ -54,10 +62,13 @@ private:
     void ScheduleReconnect();
 
     asio::io_context io_context_;
-    tcp::socket socket_;
+    std::shared_ptr<common::AsyncStream> stream_;
     std::string server_addr_;
     uint16_t server_port_;
     std::string token_;
+    SslConfig ssl_config_;
+    std::unique_ptr<asio::ssl::context> ssl_ctx_;
+    
     tcp::endpoint endpoint_;
     std::vector<ProxyConfig> proxies_;
     protocol::Header header_;

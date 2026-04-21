@@ -6,6 +6,7 @@
     "cli11",
     "tomlplusplus",
     "asio",
-    "nlohmann-json"
+    "nlohmann-json",
+    "openssl"
   ]
 }

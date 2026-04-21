@@ -5,7 +5,7 @@ namespace cfrp {
 namespace client {
 
 // --- Bridge ---
-Bridge::Bridge(tcp::socket s1, tcp::socket s2)
+Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2)
     : s1_(std::move(s1)), s2_(std::move(s2)) {}
 
 void Bridge::Start() {
@@ -19,10 +19,12 @@ void Bridge::DoRead(int direction) {
     auto& to = (direction == 1) ? s2_ : s1_;
     auto& buf = (direction == 1) ? data1_ : data2_;
 
-    from.async_read_some(asio::buffer(buf, sizeof(data1_)),
-        [this, self, &from, &to, &buf, direction](std::error_code ec, std::size_t length) {
+    from->async_read_some(asio::buffer(buf, sizeof(data1_)),
+        [this, self, direction](std::error_code ec, std::size_t length) {
             if (!ec) {
-                asio::async_write(to, asio::buffer(buf, length),
+                auto& to_inner = (direction == 1) ? s2_ : s1_;
+                auto& buf_inner = (direction == 1) ? data1_ : data2_;
+                to_inner->async_write(asio::buffer(buf_inner, length),
                     [this, self, direction](std::error_code ec, std::size_t) {
                         if (!ec) {
                             DoRead(direction);
@@ -33,13 +35,29 @@ void Bridge::DoRead(int direction) {
 }
 
 // --- Client ---
-Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token)
-    : socket_(io_context_),
-      server_addr_(server_addr),
+Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config)
+    : server_addr_(server_addr),
       server_port_(server_port),
       token_(token),
+      ssl_config_(ssl_config),
       endpoint_(asio::ip::make_address(server_addr), server_port),
       reconnect_timer_(io_context_) {
+    
+    if (ssl_config_.enable) {
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
+        if (ssl_config_.verify_peer) {
+            ssl_ctx_->set_verify_mode(asio::ssl::verify_peer);
+            if (!ssl_config_.ca_file.empty()) {
+                ssl_ctx_->load_verify_file(ssl_config_.ca_file);
+            } else {
+                ssl_ctx_->set_default_verify_paths();
+            }
+        } else {
+            ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
+        }
+        std::cout << "SSL enabled on client." << std::endl;
+    }
+    
     std::cout << "Client initialized. Target server: " << server_addr << ":" << server_port << std::endl;
 }
 
@@ -54,32 +72,48 @@ void Client::AddProxy(const ProxyConfig& proxy) {
 
 void Client::DoConnect() {
     std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << "..." << std::endl;
-    socket_.async_connect(endpoint_,
-        [this](std::error_code ec) {
-            OnConnect(ec);
+    
+    tcp::socket socket(io_context_);
+    auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
+    
+    socket_ptr->async_connect(endpoint_,
+        [this, socket_ptr](std::error_code ec) {
+            if (!ec) {
+                if (ssl_config_.enable) {
+                    stream_ = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                } else {
+                    stream_ = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
+                }
+                
+                stream_->async_handshake(asio::ssl::stream_base::client, [this](std::error_code ec) {
+                    OnConnect(ec);
+                });
+            } else {
+                HandleDisconnect("Connect failed: " + ec.message());
+            }
         });
 }
 
 void Client::OnConnect(const std::error_code& ec) {
     if (!ec) {
-        std::cout << "Connected to server." << std::endl;
+        std::cout << "Connected to server (Secure)." << std::endl;
         reconnect_delay_sec_ = 0; // Reset delay on success
         DoLogin();
         DoReadHeader();
     } else {
-        HandleDisconnect("Connect failed: " + ec.message());
+        HandleDisconnect("Handshake/Connect failed: " + ec.message());
     }
 }
 
 void Client::HandleDisconnect(const std::string& reason) {
     std::cout << reason << std::endl;
-    std::error_code ec;
-    socket_.close(ec);
+    if (stream_) {
+        stream_->close();
+    }
     ScheduleReconnect();
 }
 
 void Client::ScheduleReconnect() {
-    // Increase delay by 10s each time, max 600s (10 mins)
     if (reconnect_delay_sec_ < 600) {
         reconnect_delay_sec_ += 10;
     }
@@ -103,7 +137,7 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
     data->append(reinterpret_cast<const char*>(&len), sizeof(len));
     data->append(encoded);
     
-    asio::async_write(socket_, asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
+    stream_->async_write(asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
         if (ec) {
             std::cerr << "Failed to send message: " << ec.message() << std::endl;
         }
@@ -111,7 +145,7 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
 }
 
 void Client::DoReadHeader() {
-    asio::async_read(socket_, asio::buffer(&header_, sizeof(header_)),
+    stream_->async_read(asio::buffer(&header_, sizeof(header_)),
         [this](std::error_code ec, std::size_t) {
             if (!ec) {
                 DoReadBody(header_.body_length);
@@ -123,7 +157,7 @@ void Client::DoReadHeader() {
 
 void Client::DoReadBody(uint32_t length) {
     body_data_.resize(length);
-    asio::async_read(socket_, asio::buffer(body_data_),
+    stream_->async_read(asio::buffer(body_data_),
         [this](std::error_code ec, std::size_t) {
             if (!ec) {
                 std::string data(body_data_.begin(), body_data_.end());
@@ -184,25 +218,39 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
 
     auto pc = *it;
     auto local_socket = std::make_shared<tcp::socket>(io_context_);
-    auto work_socket = std::make_shared<tcp::socket>(io_context_);
+    auto work_socket_raw = std::make_shared<tcp::socket>(io_context_);
 
     local_socket->async_connect(tcp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port),
-        [this, local_socket, work_socket, ticket, pc](std::error_code ec) {
+        [this, local_socket, work_socket_raw, ticket, pc](std::error_code ec) {
             if (!ec) {
-                work_socket->async_connect(tcp::endpoint(asio::ip::make_address(server_addr_), server_port_ + 1),
-                    [this, local_socket, work_socket, ticket, pc](std::error_code ec) {
+                work_socket_raw->async_connect(tcp::endpoint(asio::ip::make_address(server_addr_), server_port_ + 1),
+                    [this, local_socket, work_socket_raw, ticket, pc](std::error_code ec) {
                         if (!ec) {
-                            auto ticket_buf = std::make_shared<std::string>(ticket);
-                            ticket_buf->resize(64, ' ');
+                            std::shared_ptr<common::AsyncStream> work_stream;
+                            if (ssl_config_.enable) {
+                                work_stream = std::make_shared<common::SslStream>(std::move(*work_socket_raw), *ssl_ctx_);
+                            } else {
+                                work_stream = std::make_shared<common::TcpStream>(std::move(*work_socket_raw));
+                            }
                             
-                            asio::async_write(*work_socket, asio::buffer(*ticket_buf),
-                                [local_socket, work_socket, ticket_buf](std::error_code ec, std::size_t) {
-                                    if (!ec) {
-                                        std::cout << "Bridging local service and server work connection" << std::endl;
-                                        auto bridge = std::make_shared<Bridge>(std::move(*local_socket), std::move(*work_socket));
-                                        bridge->Start();
-                                    }
-                                });
+                            work_stream->async_handshake(asio::ssl::stream_base::client, [this, local_socket, work_stream, ticket, pc](std::error_code ec) {
+                                if (!ec) {
+                                    auto ticket_buf = std::make_shared<std::string>(ticket);
+                                    ticket_buf->resize(64, ' ');
+                                    
+                                    work_stream->async_write(asio::buffer(*ticket_buf),
+                                        [local_socket, work_stream, ticket_buf](std::error_code ec, std::size_t) {
+                                            if (!ec) {
+                                                std::cout << "Bridging local service and server work connection" << std::endl;
+                                                auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
+                                                auto bridge = std::make_shared<Bridge>(user_stream, work_stream);
+                                                bridge->Start();
+                                            }
+                                        });
+                                } else {
+                                    std::cerr << "SSL handshake failed for work connection: " << ec.message() << std::endl;
+                                }
+                            });
                         } else {
                             std::cerr << "Failed to connect to server work port: " << ec.message() << std::endl;
                         }

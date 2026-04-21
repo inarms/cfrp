@@ -16,21 +16,33 @@ int main(int argc, char** argv) {
     try {
         auto config = toml::parse_file(config_path);
 
-        // Determine if it's a server or client based on a 'common' or specific section
-        // For example, if 'common' exists and has a 'role' field, or just presence of [server] vs [client]
         if (config["server"]) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = config["server"]["token"].value_or("");
             
-            cfrp::server::Server server(bind_addr, bind_port, token);
+            cfrp::server::SslConfig ssl_config;
+            if (auto ssl = config["server"]["ssl"].as_table()) {
+                ssl_config.enable = (*ssl)["enable"].value_or(false);
+                ssl_config.cert_file = (*ssl)["cert_file"].value_or("");
+                ssl_config.key_file = (*ssl)["key_file"].value_or("");
+            }
+            
+            cfrp::server::Server server(bind_addr, bind_port, token, ssl_config);
             server.Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = config["client"]["server_port"].value_or(7001);
             std::string token = config["client"]["token"].value_or("");
 
-            cfrp::client::Client client(server_addr, server_port, token);
+            cfrp::client::SslConfig ssl_config;
+            if (auto ssl = config["client"]["ssl"].as_table()) {
+                ssl_config.enable = (*ssl)["enable"].value_or(false);
+                ssl_config.verify_peer = (*ssl)["verify_peer"].value_or(false);
+                ssl_config.ca_file = (*ssl)["ca_file"].value_or("");
+            }
+
+            cfrp::client::Client client(server_addr, server_port, token, ssl_config);
 
             if (auto proxies = config["client"]["proxies"].as_array()) {
                 for (auto& elem : *proxies) {

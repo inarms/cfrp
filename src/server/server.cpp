@@ -6,7 +6,7 @@ namespace cfrp {
 namespace server {
 
 // --- Bridge ---
-Bridge::Bridge(tcp::socket s1, tcp::socket s2)
+Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2)
     : s1_(std::move(s1)), s2_(std::move(s2)) {}
 
 void Bridge::Start() {
@@ -20,10 +20,12 @@ void Bridge::DoRead(int direction) {
     auto& to = (direction == 1) ? s2_ : s1_;
     auto& buf = (direction == 1) ? data1_ : data2_;
 
-    from.async_read_some(asio::buffer(buf, sizeof(data1_)),
-        [this, self, &from, &to, &buf, direction](std::error_code ec, std::size_t length) {
+    from->async_read_some(asio::buffer(buf, sizeof(data1_)),
+        [this, self, direction](std::error_code ec, std::size_t length) {
             if (!ec) {
-                asio::async_write(to, asio::buffer(buf, length),
+                auto& to_inner = (direction == 1) ? s2_ : s1_;
+                auto& buf_inner = (direction == 1) ? data1_ : data2_;
+                to_inner->async_write(asio::buffer(buf_inner, length),
                     [this, self, direction](std::error_code ec, std::size_t) {
                         if (!ec) {
                             DoRead(direction);
@@ -89,8 +91,7 @@ void ControlSession::Stop() {
         proxy->Stop();
     }
     proxies_.clear();
-    std::error_code ec;
-    socket_.close(ec);
+    stream_->close();
 }
 
 void ControlSession::SendMessage(protocol::MessageType type, const protocol::json& body) {
@@ -103,7 +104,7 @@ void ControlSession::SendMessage(protocol::MessageType type, const protocol::jso
     data->append(encoded);
 
     auto self(shared_from_this());
-    asio::async_write(socket_, asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
+    stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
         if (ec) {
             std::cerr << "Failed to send message: " << ec.message() << std::endl;
         }
@@ -112,7 +113,7 @@ void ControlSession::SendMessage(protocol::MessageType type, const protocol::jso
 
 void ControlSession::DoReadHeader() {
     auto self(shared_from_this());
-    asio::async_read(socket_, asio::buffer(&header_, sizeof(header_)),
+    stream_->async_read(asio::buffer(&header_, sizeof(header_)),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 DoReadBody(header_.body_length);
@@ -126,7 +127,7 @@ void ControlSession::DoReadHeader() {
 void ControlSession::DoReadBody(uint32_t length) {
     body_data_.resize(length);
     auto self(shared_from_this());
-    asio::async_read(socket_, asio::buffer(body_data_),
+    stream_->async_read(asio::buffer(body_data_),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 std::string data(body_data_.begin(), body_data_.end());
@@ -198,10 +199,20 @@ void ControlSession::HandleLogin(const protocol::json& body) {
 }
 
 // --- Server ---
-Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token)
+Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config)
     : acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       work_acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port + 1)),
-      token_(token) {
+      token_(token),
+      ssl_config_(ssl_config) {
+    
+    if (ssl_config_.enable) {
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
+        ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::single_dh_use);
+        ssl_ctx_->use_certificate_chain_file(ssl_config_.cert_file);
+        ssl_ctx_->use_private_key_file(ssl_config_.key_file, asio::ssl::context::pem);
+        std::cout << "SSL enabled on server." << std::endl;
+    }
+    
     std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (Work port: " << bind_port + 1 << ")" << std::endl;
 }
 
@@ -227,7 +238,22 @@ void Server::DoAccept() {
                 }
                 return;
             }
-            std::make_shared<ControlSession>(*this, std::move(socket), io_context_)->Start();
+            
+            std::shared_ptr<common::AsyncStream> stream;
+            if (ssl_config_.enable) {
+                stream = std::make_shared<common::SslStream>(std::move(socket), *ssl_ctx_);
+            } else {
+                stream = std::make_shared<common::TcpStream>(std::move(socket));
+            }
+            
+            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
+                if (!ec) {
+                    std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
+                } else {
+                    std::cerr << "SSL handshake failed for control connection: " << ec.message() << std::endl;
+                }
+            });
+            
             DoAccept();
         });
 }
@@ -242,29 +268,43 @@ void Server::DoAcceptWork() {
             return;
         }
 
-        auto ticket_ptr = std::make_shared<std::string>();
-        ticket_ptr->resize(64);
-        
-        auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
-        
-        asio::async_read(*socket_ptr, asio::buffer(&((*ticket_ptr)[0]), 64),
-            [this, socket_ptr, ticket_ptr](std::error_code ec, std::size_t) {
-                if (!ec) {
-                    std::string ticket = ticket_ptr->c_str();
-                    ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
+        std::shared_ptr<common::AsyncStream> work_stream;
+        if (ssl_config_.enable) {
+            work_stream = std::make_shared<common::SslStream>(std::move(socket), *ssl_ctx_);
+        } else {
+            work_stream = std::make_shared<common::TcpStream>(std::move(socket));
+        }
 
-                    std::lock_guard<std::mutex> lock(map_mutex_);
-                    auto it = pending_user_conns_.find(ticket);
-                    if (it != pending_user_conns_.end()) {
-                        std::cout << "Splicing user connection and work connection for ticket: " << ticket << std::endl;
-                        auto bridge = std::make_shared<Bridge>(std::move(it->second), std::move(*socket_ptr));
-                        bridge->Start();
-                        pending_user_conns_.erase(it);
-                    } else {
-                        std::cerr << "No pending user connection for ticket: " << ticket << std::endl;
+        work_stream->async_handshake(asio::ssl::stream_base::server, [this, work_stream](std::error_code ec) {
+            if (ec) {
+                std::cerr << "SSL handshake failed for work connection: " << ec.message() << std::endl;
+                return;
+            }
+
+            auto ticket_ptr = std::make_shared<std::string>();
+            ticket_ptr->resize(64);
+            
+            work_stream->async_read(asio::buffer(&((*ticket_ptr)[0]), 64),
+                [this, work_stream, ticket_ptr](std::error_code ec, std::size_t) {
+                    if (!ec) {
+                        std::string ticket = ticket_ptr->c_str();
+                        ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
+
+                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        auto it = pending_user_conns_.find(ticket);
+                        if (it != pending_user_conns_.end()) {
+                            std::cout << "Splicing user connection and work connection for ticket: " << ticket << std::endl;
+                            // User connection is always raw TCP (from internet)
+                            auto user_stream = std::make_shared<common::TcpStream>(std::move(it->second));
+                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream);
+                            bridge->Start();
+                            pending_user_conns_.erase(it);
+                        } else {
+                            std::cerr << "No pending user connection for ticket: " << ticket << std::endl;
+                        }
                     }
-                }
-            });
+                });
+        });
 
         DoAcceptWork();
     });
