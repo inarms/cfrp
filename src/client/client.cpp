@@ -289,7 +289,9 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
             // Client doesn't expect server to open streams in this model
         });
         
+        std::cout << "MuxSession initialized. Opening control stream..." << std::endl;
         control_stream_ = mux_session_->open_stream();
+        std::cout << "Control stream opened. Sending login request..." << std::endl;
         DoLogin();
         DoReadHeader();
     } else {

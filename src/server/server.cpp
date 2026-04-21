@@ -311,11 +311,14 @@ void ProxyListener::DoAccept() {
 
 // --- ControlSession ---
 void ControlSession::Start() {
-    std::cout << "New client connected to control port." << std::endl;
+    auto endpoint = stream_->lowest_layer().remote_endpoint();
+    std::cout << "[Server] New client connecting from " << endpoint << "..." << std::endl;
     DoReadHeader();
 }
 
 void ControlSession::Stop() {
+    auto endpoint = stream_->lowest_layer().remote_endpoint();
+    std::cout << "[Server] Client disconnected: " << endpoint << std::endl;
     for (auto& proxy : proxies_) {
         proxy->Stop();
     }
@@ -451,7 +454,9 @@ void ControlSession::HandleLogin(const protocol::json& body) {
     std::string token = body.value("token", "");
     protocol::json resp;
     if (token == server_.GetToken()) {
-        std::cout << "Client authenticated successfully." << std::endl;
+        auto endpoint = stream_->lowest_layer().remote_endpoint();
+        std::cout << "[Server] Client authenticated successfully: " << endpoint << std::endl;
+        std::cout << "[Server] Client is READY." << std::endl;
         authenticated_ = true;
         resp["status"] = "ok";
     } else {
@@ -533,14 +538,8 @@ void Server::DoAccept() {
 }
 
 void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream) {
-    // If it's the first stream (ID 1 for client initiated, or we check if ControlSession exists)
-    // Actually, we can use a more robust way: the first stream is always control.
-    // Subsequent streams are work connections and they start with the ticket.
-    
-    // We'll read the first few bytes to see if it's a MessagePack login (Control) or a ticket (Work).
-    // Or simpler: Stream ID 1 is Control. (Yamux client initiated streams are odd: 1, 3, 5...)
-    
     if (stream->id() == 1) {
+        std::cout << "Control stream (ID 1) requested. Starting session..." << std::endl;
         std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
     } else {
         // Work connection
