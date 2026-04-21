@@ -23,20 +23,20 @@ struct Header {
     uint32_t body_length;
 };
 
-// Simple helper to wrap messages in JSON
+// Simple helper to wrap messages in MessagePack
 struct Message {
     MessageType type;
     json body;
 
-    std::string Encode() const {
+    std::vector<uint8_t> Encode() const {
         json j;
         j["type"] = static_cast<int>(type);
         j["body"] = body;
-        return j.dump();
+        return json::to_msgpack(j);
     }
 
-    static Message Decode(const std::string& data) {
-        auto j = json::parse(data);
+    static Message Decode(const std::vector<uint8_t>& data) {
+        auto j = json::from_msgpack(data);
         return {static_cast<MessageType>(j["type"].get<int>()), j["body"]};
     }
 };

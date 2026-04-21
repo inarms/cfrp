@@ -11,7 +11,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**.
 - **Resilient Client**: Automatic reconnection with exponential backoff (up to 10 minutes) if the server becomes unreachable.
 - **Dynamic Proxying**: Supports multiple **TCP** and **UDP** proxies over a single control connection.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `openssl`).
+- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `openssl`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
 ## Architecture

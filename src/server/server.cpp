@@ -233,12 +233,13 @@ void ControlSession::Stop() {
 
 void ControlSession::SendMessage(protocol::MessageType type, const protocol::json& body) {
     protocol::Message msg{type, body};
-    std::string encoded = msg.Encode();
-    uint32_t len = static_cast<uint32_t>(encoded.length());
+    std::vector<uint8_t> encoded = msg.Encode();
+    uint32_t len = static_cast<uint32_t>(encoded.size());
     
-    auto data = std::make_shared<std::string>();
-    data->append(reinterpret_cast<const char*>(&len), sizeof(len));
-    data->append(encoded);
+    auto data = std::make_shared<std::vector<uint8_t>>();
+    data->resize(sizeof(len) + encoded.size());
+    std::memcpy(data->data(), &len, sizeof(len));
+    std::memcpy(data->data() + sizeof(len), encoded.data(), encoded.size());
 
     auto self(shared_from_this());
     stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
@@ -267,8 +268,8 @@ void ControlSession::DoReadBody(uint32_t length) {
     stream_->async_read(asio::buffer(body_data_),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
-                std::string data(body_data_.begin(), body_data_.end());
                 try {
+                    std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
                     auto msg = protocol::Message::Decode(data);
                     HandleMessage(msg);
                 } catch (const std::exception& e) {
