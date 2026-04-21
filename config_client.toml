@@ -2,6 +2,7 @@
 [client]
 server_addr = "127.0.0.1"
 server_port = 7001
+token = "secret_token"
 
 [[client.proxies]]
 name = "ssh"

@@ -36,7 +36,7 @@ private:
 
 class Client {
 public:
-    Client(const std::string& server_addr, uint16_t server_port);
+    Client(const std::string& server_addr, uint16_t server_port, const std::string& token);
     void Run();
     void AddProxy(const ProxyConfig& proxy);
 
@@ -47,6 +47,7 @@ private:
     void DoReadHeader();
     void DoReadBody(uint32_t length);
     void HandleMessage(const protocol::Message& msg);
+    void DoLogin();
     void RegisterProxies();
     void HandleNewUserConn(const std::string& proxy_name, const std::string& ticket);
     void HandleDisconnect(const std::string& reason);
@@ -56,6 +57,7 @@ private:
     tcp::socket socket_;
     std::string server_addr_;
     uint16_t server_port_;
+    std::string token_;
     tcp::endpoint endpoint_;
     std::vector<ProxyConfig> proxies_;
     protocol::Header header_;

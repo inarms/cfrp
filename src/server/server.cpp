@@ -145,6 +145,17 @@ void ControlSession::DoReadBody(uint32_t length) {
 }
 
 void ControlSession::HandleMessage(const protocol::Message& msg) {
+    if (msg.type == protocol::MessageType::Login) {
+        HandleLogin(msg.body);
+        return;
+    }
+
+    if (!authenticated_) {
+        std::cerr << "Unauthenticated message received: " << static_cast<int>(msg.type) << std::endl;
+        Stop();
+        return;
+    }
+
     if (msg.type == protocol::MessageType::RegisterProxy) {
         std::string name = msg.body["name"];
         uint16_t remote_port = msg.body["remote_port"];
@@ -168,10 +179,29 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     }
 }
 
+void ControlSession::HandleLogin(const protocol::json& body) {
+    std::string token = body.value("token", "");
+    protocol::json resp;
+    if (token == server_.GetToken()) {
+        std::cout << "Client authenticated successfully." << std::endl;
+        authenticated_ = true;
+        resp["status"] = "ok";
+    } else {
+        std::cout << "Client authentication failed." << std::endl;
+        resp["status"] = "error";
+        resp["message"] = "Invalid token";
+        SendMessage(protocol::MessageType::LoginResp, resp);
+        Stop();
+        return;
+    }
+    SendMessage(protocol::MessageType::LoginResp, resp);
+}
+
 // --- Server ---
-Server::Server(const std::string& bind_addr, uint16_t bind_port)
+Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token)
     : acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
-      work_acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port + 1)) {
+      work_acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port + 1)),
+      token_(token) {
     std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (Work port: " << bind_port + 1 << ")" << std::endl;
 }
 

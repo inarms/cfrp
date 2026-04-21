@@ -21,14 +21,16 @@ int main(int argc, char** argv) {
         if (config["server"]) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
+            std::string token = config["server"]["token"].value_or("");
             
-            cfrp::server::Server server(bind_addr, bind_port);
+            cfrp::server::Server server(bind_addr, bind_port, token);
             server.Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = config["client"]["server_port"].value_or(7001);
+            std::string token = config["client"]["token"].value_or("");
 
-            cfrp::client::Client client(server_addr, server_port);
+            cfrp::client::Client client(server_addr, server_port, token);
 
             if (auto proxies = config["client"]["proxies"].as_array()) {
                 for (auto& elem : *proxies) {

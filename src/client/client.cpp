@@ -33,10 +33,11 @@ void Bridge::DoRead(int direction) {
 }
 
 // --- Client ---
-Client::Client(const std::string& server_addr, uint16_t server_port)
+Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token)
     : socket_(io_context_),
       server_addr_(server_addr),
       server_port_(server_port),
+      token_(token),
       endpoint_(asio::ip::make_address(server_addr), server_port),
       reconnect_timer_(io_context_) {
     std::cout << "Client initialized. Target server: " << server_addr << ":" << server_port << std::endl;
@@ -63,7 +64,7 @@ void Client::OnConnect(const std::error_code& ec) {
     if (!ec) {
         std::cout << "Connected to server." << std::endl;
         reconnect_delay_sec_ = 0; // Reset delay on success
-        RegisterProxies();
+        DoLogin();
         DoReadHeader();
     } else {
         HandleDisconnect("Connect failed: " + ec.message());
@@ -105,8 +106,6 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
     asio::async_write(socket_, asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
         if (ec) {
             std::cerr << "Failed to send message: " << ec.message() << std::endl;
-            // HandleDisconnect will be triggered by DoReadHeader failing usually,
-            // but we could trigger it here if critical.
         }
     });
 }
@@ -141,8 +140,21 @@ void Client::DoReadBody(uint32_t length) {
         });
 }
 
+void Client::DoLogin() {
+    protocol::json body;
+    body["token"] = token_;
+    SendMessage(protocol::MessageType::Login, body);
+}
+
 void Client::HandleMessage(const protocol::Message& msg) {
-    if (msg.type == protocol::MessageType::RegisterProxyResp) {
+    if (msg.type == protocol::MessageType::LoginResp) {
+        if (msg.body["status"] == "ok") {
+            std::cout << "Authenticated successfully." << std::endl;
+            RegisterProxies();
+        } else {
+            std::cerr << "Authentication failed: " << msg.body.value("message", "unknown error") << std::endl;
+        }
+    } else if (msg.type == protocol::MessageType::RegisterProxyResp) {
         std::cout << "Proxy registration response: " << msg.body["status"] << " for " << msg.body["name"] << std::endl;
     } else if (msg.type == protocol::MessageType::NewUserConn) {
         std::string proxy_name = msg.body["proxy_name"];

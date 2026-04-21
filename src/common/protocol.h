@@ -10,11 +10,13 @@ namespace protocol {
 using json = nlohmann::json;
 
 enum class MessageType {
-    RegisterProxy = 1,
-    RegisterProxyResp = 2,
-    NewUserConn = 3,
-    StartWorkConn = 4,
-    WorkConnAuth = 5
+    Login = 0,
+    LoginResp = 1,
+    RegisterProxy = 2,
+    RegisterProxyResp = 3,
+    NewUserConn = 4,
+    StartWorkConn = 5,
+    WorkConnAuth = 6
 };
 
 struct Header {

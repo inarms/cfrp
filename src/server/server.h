@@ -58,6 +58,7 @@ private:
     void DoReadHeader();
     void DoReadBody(uint32_t length);
     void HandleMessage(const protocol::Message& msg);
+    void HandleLogin(const protocol::json& body);
 
     Server& server_;
     tcp::socket socket_;
@@ -65,14 +66,16 @@ private:
     protocol::Header header_;
     std::vector<char> body_data_;
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
+    bool authenticated_ = false;
 };
 
 class Server {
 public:
-    Server(const std::string& bind_addr, uint16_t bind_port);
+    Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token);
     void Run();
 
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
+    const std::string& GetToken() const { return token_; }
 
 private:
     void DoAccept();
@@ -81,6 +84,7 @@ private:
     asio::io_context io_context_;
     tcp::acceptor acceptor_;
     tcp::acceptor work_acceptor_;
+    std::string token_;
     std::map<std::string, tcp::socket> pending_user_conns_;
     std::mutex map_mutex_;
 };
