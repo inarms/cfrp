@@ -252,7 +252,7 @@ void Session::do_read_header() {
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 auto header = Header::decode(header_buf_);
-                if (header.length > 0) {
+                if (header.type == (uint8_t)Type::Data && header.length > 0) {
                     do_read_body(header);
                 } else {
                     handle_frame(header, {});
@@ -297,7 +297,6 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
                     streams_[h.stream_id] = stream;
                 }
                 
-                // Invoke callback outside of mutex if possible, or ensure callback doesn't deadlock
                 if (on_new_stream_) on_new_stream_(stream);
                 
                 Header resp;
