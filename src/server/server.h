@@ -72,6 +72,7 @@ public:
     UdpProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name);
     void Start();
     void Stop();
+    const std::string& name() const { return proxy_name_; }
     void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
     udp::socket& socket() { return socket_; }
 
@@ -94,6 +95,7 @@ public:
     ProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name);
     void Start();
     void Stop();
+    const std::string& name() const { return proxy_name_; }
 
 private:
     void DoAccept();

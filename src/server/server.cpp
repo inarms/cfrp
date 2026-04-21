@@ -454,6 +454,27 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             resp["message"] = e.what();
             SendMessage(protocol::MessageType::RegisterProxyResp, resp);
         }
+    } else if (msg.type == protocol::MessageType::UnregisterProxy) {
+        std::string name = msg.body["name"];
+        std::cout << "[Server] Unregistering proxy [" << name << "]" << std::endl;
+        
+        auto it = std::find_if(proxies_.begin(), proxies_.end(), [&](const std::shared_ptr<ProxyListener>& p) {
+            return p->name() == name;
+        });
+        if (it != proxies_.end()) {
+            (*it)->Stop();
+            proxies_.erase(it);
+            return;
+        }
+
+        auto it_udp = std::find_if(udp_proxies_.begin(), udp_proxies_.end(), [&](const std::shared_ptr<UdpProxyListener>& p) {
+            return p->name() == name;
+        });
+        if (it_udp != udp_proxies_.end()) {
+            (*it_udp)->Stop();
+            udp_proxies_.erase(it_udp);
+            return;
+        }
     }
 }
 

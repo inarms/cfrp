@@ -70,7 +70,7 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression);
+    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path);
     void Run();
     void AddProxy(const ProxyConfig& proxy);
 
@@ -88,6 +88,11 @@ private:
     void HandleDisconnect(const std::string& reason);
     void ScheduleReconnect();
 
+    void StartConfMonitor();
+    void PollConfDirectory();
+    void RegisterProxy(const ProxyConfig& pc);
+    void UnregisterProxy(const std::string& name);
+
     asio::io_context io_context_;
     std::shared_ptr<common::mux::Session> mux_session_;
     std::shared_ptr<common::mux::MuxStream> control_stream_;
@@ -104,6 +109,10 @@ private:
     std::vector<ProxyConfig> proxies_;
     protocol::Header header_;
     std::vector<char> body_data_;
+    
+    std::string conf_d_path_;
+    asio::steady_timer conf_timer_;
+    std::map<std::string, ProxyConfig> dynamic_proxies_;
     
     asio::steady_timer reconnect_timer_;
     int reconnect_delay_sec_ = 0;

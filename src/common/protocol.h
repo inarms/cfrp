@@ -16,7 +16,8 @@ enum class MessageType {
     RegisterProxyResp = 3,
     NewUserConn = 4,
     StartWorkConn = 5,
-    WorkConnAuth = 6
+    WorkConnAuth = 6,
+    UnregisterProxy = 7
 };
 
 struct Header {
