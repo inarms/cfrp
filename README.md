@@ -9,6 +9,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 
 - **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
 - **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**.
+- **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
 - **Resilient Client**: Automatic reconnection with exponential backoff (up to 10 minutes) if the server becomes unreachable.
 - **Dynamic Proxying**: Supports multiple **TCP** and **UDP** proxies over a single control connection.
 - **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `openssl`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
@@ -109,6 +110,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
+- `compression`: Enable Zstd compression for all connections (default `false`).
 - `[client.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS.
   - `verify_peer`: Verify server certificate.

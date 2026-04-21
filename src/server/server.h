@@ -28,7 +28,7 @@ class ControlSession;
 
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
-    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2);
+    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression);
     void Start();
 
 private:
@@ -36,15 +36,18 @@ private:
 
     std::shared_ptr<common::AsyncStream> s1_;
     std::shared_ptr<common::AsyncStream> s2_;
+    bool use_compression_;
     char data1_[8192];
     char data2_[8192];
+    uint32_t header1_;
+    uint32_t header2_;
 };
 
 // --- UDP Support ---
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression);
     void Start();
 
 private:
@@ -58,6 +61,7 @@ private:
     std::shared_ptr<common::AsyncStream> stream_;
     udp::socket& socket_;
     udp::endpoint remote_endpoint_;
+    bool use_compression_;
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
 };
@@ -122,6 +126,7 @@ private:
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
     std::vector<std::shared_ptr<UdpProxyListener>> udp_proxies_;
     bool authenticated_ = false;
+    bool compression_enabled_ = false;
 };
 
 class Server {

@@ -12,6 +12,7 @@ find_package(CLI11 CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(zstd CONFIG REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
@@ -23,7 +24,7 @@ add_executable(cfrp
 )
 
 target_include_directories(cfrp PRIVATE src)
-target_link_libraries(cfrp PRIVATE CLI11::CLI11 PkgConfig::tomlplusplus asio::asio OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(cfrp PRIVATE CLI11::CLI11 PkgConfig::tomlplusplus asio::asio OpenSSL::SSL OpenSSL::Crypto zstd::libzstd)
 
 # Copy configuration files to the build directory
 file(COPY 

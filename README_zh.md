@@ -8,6 +8,7 @@
 
 - **高性能**: 基于 Standalone Asio 构建，支持非阻塞异步 I/O。
 - **安全性**: 支持可选的 **SSL/TLS** 加密和 **Token 身份验证**。
+- **带宽效率**: 支持可选的 **Zstd 压缩**（涵盖控制流和数据流），服务端自动检测并处理。
 - **弹性客户端**: 如果服务器不可达，客户端支持自动重连，并带有指数退避机制（最高 10 分钟）。
 - **动态代理**: 支持在单个控制连接上运行多个 **TCP** 和 **UDP** 代理。
 - **轻量级**: 极简依赖 (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `openssl`)。使用紧凑的 **二进制协议** (MessagePack) 以实现极低的开销。
@@ -108,6 +109,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `server_addr`: 服务端 IP 或域名。
 - `server_port`: 服务端控制端口。
 - `token`: 身份验证密钥。
+- `compression`: 为所有连接启用 Zstd 压缩 (默认 `false`)。
 - `[client.ssl]`: SSL 设置。
   - `enable`: 启用 SSL/TLS。
   - `verify_peer`: 验证服务端证书。

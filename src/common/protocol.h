@@ -23,6 +23,9 @@ struct Header {
     uint32_t body_length;
 };
 
+const uint32_t COMPRESSION_FLAG = 0x80000000;
+const uint32_t LENGTH_MASK = 0x7FFFFFFF;
+
 // Simple helper to wrap messages in MessagePack
 struct Message {
     MessageType type;

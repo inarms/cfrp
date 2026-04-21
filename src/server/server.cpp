@@ -1,13 +1,14 @@
 #include "server.h"
 #include <iostream>
 #include <chrono>
+#include <zstd.h>
 
 namespace cfrp {
 namespace server {
 
 // --- Bridge ---
-Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2)
-    : s1_(std::move(s1)), s2_(std::move(s2)) {}
+Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression)
+    : s1_(std::move(s1)), s2_(std::move(s2)), use_compression_(use_compression) {}
 
 void Bridge::Start() {
     DoRead(1);
@@ -16,28 +17,92 @@ void Bridge::Start() {
 
 void Bridge::DoRead(int direction) {
     auto self(shared_from_this());
-    auto& from = (direction == 1) ? s1_ : s2_;
-    auto& to = (direction == 1) ? s2_ : s1_;
-    auto& buf = (direction == 1) ? data1_ : data2_;
+    if (!use_compression_) {
+        auto& from = (direction == 1) ? s1_ : s2_;
+        auto& to = (direction == 1) ? s2_ : s1_;
+        auto& buf = (direction == 1) ? data1_ : data2_;
 
-    from->async_read_some(asio::buffer(buf, sizeof(data1_)),
-        [this, self, direction](std::error_code ec, std::size_t length) {
-            if (!ec) {
-                auto& to_inner = (direction == 1) ? s2_ : s1_;
-                auto& buf_inner = (direction == 1) ? data1_ : data2_;
-                to_inner->async_write(asio::buffer(buf_inner, length),
-                    [this, self, direction](std::error_code ec, std::size_t) {
-                        if (!ec) {
-                            DoRead(direction);
+        from->async_read_some(asio::buffer(buf, sizeof(data1_)),
+            [this, self, direction](std::error_code ec, std::size_t length) {
+                if (!ec) {
+                    auto& to_inner = (direction == 1) ? s2_ : s1_;
+                    auto& buf_inner = (direction == 1) ? data1_ : data2_;
+                    to_inner->async_write(asio::buffer(buf_inner, length),
+                        [this, self, direction](std::error_code ec, std::size_t) {
+                            if (!ec) {
+                                DoRead(direction);
+                            }
+                        });
+                }
+            });
+    } else {
+        if (direction == 1) { // Raw -> Work (Compress & Frame)
+            s1_->async_read_some(asio::buffer(data1_, sizeof(data1_)),
+                [this, self](std::error_code ec, std::size_t length) {
+                    if (!ec) {
+                        size_t const cSizeBound = ZSTD_compressBound(length);
+                        std::vector<uint8_t> compressed(cSizeBound);
+                        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, 1);
+                        
+                        uint32_t final_header;
+                        const void* write_buf;
+                        size_t write_len;
+
+                        if (!ZSTD_isError(cSize) && cSize < length) {
+                            final_header = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
+                            write_buf = compressed.data();
+                            write_len = cSize;
+                        } else {
+                            final_header = static_cast<uint32_t>(length);
+                            write_buf = data1_;
+                            write_len = length;
                         }
-                    });
-            }
-        });
+
+                        auto packet = std::make_shared<std::vector<uint8_t>>();
+                        packet->resize(sizeof(final_header) + write_len);
+                        std::memcpy(packet->data(), &final_header, sizeof(final_header));
+                        std::memcpy(packet->data() + sizeof(final_header), write_buf, write_len);
+
+                        s2_->async_write(asio::buffer(*packet), [this, self, packet](std::error_code ec, std::size_t) {
+                            if (!ec) {
+                                DoRead(1);
+                            }
+                        });
+                    }
+                });
+        } else { // Work -> Raw (Unframe & Decompress)
+            s2_->async_read(asio::buffer(&header2_, sizeof(header2_)),
+                [this, self](std::error_code ec, std::size_t) {
+                    if (!ec) {
+                        uint32_t len = header2_ & protocol::LENGTH_MASK;
+                        bool compressed = (header2_ & protocol::COMPRESSION_FLAG) != 0;
+                        auto body = std::make_shared<std::vector<uint8_t>>(len);
+                        s2_->async_read(asio::buffer(*body), [this, self, body, compressed](std::error_code ec, std::size_t) {
+                            if (!ec) {
+                                if (compressed) {
+                                    unsigned long long const decodedSize = ZSTD_getFrameContentSize(body->data(), body->size());
+                                    std::vector<uint8_t> decompressed(decodedSize);
+                                    ZSTD_decompress(decompressed.data(), decodedSize, body->data(), body->size());
+                                    auto d_buf = std::make_shared<std::vector<uint8_t>>(std::move(decompressed));
+                                    s1_->async_write(asio::buffer(*d_buf), [this, self, d_buf](std::error_code ec, std::size_t) {
+                                        if (!ec) DoRead(2);
+                                    });
+                                } else {
+                                    s1_->async_write(asio::buffer(*body), [this, self, body](std::error_code ec, std::size_t) {
+                                        if (!ec) DoRead(2);
+                                    });
+                                }
+                            }
+                        });
+                    }
+                });
+        }
+    }
 }
 
 // --- UdpBridge ---
-UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint)
-    : timer_(io_context), stream_(std::move(stream)), socket_(socket), remote_endpoint_(remote_endpoint) {
+UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression)
+    : timer_(io_context), stream_(std::move(stream)), socket_(socket), remote_endpoint_(remote_endpoint), use_compression_(use_compression) {
     read_buf_.resize(65535);
 }
 
@@ -66,17 +131,31 @@ void UdpBridge::DoReadFromStream() {
     stream_->async_read(asio::buffer(&packet_len_, sizeof(packet_len_)),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
-                uint16_t len = asio::detail::socket_ops::network_to_host_short(packet_len_);
+                uint16_t header = asio::detail::socket_ops::network_to_host_short(packet_len_);
+                uint16_t len = header & 0x7FFF;
+                bool compressed = (header & 0x8000) != 0;
+
                 if (len > read_buf_.size()) {
-                    std::cerr << "UDP packet too large: " << len << std::endl;
                     stream_->close();
                     return;
                 }
                 stream_->async_read(asio::buffer(read_buf_.data(), len),
-                    [this, self, len](std::error_code ec, std::size_t) {
+                    [this, self, len, compressed](std::error_code ec, std::size_t) {
                         if (!ec) {
                             ResetTimer();
-                            socket_.async_send_to(asio::buffer(read_buf_.data(), len), remote_endpoint_,
+                            const void* send_buf = read_buf_.data();
+                            size_t send_len = len;
+                            std::vector<uint8_t> decompressed;
+
+                            if (compressed) {
+                                unsigned long long const decodedSize = ZSTD_getFrameContentSize(read_buf_.data(), len);
+                                decompressed.resize(decodedSize);
+                                ZSTD_decompress(decompressed.data(), decodedSize, read_buf_.data(), len);
+                                send_buf = decompressed.data();
+                                send_len = decodedSize;
+                            }
+
+                            socket_.async_send_to(asio::buffer(send_buf, send_len), remote_endpoint_,
                                 [this, self](std::error_code ec, std::size_t) {
                                     if (!ec) {
                                         DoReadFromStream();
@@ -95,10 +174,31 @@ void UdpBridge::DoReadFromStream() {
 void UdpBridge::DoWriteToStream(const std::vector<uint8_t>& data) {
     auto self(shared_from_this());
     auto buf = std::make_shared<std::vector<uint8_t>>();
-    uint16_t len = asio::detail::socket_ops::host_to_network_short(static_cast<uint16_t>(data.size()));
-    buf->resize(sizeof(len) + data.size());
-    std::memcpy(buf->data(), &len, sizeof(len));
-    std::memcpy(buf->data() + sizeof(len), data.data(), data.size());
+    
+    uint16_t header;
+    const void* write_data = data.data();
+    size_t write_len = data.size();
+    std::vector<uint8_t> compressed;
+
+    if (use_compression_) {
+        size_t const cSizeBound = ZSTD_compressBound(data.size());
+        compressed.resize(cSizeBound);
+        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data.data(), data.size(), 1);
+        if (!ZSTD_isError(cSize) && cSize < data.size()) {
+            header = static_cast<uint16_t>(cSize) | 0x8000;
+            write_data = compressed.data();
+            write_len = cSize;
+        } else {
+            header = static_cast<uint16_t>(data.size());
+        }
+    } else {
+        header = static_cast<uint16_t>(data.size());
+    }
+
+    uint16_t n_header = asio::detail::socket_ops::host_to_network_short(header);
+    buf->resize(sizeof(n_header) + write_len);
+    std::memcpy(buf->data(), &n_header, sizeof(n_header));
+    std::memcpy(buf->data() + sizeof(n_header), write_data, write_len);
 
     stream_->async_write(asio::buffer(*buf), [this, self, buf](std::error_code ec, std::size_t) {
         if (!ec) {
@@ -154,10 +254,6 @@ void UdpProxyListener::DoReceive() {
                 } else {
                     ticket = it->second;
                 }
-                
-                // Note: Real implementation would need a buffer for packets arriving before the work connection is ready.
-                // For now, we assume subsequent packets will trigger the bridge once it's established.
-                // In this simplified version, the first packet might be lost if not buffered.
                 
                 DoReceive();
             }
@@ -234,12 +330,24 @@ void ControlSession::Stop() {
 void ControlSession::SendMessage(protocol::MessageType type, const protocol::json& body) {
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
-    uint32_t len = static_cast<uint32_t>(encoded.size());
+    uint32_t final_len = static_cast<uint32_t>(encoded.size());
+    std::vector<uint8_t> to_send_body = encoded;
+
+    if (compression_enabled_) {
+        size_t const cSizeBound = ZSTD_compressBound(encoded.size());
+        std::vector<uint8_t> compressed(cSizeBound);
+        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, encoded.data(), encoded.size(), 1);
+        if (!ZSTD_isError(cSize)) {
+            compressed.resize(cSize);
+            to_send_body = compressed;
+            final_len = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
+        }
+    }
     
     auto data = std::make_shared<std::vector<uint8_t>>();
-    data->resize(sizeof(len) + encoded.size());
-    std::memcpy(data->data(), &len, sizeof(len));
-    std::memcpy(data->data() + sizeof(len), encoded.data(), encoded.size());
+    data->resize(sizeof(final_len) + to_send_body.size());
+    std::memcpy(data->data(), &final_len, sizeof(final_len));
+    std::memcpy(data->data() + sizeof(final_len), to_send_body.data(), to_send_body.size());
 
     auto self(shared_from_this());
     stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
@@ -254,7 +362,8 @@ void ControlSession::DoReadHeader() {
     stream_->async_read(asio::buffer(&header_, sizeof(header_)),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
-                DoReadBody(header_.body_length);
+                uint32_t length = header_.body_length & protocol::LENGTH_MASK;
+                DoReadBody(length);
             } else {
                 std::cout << "Control session closed: " << ec.message() << std::endl;
                 Stop();
@@ -263,13 +372,26 @@ void ControlSession::DoReadHeader() {
 }
 
 void ControlSession::DoReadBody(uint32_t length) {
+    bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
+    if (is_compressed) compression_enabled_ = true;
+
     body_data_.resize(length);
     auto self(shared_from_this());
     stream_->async_read(asio::buffer(body_data_),
-        [this, self](std::error_code ec, std::size_t) {
+        [this, self, is_compressed](std::error_code ec, std::size_t) {
             if (!ec) {
                 try {
                     std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
+                    if (is_compressed) {
+                        unsigned long long const decodedSize = ZSTD_getFrameContentSize(data.data(), data.size());
+                        if (decodedSize != ZSTD_CONTENTSIZE_ERROR && decodedSize != ZSTD_CONTENTSIZE_UNKNOWN) {
+                            std::vector<uint8_t> decompressed(decodedSize);
+                            size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, data.data(), data.size());
+                            if (!ZSTD_isError(dSize)) {
+                                data = decompressed;
+                            }
+                        }
+                    }
                     auto msg = protocol::Message::Decode(data);
                     HandleMessage(msg);
                 } catch (const std::exception& e) {
@@ -431,32 +553,29 @@ void Server::DoAcceptWork() {
                 return;
             }
 
-            auto ticket_ptr = std::make_shared<std::string>();
-            ticket_ptr->resize(64);
+            auto ticket_ptr = std::make_shared<std::vector<uint8_t>>();
+            ticket_ptr->resize(65);
             
-            work_stream->async_read(asio::buffer(&((*ticket_ptr)[0]), 64),
+            work_stream->async_read(asio::buffer(*ticket_ptr),
                 [this, work_stream, ticket_ptr](std::error_code ec, std::size_t) {
                     if (!ec) {
-                        std::string ticket = ticket_ptr->c_str();
+                        bool use_compression = ((*ticket_ptr)[0] == 0x01);
+                        std::string ticket(reinterpret_cast<char*>(ticket_ptr->data() + 1), 64);
                         ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
 
                         std::lock_guard<std::mutex> lock(map_mutex_);
                         auto it_tcp = pending_user_conns_.find(ticket);
                         if (it_tcp != pending_user_conns_.end()) {
-                            std::cout << "Splicing user TCP connection and work connection for ticket: " << ticket << std::endl;
+                            std::cout << "Splicing user TCP connection and work connection for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
                             auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second));
-                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream);
+                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream, use_compression);
                             bridge->Start();
                             pending_user_conns_.erase(it_tcp);
                         } else {
                             auto it_udp = pending_udp_sessions_.find(ticket);
                             if (it_udp != pending_udp_sessions_.end()) {
-                                std::cout << "Splicing user UDP session and work connection for ticket: " << ticket << std::endl;
-                                // In a real UdpProxyListener, we might want to register this bridge to it
-                                // so that packets are routed to the right work connection.
-                                // For this implementation, the UdpBridge will handle communication for its endpoint.
-                                // Note: This needs more robust multi-packet handling.
-                                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, it_udp->second.listener->socket(), it_udp->second.endpoint);
+                                std::cout << "Splicing user UDP session and work connection for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
+                                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression);
                                 bridge->Start();
                                 pending_udp_sessions_.erase(it_udp);
                             } else {

@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = config["client"]["server_port"].value_or(7001);
             std::string token = config["client"]["token"].value_or("");
+            bool compression = config["client"]["compression"].value_or(false);
 
             cfrp::client::SslConfig ssl_config;
             if (auto ssl = config["client"]["ssl"].as_table()) {
@@ -42,7 +43,7 @@ int main(int argc, char** argv) {
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("");
             }
 
-            cfrp::client::Client client(server_addr, server_port, token, ssl_config);
+            cfrp::client::Client client(server_addr, server_port, token, ssl_config, compression);
 
             if (auto proxies = config["client"]["proxies"].as_array()) {
                 for (auto& elem : *proxies) {
