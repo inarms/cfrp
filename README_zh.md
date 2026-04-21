@@ -66,6 +66,7 @@ key_file = "server.key"
 server_addr = "你的服务器IP"
 server_port = 7001
 token = "你的密钥"
+name = "my-client"
 
 [client.ssl]
 enable = true
@@ -111,6 +112,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `server_addr`: 服务端 IP 或域名。
 - `server_port`: 服务端控制端口。
 - `token`: 身份验证密钥。
+- `name`: 客户端的可选唯一名称。如果省略，服务端将自动分配一个，并通过添加后缀（如 `client_1`）确保唯一性。
 - `compression`: 为所有连接启用 Zstd 压缩 (默认 `true`)。
 - `[client.ssl]`: SSL 设置。
   - `enable`: 启用 SSL/TLS。

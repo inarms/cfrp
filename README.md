@@ -67,6 +67,7 @@ Configure `config_client.toml`:
 server_addr = "your_server_ip"
 server_port = 7001
 token = "your_secret_token"
+name = "my-client"
 
 [client.ssl]
 enable = true
@@ -112,6 +113,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
+- `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
 - `compression`: Enable Zstd compression for all connections (default `true`).
 - `[client.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS.
