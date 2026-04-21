@@ -28,8 +28,8 @@ int main(int argc, char** argv) {
                 ssl_config.key_file = (*ssl)["key_file"].value_or("");
             }
             
-            cfrp::server::Server server(bind_addr, bind_port, token, ssl_config);
-            server.Run();
+            auto server = std::make_shared<cfrp::server::Server>(bind_addr, bind_port, token, ssl_config);
+            server->Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = config["client"]["server_port"].value_or(7001);
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("");
             }
 
-            cfrp::client::Client client(server_addr, server_port, token, client_name, ssl_config, compression, conf_d);
+            auto client = std::make_shared<cfrp::client::Client>(server_addr, server_port, token, client_name, ssl_config, compression, conf_d);
 
             if (auto proxies = config["client"]["proxies"].as_array()) {
                 for (auto& elem : *proxies) {
@@ -56,12 +56,12 @@ int main(int argc, char** argv) {
                         pc.local_ip = (*table)["local_ip"].value_or("127.0.0.1");
                         pc.local_port = static_cast<uint16_t>((*table)["local_port"].value_or(0));
                         pc.remote_port = static_cast<uint16_t>((*table)["remote_port"].value_or(0));
-                        client.AddProxy(pc);
+                        client->AddProxy(pc);
                     }
                 }
             }
 
-            client.Run();
+            client->Run();
         } else {
             std::cerr << "Error: Configuration must contain either a [server] or [client] section." << std::endl;
             return 1;
