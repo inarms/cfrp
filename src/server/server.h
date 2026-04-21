@@ -10,6 +10,7 @@
 #include <deque>
 #include "common/protocol.h"
 #include "common/stream.h"
+#include "common/mux.h"
 
 namespace cfrp {
 namespace server {
@@ -142,11 +143,10 @@ public:
 
 private:
     void DoAccept();
-    void DoAcceptWork();
+    void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
 
     asio::io_context io_context_;
     tcp::acceptor acceptor_;
-    tcp::acceptor work_acceptor_;
     std::string token_;
     SslConfig ssl_config_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;

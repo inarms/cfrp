@@ -21,6 +21,7 @@ add_executable(cfrp
     main.cpp
     src/server/server.cpp
     src/client/client.cpp
+    src/common/mux.cpp
 )
 
 target_include_directories(cfrp PRIVATE src)

@@ -8,6 +8,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 ## Features
 
 - **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
+- **TCP Multiplexing**: Consolidates all traffic into a **single TCP connection** using the **Yamux** protocol. No separate work port required.
 - **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**.
 - **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
 - **Resilient Client**: Automatic reconnection with exponential backoff (up to 10 minutes) if the server becomes unreachable.
@@ -17,9 +18,10 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 
 ## Architecture
 
-1. **Control Channel**: A persistent TCP connection (optionally SSL) between the client and server for command exchange. Uses **MessagePack** binary serialization for minimal overhead.
-2. **Work Connections**: Dynamic TCP connections established on-demand to bridge traffic. Supports **automatic compression detection**, allowing the server to handle both compressed and raw traffic from different clients simultaneously.
-3. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
+1. **Multiplexed Tunnel**: A single persistent TCP connection (optionally SSL) between the client and server. Uses **Yamux** to multiplex multiple logical streams over this single physical connection.
+2. **Control Stream**: A virtual stream used for command exchange using **MessagePack** binary serialization.
+3. **Data Streams**: Dynamic virtual streams established on-demand to bridge traffic. Supports **automatic compression detection**.
+4. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
 
 ## Getting Started
 

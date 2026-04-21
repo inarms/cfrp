@@ -6,6 +6,7 @@
 #include <vector>
 #include "common/protocol.h"
 #include "common/stream.h"
+#include "common/mux.h"
 
 namespace cfrp {
 namespace client {
@@ -67,7 +68,7 @@ private:
     uint8_t local_recv_buf_[65535];
 };
 
-class Client {
+class Client : public std::enable_shared_from_this<Client> {
 public:
     Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config, bool compression);
     void Run();
@@ -75,7 +76,7 @@ public:
 
 private:
     void DoConnect();
-    void OnConnect(const std::error_code& ec);
+    void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
     void SendMessage(protocol::MessageType type, const protocol::json& body);
     void DoReadHeader();
     void DoReadBody(uint32_t length);
@@ -88,7 +89,9 @@ private:
     void ScheduleReconnect();
 
     asio::io_context io_context_;
-    std::shared_ptr<common::AsyncStream> stream_;
+    std::shared_ptr<common::mux::Session> mux_session_;
+    std::shared_ptr<common::mux::MuxStream> control_stream_;
+    
     std::string server_addr_;
     uint16_t server_port_;
     std::string token_;

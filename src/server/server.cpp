@@ -468,7 +468,6 @@ void ControlSession::HandleLogin(const protocol::json& body) {
 // --- Server ---
 Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config)
     : acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
-      work_acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port + 1)),
       token_(token),
       ssl_config_(ssl_config) {
     
@@ -480,13 +479,12 @@ Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::stri
         std::cout << "SSL enabled on server." << std::endl;
     }
     
-    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (Work port: " << bind_port + 1 << ")" << std::endl;
+    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (TCP Mux Enabled)" << std::endl;
 }
 
 void Server::Run() {
     std::cout << "Starting cfrp server loop..." << std::endl;
     DoAccept();
-    DoAcceptWork();
     io_context_.run();
 }
 
@@ -505,7 +503,7 @@ void Server::DoAccept() {
         [this](std::error_code ec, tcp::socket socket) {
             if (ec) {
                 if (ec != asio::error::operation_aborted) {
-                    std::cerr << "Control accept error: " << ec.message() << std::endl;
+                    std::cerr << "Accept error: " << ec.message() << std::endl;
                     DoAccept();
                 }
                 return;
@@ -518,11 +516,15 @@ void Server::DoAccept() {
                 stream = std::make_shared<common::TcpStream>(std::move(socket));
             }
             
+            auto self = this;
             stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
                 if (!ec) {
-                    std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
+                    auto mux_session = std::make_shared<common::mux::Session>(stream, true);
+                    mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                        HandleNewMuxStream(mux_session, new_stream);
+                    });
                 } else {
-                    std::cerr << "SSL handshake failed for control connection: " << ec.message() << std::endl;
+                    std::cerr << "SSL handshake failed: " << ec.message() << std::endl;
                 }
             });
             
@@ -530,64 +532,51 @@ void Server::DoAccept() {
         });
 }
 
-void Server::DoAcceptWork() {
-    work_acceptor_.async_accept([this](std::error_code ec, tcp::socket socket) {
-        if (ec) {
-            if (ec != asio::error::operation_aborted) {
-                std::cerr << "Work accept error: " << ec.message() << std::endl;
-                DoAcceptWork();
-            }
-            return;
-        }
+void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream) {
+    // If it's the first stream (ID 1 for client initiated, or we check if ControlSession exists)
+    // Actually, we can use a more robust way: the first stream is always control.
+    // Subsequent streams are work connections and they start with the ticket.
+    
+    // We'll read the first few bytes to see if it's a MessagePack login (Control) or a ticket (Work).
+    // Or simpler: Stream ID 1 is Control. (Yamux client initiated streams are odd: 1, 3, 5...)
+    
+    if (stream->id() == 1) {
+        std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
+    } else {
+        // Work connection
+        auto ticket_ptr = std::make_shared<std::vector<uint8_t>>();
+        ticket_ptr->resize(65);
+        
+        stream->async_read(asio::buffer(*ticket_ptr),
+            [this, stream, ticket_ptr](std::error_code ec, std::size_t) {
+                if (!ec) {
+                    bool use_compression = ((*ticket_ptr)[0] == 0x01);
+                    std::string ticket(reinterpret_cast<char*>(ticket_ptr->data() + 1), 64);
+                    ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
 
-        std::shared_ptr<common::AsyncStream> work_stream;
-        if (ssl_config_.enable) {
-            work_stream = std::make_shared<common::SslStream>(std::move(socket), *ssl_ctx_);
-        } else {
-            work_stream = std::make_shared<common::TcpStream>(std::move(socket));
-        }
-
-        work_stream->async_handshake(asio::ssl::stream_base::server, [this, work_stream](std::error_code ec) {
-            if (ec) {
-                std::cerr << "SSL handshake failed for work connection: " << ec.message() << std::endl;
-                return;
-            }
-
-            auto ticket_ptr = std::make_shared<std::vector<uint8_t>>();
-            ticket_ptr->resize(65);
-            
-            work_stream->async_read(asio::buffer(*ticket_ptr),
-                [this, work_stream, ticket_ptr](std::error_code ec, std::size_t) {
-                    if (!ec) {
-                        bool use_compression = ((*ticket_ptr)[0] == 0x01);
-                        std::string ticket(reinterpret_cast<char*>(ticket_ptr->data() + 1), 64);
-                        ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
-
-                        std::lock_guard<std::mutex> lock(map_mutex_);
-                        auto it_tcp = pending_user_conns_.find(ticket);
-                        if (it_tcp != pending_user_conns_.end()) {
-                            std::cout << "Splicing user TCP connection and work connection for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
-                            auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second));
-                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream, use_compression);
+                    std::lock_guard<std::mutex> lock(map_mutex_);
+                    auto it_tcp = pending_user_conns_.find(ticket);
+                    if (it_tcp != pending_user_conns_.end()) {
+                        std::cout << "Splicing user TCP connection and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
+                        auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second));
+                        auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
+                        bridge->Start();
+                        pending_user_conns_.erase(it_tcp);
+                    } else {
+                        auto it_udp = pending_udp_sessions_.find(ticket);
+                        if (it_udp != pending_udp_sessions_.end()) {
+                            std::cout << "Splicing user UDP session and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
+                            auto bridge = std::make_shared<UdpBridge>(io_context_, stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression);
                             bridge->Start();
-                            pending_user_conns_.erase(it_tcp);
+                            pending_udp_sessions_.erase(it_udp);
                         } else {
-                            auto it_udp = pending_udp_sessions_.find(ticket);
-                            if (it_udp != pending_udp_sessions_.end()) {
-                                std::cout << "Splicing user UDP session and work connection for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
-                                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression);
-                                bridge->Start();
-                                pending_udp_sessions_.erase(it_udp);
-                            } else {
-                                std::cerr << "No pending connection/session for ticket: " << ticket << std::endl;
-                            }
+                            std::cerr << "No pending connection/session for ticket: " << ticket << std::endl;
+                            stream->close();
                         }
                     }
-                });
-        });
-
-        DoAcceptWork();
-    });
+                }
+            });
+    }
 }
 
 } // namespace server

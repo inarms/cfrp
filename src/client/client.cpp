@@ -242,7 +242,7 @@ Client::Client(const std::string& server_addr, uint16_t server_port, const std::
         std::cout << "SSL enabled on client." << std::endl;
     }
     
-    std::cout << "Client initialized. Target server: " << server_addr << ":" << server_port << std::endl;
+    std::cout << "Client initialized (TCP Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
 }
 
 void Client::Run() {
@@ -263,14 +263,15 @@ void Client::DoConnect() {
     socket_ptr->async_connect(endpoint_,
         [this, socket_ptr](std::error_code ec) {
             if (!ec) {
+                std::shared_ptr<common::AsyncStream> stream;
                 if (ssl_config_.enable) {
-                    stream_ = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                    stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
                 } else {
-                    stream_ = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
+                    stream = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
                 }
                 
-                stream_->async_handshake(asio::ssl::stream_base::client, [this](std::error_code ec) {
-                    OnConnect(ec);
+                stream->async_handshake(asio::ssl::stream_base::client, [this, stream](std::error_code ec) {
+                    OnConnect(ec, stream);
                 });
             } else {
                 HandleDisconnect("Connect failed: " + ec.message());
@@ -278,10 +279,17 @@ void Client::DoConnect() {
         });
 }
 
-void Client::OnConnect(const std::error_code& ec) {
+void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream) {
     if (!ec) {
-        std::cout << "Connected to server (Secure)." << std::endl;
-        reconnect_delay_sec_ = 0; // Reset delay on success
+        std::cout << "Connected to server. Initializing MuxSession..." << std::endl;
+        reconnect_delay_sec_ = 0;
+        
+        mux_session_ = std::make_shared<common::mux::Session>(underlying_stream, false);
+        mux_session_->start([](std::shared_ptr<common::mux::MuxStream>) {
+            // Client doesn't expect server to open streams in this model
+        });
+        
+        control_stream_ = mux_session_->open_stream();
         DoLogin();
         DoReadHeader();
     } else {
@@ -291,8 +299,9 @@ void Client::OnConnect(const std::error_code& ec) {
 
 void Client::HandleDisconnect(const std::string& reason) {
     std::cout << reason << std::endl;
-    if (stream_) {
-        stream_->close();
+    if (mux_session_) {
+        mux_session_->stop();
+        mux_session_.reset();
     }
     ScheduleReconnect();
 }
@@ -334,7 +343,7 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
     std::memcpy(data->data(), &final_len, sizeof(final_len));
     std::memcpy(data->data() + sizeof(final_len), to_send_body.data(), to_send_body.size());
     
-    stream_->async_write(asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
+    control_stream_->async_write(asio::buffer(*data), [this, data](std::error_code ec, std::size_t) {
         if (ec) {
             std::cerr << "Failed to send message: " << ec.message() << std::endl;
         }
@@ -342,13 +351,13 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
 }
 
 void Client::DoReadHeader() {
-    stream_->async_read(asio::buffer(&header_, sizeof(header_)),
+    control_stream_->async_read(asio::buffer(&header_, sizeof(header_)),
         [this](std::error_code ec, std::size_t) {
             if (!ec) {
                 uint32_t length = header_.body_length & protocol::LENGTH_MASK;
                 DoReadBody(length);
             } else {
-                HandleDisconnect("Connection to server closed: " + ec.message());
+                HandleDisconnect("Control stream closed: " + ec.message());
             }
         });
 }
@@ -356,7 +365,7 @@ void Client::DoReadHeader() {
 void Client::DoReadBody(uint32_t length) {
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
     body_data_.resize(length);
-    stream_->async_read(asio::buffer(body_data_),
+    control_stream_->async_read(asio::buffer(body_data_),
         [this, is_compressed](std::error_code ec, std::size_t) {
             if (!ec) {
                 try {
@@ -378,7 +387,7 @@ void Client::DoReadBody(uint32_t length) {
                 }
                 DoReadHeader();
             } else {
-                HandleDisconnect("Connection to server closed: " + ec.message());
+                HandleDisconnect("Control stream closed: " + ec.message());
             }
         });
 }
@@ -433,43 +442,26 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
 
     auto pc = *it;
     auto local_socket = std::make_shared<tcp::socket>(io_context_);
-    auto work_socket_raw = std::make_shared<tcp::socket>(io_context_);
-
+    
     local_socket->async_connect(tcp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port),
-        [this, local_socket, work_socket_raw, ticket, pc](std::error_code ec) {
+        [this, local_socket, ticket, pc](std::error_code ec) {
             if (!ec) {
-                work_socket_raw->async_connect(tcp::endpoint(asio::ip::make_address(server_addr_), server_port_ + 1),
-                    [this, local_socket, work_socket_raw, ticket, pc](std::error_code ec) {
+                auto work_stream = mux_session_->open_stream();
+                
+                auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
+                ticket_buf->push_back(compression_ ? 0x01 : 0x00);
+                ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
+                ticket_buf->resize(65, ' ');
+                
+                work_stream->async_write(asio::buffer(*ticket_buf),
+                    [this, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
                         if (!ec) {
-                            std::shared_ptr<common::AsyncStream> work_stream;
-                            if (ssl_config_.enable) {
-                                work_stream = std::make_shared<common::SslStream>(std::move(*work_socket_raw), *ssl_ctx_);
-                            } else {
-                                work_stream = std::make_shared<common::TcpStream>(std::move(*work_socket_raw));
-                            }
-                            
-                            work_stream->async_handshake(asio::ssl::stream_base::client, [this, local_socket, work_stream, ticket, pc](std::error_code ec) {
-                                if (!ec) {
-                                    auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
-                                    ticket_buf->push_back(compression_ ? 0x01 : 0x00);
-                                    ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
-                                    ticket_buf->resize(65, ' ');
-                                    
-                                    work_stream->async_write(asio::buffer(*ticket_buf),
-                                        [this, local_socket, work_stream, ticket_buf](std::error_code ec, std::size_t) {
-                                            if (!ec) {
-                                                std::cout << "Bridging local service and server work connection (Compressed: " << compression_ << ")" << std::endl;
-                                                auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
-                                                auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_);
-                                                bridge->Start();
-                                            }
-                                        });
-                                } else {
-                                    std::cerr << "SSL handshake failed for work connection: " << ec.message() << std::endl;
-                                }
-                            });
+                            std::cout << "Bridging local service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
+                            auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
+                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_);
+                            bridge->Start();
                         } else {
-                            std::cerr << "Failed to connect to server work port: " << ec.message() << std::endl;
+                            std::cerr << "Failed to send ticket over mux stream" << std::endl;
                         }
                     });
             } else {
@@ -479,39 +471,21 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
 }
 
 void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& ticket) {
-    auto work_socket_raw = std::make_shared<tcp::socket>(io_context_);
-
-    work_socket_raw->async_connect(tcp::endpoint(asio::ip::make_address(server_addr_), server_port_ + 1),
-        [this, work_socket_raw, ticket, pc](std::error_code ec) {
+    auto work_stream = mux_session_->open_stream();
+    
+    auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
+    ticket_buf->push_back(compression_ ? 0x01 : 0x00);
+    ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
+    ticket_buf->resize(65, ' ');
+    
+    work_stream->async_write(asio::buffer(*ticket_buf),
+        [this, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
             if (!ec) {
-                std::shared_ptr<common::AsyncStream> work_stream;
-                if (ssl_config_.enable) {
-                    work_stream = std::make_shared<common::SslStream>(std::move(*work_socket_raw), *ssl_ctx_);
-                } else {
-                    work_stream = std::make_shared<common::TcpStream>(std::move(*work_socket_raw));
-                }
-                
-                work_stream->async_handshake(asio::ssl::stream_base::client, [this, work_stream, ticket, pc](std::error_code ec) {
-                    if (!ec) {
-                        auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
-                        ticket_buf->push_back(compression_ ? 0x01 : 0x00);
-                        ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
-                        ticket_buf->resize(65, ' ');
-                        
-                        work_stream->async_write(asio::buffer(*ticket_buf),
-                            [this, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
-                                if (!ec) {
-                                    std::cout << "Bridging local UDP service and server work connection (Compressed: " << compression_ << ")" << std::endl;
-                                    auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, udp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port), compression_);
-                                    bridge->Start();
-                                }
-                            });
-                    } else {
-                        std::cerr << "SSL handshake failed for UDP work connection: " << ec.message() << std::endl;
-                    }
-                });
+                std::cout << "Bridging local UDP service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
+                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, udp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port), compression_);
+                bridge->Start();
             } else {
-                std::cerr << "Failed to connect to server work port for UDP: " << ec.message() << std::endl;
+                std::cerr << "Failed to send ticket over mux stream for UDP" << std::endl;
             }
         });
 }
