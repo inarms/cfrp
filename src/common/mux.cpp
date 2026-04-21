@@ -53,7 +53,6 @@ void MuxStream::async_read_some(asio::mutable_buffer buffer, std::function<void(
 }
 
 void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    // Simplified: we send the whole buffer as one or more frames, respecting remote window.
     auto self(shared_from_this());
     auto session = session_.lock();
     if (!session) {
@@ -128,7 +127,6 @@ void MuxStream::handle_data(std::vector<uint8_t> data) {
     read_buffer_.insert(read_buffer_.end(), data.begin(), data.end());
     do_read_from_buffer();
     
-    // Send window update if needed
     auto session = session_.lock();
     if (session && read_buffer_.size() < 128 * 1024) {
         Header h;
@@ -165,7 +163,6 @@ void MuxStream::do_read_from_buffer() {
         size_t to_copy = std::min(pr.buffer.size(), read_buffer_.size());
         
         if (pr.read_all && to_copy < pr.buffer.size()) {
-            // Wait for more data
             break;
         }
 
@@ -234,9 +231,17 @@ void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::functio
     }
     pw->handler = std::move(handler);
 
-    std::lock_guard<std::mutex> lock(write_mutex_);
-    write_queue_.push_back(pw);
-    if (!is_writing_) {
+    bool kick_write = false;
+    {
+        std::lock_guard<std::mutex> lock(write_mutex_);
+        write_queue_.push_back(pw);
+        if (!is_writing_) {
+            is_writing_ = true;
+            kick_write = true;
+        }
+    }
+    
+    if (kick_write) {
         do_write();
     }
 }
@@ -291,6 +296,8 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
                     std::lock_guard<std::mutex> lock(streams_mutex_);
                     streams_[h.stream_id] = stream;
                 }
+                
+                // Invoke callback outside of mutex if possible, or ensure callback doesn't deadlock
                 if (on_new_stream_) on_new_stream_(stream);
                 
                 Header resp;
@@ -328,7 +335,6 @@ void Session::do_write() {
             is_writing_ = false;
             return;
         }
-        is_writing_ = true;
         pw = write_queue_.front();
     }
 

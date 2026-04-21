@@ -122,6 +122,8 @@ private:
     Server& server_;
     std::shared_ptr<common::AsyncStream> stream_;
     asio::io_context& io_context_;
+    std::string client_endpoint_;
+    std::string client_name_;
     protocol::Header header_;
     std::vector<char> body_data_;
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
@@ -138,6 +140,9 @@ public:
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
     void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
     
+    std::string AllocateClientName(const std::string& requested_name);
+    void ReleaseClientName(const std::string& name);
+
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
 
@@ -158,6 +163,7 @@ private:
 
     std::map<std::string, tcp::socket> pending_user_conns_;
     std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
+    std::vector<std::string> active_client_names_;
     std::mutex map_mutex_;
 };
 

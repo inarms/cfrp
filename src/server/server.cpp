@@ -311,14 +311,21 @@ void ProxyListener::DoAccept() {
 
 // --- ControlSession ---
 void ControlSession::Start() {
-    auto endpoint = stream_->lowest_layer().remote_endpoint();
-    std::cout << "[Server] New client connecting from " << endpoint << "..." << std::endl;
+    try {
+        auto endpoint = stream_->lowest_layer().remote_endpoint();
+        std::stringstream ss;
+        ss << endpoint;
+        client_endpoint_ = ss.str();
+    } catch (...) {
+        client_endpoint_ = "unknown";
+    }
+    std::cout << "[Server] New client connecting from " << client_endpoint_ << "..." << std::endl;
     DoReadHeader();
 }
 
 void ControlSession::Stop() {
-    auto endpoint = stream_->lowest_layer().remote_endpoint();
-    std::cout << "[Server] Client disconnected: " << endpoint << std::endl;
+    std::cout << "[Server] Client disconnected: " << client_endpoint_ << " [" << client_name_ << "]" << std::endl;
+    server_.ReleaseClientName(client_name_);
     for (auto& proxy : proxies_) {
         proxy->Stop();
     }
@@ -452,13 +459,15 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
 
 void ControlSession::HandleLogin(const protocol::json& body) {
     std::string token = body.value("token", "");
+    std::string requested_name = body.value("name", "");
     protocol::json resp;
     if (token == server_.GetToken()) {
-        auto endpoint = stream_->lowest_layer().remote_endpoint();
-        std::cout << "[Server] Client authenticated successfully: " << endpoint << std::endl;
-        std::cout << "[Server] Client is READY." << std::endl;
+        client_name_ = server_.AllocateClientName(requested_name);
+        std::cout << "[Server] Client authenticated successfully: " << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
+        std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
         authenticated_ = true;
         resp["status"] = "ok";
+        resp["name"] = client_name_;
     } else {
         std::cout << "Client authentication failed." << std::endl;
         resp["status"] = "error";
@@ -501,6 +510,30 @@ void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket) {
 void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint) {
     std::lock_guard<std::mutex> lock(map_mutex_);
     pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint});
+}
+
+std::string Server::AllocateClientName(const std::string& requested_name) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::string name = requested_name;
+    if (name.empty()) {
+        name = "client";
+    }
+
+    std::string final_name = name;
+    int suffix = 1;
+    while (std::find(active_client_names_.begin(), active_client_names_.end(), final_name) != active_client_names_.end()) {
+        final_name = name + "_" + std::to_string(suffix++);
+    }
+    active_client_names_.push_back(final_name);
+    return final_name;
+}
+
+void Server::ReleaseClientName(const std::string& name) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    auto it = std::find(active_client_names_.begin(), active_client_names_.end(), name);
+    if (it != active_client_names_.end()) {
+        active_client_names_.erase(it);
+    }
 }
 
 void Server::DoAccept() {

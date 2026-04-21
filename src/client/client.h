@@ -70,7 +70,7 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config, bool compression);
+    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression);
     void Run();
     void AddProxy(const ProxyConfig& proxy);
 
@@ -95,6 +95,7 @@ private:
     std::string server_addr_;
     uint16_t server_port_;
     std::string token_;
+    std::string name_;
     SslConfig ssl_config_;
     bool compression_ = false;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;

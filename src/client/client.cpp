@@ -218,10 +218,11 @@ void UdpBridge::DoReadFromLocal() {
 }
 
 // --- Client ---
-Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const SslConfig& ssl_config, bool compression)
+Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression)
     : server_addr_(server_addr),
       server_port_(server_port),
       token_(token),
+      name_(name),
       ssl_config_(ssl_config),
       compression_(compression),
       endpoint_(asio::ip::make_address(server_addr), server_port),
@@ -397,13 +398,18 @@ void Client::DoReadBody(uint32_t length) {
 void Client::DoLogin() {
     protocol::json body;
     body["token"] = token_;
+    body["name"] = name_;
     SendMessage(protocol::MessageType::Login, body);
 }
 
 void Client::HandleMessage(const protocol::Message& msg) {
     if (msg.type == protocol::MessageType::LoginResp) {
         if (msg.body["status"] == "ok") {
-            std::cout << "Authenticated successfully." << std::endl;
+            std::string assigned_name = msg.body.value("name", "");
+            if (!assigned_name.empty()) {
+                name_ = assigned_name;
+            }
+            std::cout << "Authenticated successfully as [" << name_ << "]" << std::endl;
             RegisterProxies();
         } else {
             std::cerr << "Authentication failed: " << msg.body.value("message", "unknown error") << std::endl;
