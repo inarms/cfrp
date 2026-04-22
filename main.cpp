@@ -21,6 +21,14 @@ int main(int argc, char** argv) {
         std::shared_ptr<cfrp::server::Server> server;
         std::shared_ptr<cfrp::client::Client> client;
 
+        asio::signal_set signals(io_context, SIGINT, SIGTERM);
+        signals.async_wait([&](std::error_code /*ec*/, int /*signo*/) {
+            std::cout << "\nCaught signal, exiting..." << std::endl;
+            if (server) server->Stop();
+            if (client) client->Stop();
+            io_context.stop();
+        });
+
         if (config["server"]) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);

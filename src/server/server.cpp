@@ -534,6 +534,19 @@ void Server::Run() {
     }
 }
 
+void Server::Stop() {
+    std::cout << "Stopping server..." << std::endl;
+    std::error_code ec;
+    acceptor_.close(ec);
+    udp_socket_.close(ec);
+    
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto& pair : quic_sessions_) {
+        pair.second->close_session();
+    }
+    quic_sessions_.clear();
+}
+
 void Server::DoUdpRead() {
     auto endpoint = std::make_shared<udp::endpoint>();
     udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
@@ -567,8 +580,17 @@ void Server::DoUdpRead() {
                         });
                     });
 
+                    session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
+                        std::cout << "[Server] QUIC session closed for " << *endpoint << std::endl;
+                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        quic_sessions_.erase(*endpoint);
+                    });
+
                     session->init(ssl_ctx_->native_handle(), &n_dcid, &n_scid);
-                    quic_sessions_[*endpoint] = session;
+                    {
+                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        quic_sessions_[*endpoint] = session;
+                    }
                     it = quic_sessions_.find(*endpoint);
                 }
                 it->second->handle_packet(udp_recv_buf_, length);

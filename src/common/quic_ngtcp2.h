@@ -63,9 +63,11 @@ public:
     
     void set_on_connected(std::function<void(std::shared_ptr<QuicSession>)> cb) { on_connected_cb_ = std::move(cb); }
     void set_on_new_stream(std::function<void(std::shared_ptr<QuicStream>)> cb) { on_new_stream_cb_ = std::move(cb); }
+    void set_on_closed(std::function<void(std::shared_ptr<QuicSession>)> cb) { on_closed_cb_ = std::move(cb); }
     void trigger_connected() { if (on_connected_cb_) on_connected_cb_(shared_from_this()); }
     
     std::shared_ptr<QuicStream> open_stream();
+    void close_session();
     void close_stream(int64_t stream_id);
     void write_stream(int64_t stream_id, const uint8_t* data, size_t len);
 
@@ -80,10 +82,12 @@ public:
 
 private:
     void schedule_timer();
+    void check_closed();
 
     asio::ip::udp::socket& socket_;
     asio::ip::udp::endpoint remote_endpoint_;
     bool is_server_;
+    bool closed_notified_ = false;
     
     ngtcp2_conn* conn_ = nullptr;
     WOLFSSL* ssl_ = nullptr;
@@ -99,6 +103,7 @@ private:
     asio::steady_timer timer_;
     std::function<void(std::shared_ptr<QuicSession>)> on_connected_cb_;
     std::function<void(std::shared_ptr<QuicStream>)> on_new_stream_cb_;
+    std::function<void(std::shared_ptr<QuicSession>)> on_closed_cb_;
 };
 
 } // namespace quic

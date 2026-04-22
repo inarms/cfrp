@@ -60,7 +60,8 @@ void QuicStream::close() {
 asio::any_io_executor QuicStream::get_executor() {
     auto session = session_.lock();
     if (session) return session->get_executor();
-    throw asio::system_error(asio::error::operation_aborted);
+    // Return a default executor instead of throwing to avoid crashing during cleanup
+    return asio::system_executor();
 }
 
 std::string QuicStream::remote_endpoint_string() {
@@ -153,6 +154,12 @@ QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint 
 }
 
 QuicSession::~QuicSession() {
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        for (auto& pair : streams_) {
+            pair.second->handle_close();
+        }
+    }
     if (conn_) ngtcp2_conn_del(conn_);
     if (ssl_) {
         auto conn_ref = static_cast<ngtcp2_crypto_conn_ref*>(wolfSSL_get_app_data(ssl_));
@@ -255,9 +262,12 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
     ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
     int res = ngtcp2_conn_read_pkt(conn_, &path_, nullptr, data, len, ts);
     if (res != 0) {
-        std::cerr << "[QUIC] Packet read error: " << ngtcp2_strerror(res) << std::endl;
+        if (res != NGTCP2_ERR_DRAINING) {
+            std::cerr << "[QUIC] Packet read error: " << ngtcp2_strerror(res) << " (" << res << ")" << std::endl;
+        }
     }
     send_packets();
+    check_closed();
 }
 
 void QuicSession::send_packets() {
@@ -267,10 +277,16 @@ void QuicSession::send_packets() {
     for (;;) {
         ngtcp2_pkt_info pi;
         ngtcp2_ssize res = ngtcp2_conn_write_pkt(conn_, &path_, &pi, buf, sizeof(buf), ts);
-        if (res <= 0) break;
+        if (res <= 0) {
+            if (res < 0 && res != NGTCP2_ERR_WRITE_MORE) {
+                 // std::cerr << "[QUIC] Packet write error: " << ngtcp2_strerror(res) << std::endl;
+            }
+            break;
+        }
         socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_);
     }
     schedule_timer();
+    check_closed();
 }
 
 std::shared_ptr<QuicStream> QuicSession::open_stream() {
@@ -281,6 +297,21 @@ std::shared_ptr<QuicStream> QuicSession::open_stream() {
     { std::lock_guard<std::mutex> lock(streams_mutex_); streams_[stream_id] = stream; }
     std::cout << "[QUIC] Local stream opened: " << stream_id << std::endl;
     return stream;
+}
+
+void QuicSession::close_session() {
+    if (!conn_ || closed_notified_) return;
+    uint8_t buf[1500];
+    ngtcp2_pkt_info pi;
+    ngtcp2_ccerr ccerr;
+    ngtcp2_ccerr_default(&ccerr);
+    
+    ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    ngtcp2_ssize res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
+    if (res > 0) {
+        socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_);
+    }
+    check_closed();
 }
 
 void QuicSession::close_stream(int64_t stream_id) {
@@ -343,15 +374,41 @@ void QuicSession::schedule_timer() {
             if (!conn_) return;
             ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
             send_packets();
+            check_closed();
         });
-    } else {
+    } else if (expiry != UINT64_MAX) {
         timer_.expires_after(std::chrono::nanoseconds(expiry - now));
         timer_.async_wait([this, self = shared_from_this()](std::error_code ec) {
             if (!ec && conn_) {
                 ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
                 send_packets();
+                check_closed();
             }
         });
+    }
+}
+
+void QuicSession::check_closed() {
+    if (!conn_ || closed_notified_) return;
+    if (ngtcp2_conn_in_closing_period(conn_) || ngtcp2_conn_in_draining_period(conn_)) {
+        closed_notified_ = true;
+
+        // Notify all streams that the session is closed
+        {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            for (auto& pair : streams_) {
+                pair.second->handle_close();
+            }
+            // We don't clear streams_ here yet as they might still need to 
+            // complete their pending reads (EOF).
+        }
+
+        if (on_closed_cb_) {
+            auto cb = on_closed_cb_;
+            asio::post(get_executor(), [this, cb, self = shared_from_this()]() {
+                cb(self);
+            });
+        }
     }
 }
 

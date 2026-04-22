@@ -261,6 +261,10 @@ void Client::Run() {
     DoConnect();
 }
 
+void Client::Stop() {
+    HandleDisconnect("Client stopping...");
+}
+
 void Client::AddProxy(const ProxyConfig& proxy) {
     proxies_.push_back(proxy);
 }
@@ -314,6 +318,10 @@ void Client::DoQuicConnect() {
         }
     });
 
+    quic_session_->set_on_closed([this](std::shared_ptr<common::quic::QuicSession> session) {
+        HandleDisconnect("QUIC session closed by peer");
+    });
+
     quic_session_->send_packets(); // Start handshake
     DoUdpRead();
 }
@@ -356,6 +364,10 @@ void Client::HandleDisconnect(const std::string& reason) {
     if (mux_session_) {
         mux_session_->stop();
         mux_session_.reset();
+    }
+    if (quic_session_) {
+        quic_session_->close_session();
+        quic_session_.reset();
     }
     ScheduleReconnect();
 }

@@ -145,6 +145,7 @@ class Server {
 public:
     Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "quic");
     void Run();
+    void Stop();
 
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
     void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
