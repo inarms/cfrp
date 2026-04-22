@@ -33,6 +33,11 @@ struct SslConfig {
     std::string ca_file = "certs/ca.crt";
 };
 
+struct PortRange {
+    uint16_t start;
+    uint16_t end;
+};
+
 class Server;
 class ControlSession;
 
@@ -145,7 +150,7 @@ private:
 
 class Server {
 public:
-    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto");
+    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto", const std::vector<PortRange>& allowed_ports = {});
     void Run();
     void Stop();
 
@@ -157,6 +162,7 @@ public:
 
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
+    bool IsPortAllowed(uint16_t port) const;
 
 private:
     void DoAccept();
@@ -170,6 +176,7 @@ private:
     std::string token_;
     std::string protocol_;
     SslConfig ssl_config_;
+    std::vector<PortRange> allowed_ports_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
     struct UdpSessionInfo {

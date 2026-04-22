@@ -6,6 +6,18 @@
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
 
+static cfrp::server::PortRange ParsePortRange(const std::string& s) {
+    size_t dash = s.find('-');
+    if (dash != std::string::npos) {
+        uint16_t start = static_cast<uint16_t>(std::stoi(s.substr(0, dash)));
+        uint16_t end = static_cast<uint16_t>(std::stoi(s.substr(dash + 1)));
+        return {start, end};
+    } else {
+        uint16_t port = static_cast<uint16_t>(std::stoi(s));
+        return {port, port};
+    }
+}
+
 int main(int argc, char** argv) {
     CLI::App app{"cfrp - A C++ Fast Reverse Proxy"};
 
@@ -43,8 +55,21 @@ int main(int argc, char** argv) {
                 ssl_config.key_file = (*ssl)["key_file"].value_or("certs/server.key");
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
+
+            std::vector<cfrp::server::PortRange> allowed_ports;
+            if (auto ports = config["server"]["allowed_ports"].as_array()) {
+                for (auto& elem : *ports) {
+                    if (auto s = elem.as_string()) {
+                        try {
+                            allowed_ports.push_back(ParsePortRange(s->get()));
+                        } catch (...) {}
+                    } else if (auto i = elem.as_integer()) {
+                        allowed_ports.push_back({static_cast<uint16_t>(i->get()), static_cast<uint16_t>(i->get())});
+                    }
+                }
+            }
             
-            server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol));
+            server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports));
             server->Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");

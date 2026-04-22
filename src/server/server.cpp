@@ -221,7 +221,7 @@ UdpProxyListener::UdpProxyListener(Server& server, asio::io_context& io_context,
       socket_(io_context, udp::endpoint(udp::v4(), port)),
       session_(session),
       proxy_name_(proxy_name) {
-    std::cout << "UDP Proxy listener started for [" << proxy_name << "] on port " << port << std::endl;
+    std::cout << "UDP Proxy listener started for [" << proxy_name_ << "] on port " << port << std::endl;
 }
 
 void UdpProxyListener::Start() {
@@ -273,7 +273,7 @@ ProxyListener::ProxyListener(Server& server, asio::io_context& io_context, uint1
       acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
       session_(session),
       proxy_name_(proxy_name) {
-    std::cout << "Proxy listener started for [" << proxy_name << "] on port " << port << std::endl;
+    std::cout << "Proxy listener started for [" << proxy_name_ << "] on port " << port << std::endl;
 }
 
 void ProxyListener::Start() {
@@ -428,6 +428,16 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
         std::string name = msg.body["name"];
         uint16_t remote_port = msg.body["remote_port"];
         std::string type = msg.body.value("type", "tcp");
+
+        if (!server_.IsPortAllowed(remote_port)) {
+            std::cerr << "[Server] Proxy registration rejected: port " << remote_port << " is not in allowed ranges." << std::endl;
+            protocol::json resp;
+            resp["status"] = "error";
+            resp["message"] = "port not allowed";
+            resp["name"] = name;
+            SendMessage(protocol::MessageType::RegisterProxyResp, resp);
+            return;
+        }
         
         try {
             if (type == "udp") {
@@ -499,13 +509,14 @@ void ControlSession::HandleLogin(const protocol::json& body) {
 }
 
 // --- Server ---
-Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol)
+Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol, const std::vector<PortRange>& allowed_ports)
     : io_context_(io_context),
       acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       udp_socket_(io_context_, udp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       token_(token),
       protocol_(protocol),
-      ssl_config_(ssl_config) {
+      ssl_config_(ssl_config),
+      allowed_ports_(allowed_ports) {
     
     if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
         if (ssl_config_.auto_generate) {
@@ -722,6 +733,16 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                 }
             });
     }
+}
+
+bool Server::IsPortAllowed(uint16_t port) const {
+    if (allowed_ports_.empty()) return true;
+    for (const auto& range : allowed_ports_) {
+        if (port >= range.start && port <= range.end) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace server

@@ -4,6 +4,9 @@ bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "secret_token"
 
+# Optional: List of allowed ports or port ranges for proxies
+# allowed_ports = [6000, "8000-9000"]
+
 [server.ssl]
 enable = false
 auto_generate = true
