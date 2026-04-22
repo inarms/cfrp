@@ -38,8 +38,10 @@ int main(int argc, char** argv) {
             cfrp::server::SslConfig ssl_config;
             if (auto ssl = config["server"]["ssl"].as_table()) {
                 ssl_config.enable = (*ssl)["enable"].value_or(false);
-                ssl_config.cert_file = (*ssl)["cert_file"].value_or("");
-                ssl_config.key_file = (*ssl)["key_file"].value_or("");
+                ssl_config.auto_generate = (*ssl)["auto_generate"].value_or(true);
+                ssl_config.cert_file = (*ssl)["cert_file"].value_or("certs/server.crt");
+                ssl_config.key_file = (*ssl)["key_file"].value_or("certs/server.key");
+                ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
             
             server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol));
@@ -57,7 +59,7 @@ int main(int argc, char** argv) {
             if (auto ssl = config["client"]["ssl"].as_table()) {
                 ssl_config.enable = (*ssl)["enable"].value_or(false);
                 ssl_config.verify_peer = (*ssl)["verify_peer"].value_or(false);
-                ssl_config.ca_file = (*ssl)["ca_file"].value_or("");
+                ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
             client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol));

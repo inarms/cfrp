@@ -29,6 +29,7 @@ add_executable(cfrp
     src/client/client.cpp
     src/common/mux.cpp
     src/common/quic_ngtcp2.cpp
+    src/common/ssl_utils.cpp
 )
 
 target_include_directories(cfrp PRIVATE 

@@ -24,7 +24,7 @@ using asio::ip::udp;
 struct SslConfig {
     bool enable = false;
     bool verify_peer = false;
-    std::string ca_file;
+    std::string ca_file = "certs/ca.crt";
 };
 
 struct ProxyConfig {

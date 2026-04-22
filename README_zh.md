@@ -7,6 +7,7 @@
 ## 特性
 
 - **高性能**: 基于 Standalone Asio 构建，支持非阻塞异步 I/O。
+- **零配置 (开箱即用安全性)**: 如果缺失，自动生成 SSL/QUIC 证书和 CA 链。无需手动运行 OpenSSL 命令。
 - **TCP/QUIC 多路复用**: 使用自定义的轻量级多路复用协议将所有流量合并到 **单个连接** 中。支持传统的 TCP 和现代的 **QUIC (基于 ngtcp2)** 协议。
 - **自动协议模式**:
   - **服务端**: 在同一个端口上自动处理 TCP 和 QUIC 客户端。
@@ -17,6 +18,13 @@
 - **动态代理**: 支持在单个控制连接上运行多个 **TCP** 和 **UDP** 代理。支持通过 `conf.d` 目录进行 **热重载**。
 - **轻量级**: 极简依赖 (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`)。使用紧凑的 **二进制协议** (MessagePack) 以实现极低的开销。
 - **清晰配置**: 使用 TOML 格式，易于阅读和配置服务端及客户端设置。
+
+## 零配置安全性
+
+`cfrp` 让加密隧道的建立变得毫不费力。当您启用 QUIC 或 TLS 时：
+1. **自动 PKI**: 如果证书缺失或过期，服务端会自动生成根 CA 和服务端证书。
+2. **自动管理**: 证书存储在 `certs/` 目录中，并在临近过期时自动更新。
+3. **轻松分发**: 只需将生成的 `certs/ca.crt` 复制到您的客户端设备，即可开启完整的对端验证 (verify_peer)。
 
 ## 架构
 
@@ -110,9 +118,11 @@ ssh -p 6000 用户名@你的服务器IP
 - `token`: 与客户端共享的身份验证密钥。
 - `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `auto`。
 - `[server.ssl]`: SSL 设置。
-  - `enable`: 为控制连接和工作连接启用 SSL/TLS。
-  - `cert_file`: 证书文件路径。
-  - `key_file`: 私钥文件路径。
+  - `enable`: 为控制连接和工作连接启用 SSL/TLS (仅限 TCP)。
+  - `auto_generate`: 如果证书缺失或过期，自动生成 CA 和服务端证书 (默认为 `true`)。
+  - `cert_file`: 证书文件路径 (默认 `certs/server.crt`)。
+  - `key_file`: 私钥文件路径 (默认 `certs/server.key`)。
+  - `ca_file`: CA 证书文件路径 (默认 `certs/ca.crt`)。
 
 ### 客户端配置 ([client])
 - `server_addr`: 服务端 IP 或域名。

@@ -27,8 +27,10 @@ using asio::ip::udp;
 
 struct SslConfig {
     bool enable = false;
-    std::string cert_file;
-    std::string key_file;
+    bool auto_generate = true;
+    std::string cert_file = "certs/server.crt";
+    std::string key_file = "certs/server.key";
+    std::string ca_file = "certs/ca.crt";
 };
 
 class Server;

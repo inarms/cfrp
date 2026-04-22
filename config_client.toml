@@ -10,7 +10,7 @@ compression = true
 [client.ssl]
 enable = false
 verify_peer = false
-# ca_file = "ca.crt"
+# ca_file = "certs/ca.crt"
 
 [[client.proxies]]
 name = "ssh"

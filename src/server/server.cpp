@@ -1,5 +1,6 @@
 #include "server.h"
 #include "common/quic_ngtcp2.h"
+#include "common/ssl_utils.h"
 #include <iostream>
 #include <chrono>
 #include <zstd.h>
@@ -507,11 +508,23 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
       ssl_config_(ssl_config) {
     
     if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
+        if (ssl_config_.auto_generate) {
+            common::CertConfig cert_config;
+            cert_config.ca_cert_file = ssl_config_.ca_file;
+            cert_config.server_cert_file = ssl_config_.cert_file;
+            cert_config.server_key_file = ssl_config_.key_file;
+            // Derive ca_key_file from ca_cert_file by changing extension to .key if not specified differently
+            // but for now we'll just use a default or derive it.
+            cert_config.ca_key_file = std::string(ssl_config_.ca_file).replace(ssl_config_.ca_file.find(".crt"), 4, ".key");
+            
+            common::SslUtils::EnsureCertificates(cert_config);
+        }
+
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::single_dh_use);
         
-        std::string cert = ssl_config_.cert_file.empty() ? "server.crt" : ssl_config_.cert_file;
-        std::string key = ssl_config_.key_file.empty() ? "server.key" : ssl_config_.key_file;
+        std::string cert = ssl_config_.cert_file;
+        std::string key = ssl_config_.key_file;
 
         try {
             ssl_ctx_->use_certificate_chain_file(cert);

@@ -8,6 +8,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 ## Features
 
 - **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
+- **Zero-Config (Out-of-the-Box Security)**: Automatically generates SSL/QUIC certificates and CA chains if missing. No manual OpenSSL commands required.
 - **Multiplexing over TCP/QUIC**: Consolidates all traffic into a **single connection** using a custom-built, lightweight multiplexing protocol. Supports both traditional TCP and the modern **QUIC (via ngtcp2)** protocol.
 - **Auto Protocol Mode**:
   - **Server**: Automatically handles both TCP and QUIC clients on the same port.
@@ -18,6 +19,13 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **Dynamic Proxying**: Supports multiple **TCP** and **UDP** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
 - **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
+
+## Zero-Config Security
+
+`cfrp` makes it effortless to secure your tunnel. When you enable QUIC or TLS:
+1. **Automated PKI**: If certificates are missing or expired, the server automatically generates a Root CA and a Server Certificate.
+2. **Auto-Cleanup**: Certificates are stored in the `certs/` directory and renewed automatically when they near expiration.
+3. **Easy Distribution**: Simply copy the generated `certs/ca.crt` to your client devices to enable full peer verification.
 
 ## Architecture
 
@@ -111,9 +119,11 @@ ssh -p 6000 user@your_server_ip
 - `token`: Authentication token shared with the client.
 - `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`.
 - `[server.ssl]`: SSL settings.
-  - `enable`: Enable SSL/TLS for control and work connections.
-  - `cert_file`: Path to the certificate file.
-  - `key_file`: Path to the private key file.
+  - `enable`: Enable SSL/TLS for control and work connections (TCP only).
+  - `auto_generate`: Automatically generate CA and Server certificates if missing or expired (default `true`).
+  - `cert_file`: Path to the certificate file (default `certs/server.crt`).
+  - `key_file`: Path to the private key file (default `certs/server.key`).
+  - `ca_file`: Path to the CA certificate file (default `certs/ca.crt`).
 
 ### Client Section
 - `server_addr`: Server IP or hostname.

@@ -6,7 +6,9 @@ token = "secret_token"
 
 [server.ssl]
 enable = false
-cert_file = "server.crt"
-key_file = "server.key"
+auto_generate = true
+# cert_file = "certs/server.crt"
+# key_file = "certs/server.key"
+# ca_file = "certs/ca.crt"
 
 # ... other server settings
