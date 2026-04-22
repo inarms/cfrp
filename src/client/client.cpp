@@ -262,6 +262,7 @@ void Client::Run() {
 }
 
 void Client::Stop() {
+    stopping_ = true;
     HandleDisconnect("Client stopping...");
 }
 
@@ -373,6 +374,8 @@ void Client::HandleDisconnect(const std::string& reason) {
 }
 
 void Client::ScheduleReconnect() {
+    if (stopping_) return;
+
     if (reconnect_delay_sec_ < 600) {
         reconnect_delay_sec_ += 10;
     }

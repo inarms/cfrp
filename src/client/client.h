@@ -133,6 +133,7 @@ private:
     // ngtcp2 state
     std::shared_ptr<common::quic::QuicSession> quic_session_;
     uint8_t udp_recv_buf_[65535];
+    bool stopping_ = false;
 };
 
 } // namespace client
