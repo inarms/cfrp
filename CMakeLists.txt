@@ -11,21 +11,45 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(CLI11 CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
 find_package(zstd CONFIG REQUIRED)
+find_package(wolfssl CONFIG REQUIRED)
+find_package(ngtcp2 CONFIG REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
+pkg_check_modules(ngtcp2 REQUIRED IMPORTED_TARGET libngtcp2)
+pkg_check_modules(ngtcp2_crypto REQUIRED IMPORTED_TARGET libngtcp2_crypto_wolfssl)
+
+# Configure Asio to use wolfSSL as OpenSSL replacement
+add_definitions(-DASIO_USE_WOLFSSL)
 
 add_executable(cfrp 
     main.cpp
     src/server/server.cpp
     src/client/client.cpp
     src/common/mux.cpp
+    src/common/quic_ngtcp2.cpp
 )
 
-target_include_directories(cfrp PRIVATE src)
-target_link_libraries(cfrp PRIVATE CLI11::CLI11 PkgConfig::tomlplusplus asio::asio OpenSSL::SSL OpenSSL::Crypto zstd::libzstd)
+target_include_directories(cfrp PRIVATE 
+    src
+    ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/include/wolfssl
+)
+
+# For ASIO to find openssl/*.h as wolfSSL headers
+target_include_directories(cfrp SYSTEM PRIVATE 
+    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/wolfssl
+)
+
+target_link_libraries(cfrp PRIVATE 
+    CLI11::CLI11 
+    PkgConfig::tomlplusplus 
+    asio::asio 
+    zstd::libzstd
+    wolfssl::wolfssl
+    PkgConfig::ngtcp2
+    PkgConfig::ngtcp2_crypto
+)
 
 # Copy configuration files to the build directory
 file(COPY 

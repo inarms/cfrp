@@ -7,7 +7,14 @@
     "tomlplusplus",
     "asio",
     "nlohmann-json",
-    "openssl",
-    "zstd"
+    "zstd",
+    {
+      "name": "wolfssl",
+      "features": [ "quic", "asio" ]
+    },
+    {
+      "name": "ngtcp2",
+      "features": [ "wolfssl" ]
+    }
   ]
 }

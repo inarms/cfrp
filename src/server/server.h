@@ -1,6 +1,12 @@
 #pragma once
 
+#ifndef ASIO_USE_WOLFSSL
+#define ASIO_USE_WOLFSSL
+#endif
+
 #include <asio.hpp>
+#include <wolfssl/options.h>
+#include <wolfssl/openssl/ssl.h>
 #include <asio/ssl.hpp>
 #include <memory>
 #include <vector>
@@ -11,6 +17,7 @@
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
+#include "common/quic_ngtcp2.h"
 
 namespace cfrp {
 namespace server {
@@ -136,7 +143,7 @@ private:
 
 class Server {
 public:
-    Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config);
+    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "quic");
     void Run();
 
     void RegisterUserConn(const std::string& ticket, tcp::socket socket);
@@ -152,9 +159,13 @@ private:
     void DoAccept();
     void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
 
-    asio::io_context io_context_;
+    void DoUdpRead();
+
+    asio::io_context& io_context_;
     tcp::acceptor acceptor_;
+    udp::socket udp_socket_;
     std::string token_;
+    std::string protocol_;
     SslConfig ssl_config_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
@@ -167,6 +178,10 @@ private:
     std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::vector<std::string> active_client_names_;
     std::mutex map_mutex_;
+
+    // ngtcp2 state
+    std::map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>> quic_sessions_;
+    uint8_t udp_recv_buf_[65535];
 };
 
 } // namespace server

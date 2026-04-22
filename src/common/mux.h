@@ -54,7 +54,9 @@ public:
     void async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override;
     void async_handshake(asio::ssl::stream_base::handshake_type type, std::function<void(std::error_code)> handler) override;
     void close() override;
-    asio::ip::tcp::socket& lowest_layer() override;
+    asio::any_io_executor get_executor() override;
+    std::string remote_endpoint_string() override;
+    std::string protocol_name() override;
 
     // Internal methods used by Session
     void handle_data(std::vector<uint8_t> data);
@@ -91,8 +93,9 @@ public:
     std::shared_ptr<MuxStream> open_stream();
     void async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler = nullptr);
 
-    asio::ip::tcp::socket& lowest_layer() { return underlying_stream_->lowest_layer(); }
-    asio::io_context& get_executor() { return static_cast<asio::io_context&>(underlying_stream_->lowest_layer().get_executor().context()); }
+    asio::any_io_executor get_executor() { return underlying_stream_->get_executor(); }
+    std::string remote_endpoint_string() { return underlying_stream_->remote_endpoint_string(); }
+    std::string protocol_name() { return underlying_stream_->protocol_name(); }
 
 private:
     void do_read_header();

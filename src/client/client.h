@@ -1,12 +1,19 @@
 #pragma once
 
+#ifndef ASIO_USE_WOLFSSL
+#define ASIO_USE_WOLFSSL
+#endif
+
 #include <asio.hpp>
+#include <wolfssl/options.h>
+#include <wolfssl/openssl/ssl.h>
 #include <asio/ssl.hpp>
 #include <string>
 #include <vector>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
+#include "common/quic_ngtcp2.h"
 
 namespace cfrp {
 namespace client {
@@ -70,12 +77,14 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path);
+    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol = "quic");
     void Run();
     void AddProxy(const ProxyConfig& proxy);
 
 private:
     void DoConnect();
+    void DoQuicConnect();
+    void DoUdpRead();
     void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
     void SendMessage(protocol::MessageType type, const protocol::json& body);
     void DoReadHeader();
@@ -93,7 +102,7 @@ private:
     void RegisterProxy(const ProxyConfig& pc);
     void UnregisterProxy(const std::string& name);
 
-    asio::io_context io_context_;
+    asio::io_context& io_context_;
     std::shared_ptr<common::mux::Session> mux_session_;
     std::shared_ptr<common::mux::MuxStream> control_stream_;
     
@@ -101,11 +110,14 @@ private:
     uint16_t server_port_;
     std::string token_;
     std::string name_;
+    std::string protocol_;
     SslConfig ssl_config_;
     bool compression_ = false;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
     tcp::endpoint endpoint_;
+    udp::endpoint udp_endpoint_;
+    udp::socket udp_socket_;
     std::vector<ProxyConfig> proxies_;
     protocol::Header header_;
     std::vector<char> body_data_;
@@ -116,6 +128,10 @@ private:
     
     asio::steady_timer reconnect_timer_;
     int reconnect_delay_sec_ = 0;
+
+    // ngtcp2 state
+    std::shared_ptr<common::quic::QuicSession> quic_session_;
+    uint8_t udp_recv_buf_[65535];
 };
 
 } // namespace client

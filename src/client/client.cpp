@@ -1,4 +1,5 @@
 #include "client.h"
+#include "common/quic_ngtcp2.h"
 #include <iostream>
 #include <zstd.h>
 #include <filesystem>
@@ -23,7 +24,6 @@ void Bridge::DoRead(int direction) {
     auto self(shared_from_this());
     if (!use_compression_) {
         auto& from = (direction == 1) ? s1_ : s2_;
-        auto& to = (direction == 1) ? s2_ : s1_;
         auto& buf = (direction == 1) ? data1_ : data2_;
 
         from->async_read_some(asio::buffer(buf, sizeof(data1_)),
@@ -223,16 +223,20 @@ void UdpBridge::DoReadFromLocal() {
 }
 
 // --- Client ---
-Client::Client(const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path)
-    : server_addr_(server_addr),
+Client::Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol)
+    : io_context_(io_context),
+      server_addr_(server_addr),
       server_port_(server_port),
       token_(token),
       name_(name),
+      protocol_(protocol),
       ssl_config_(ssl_config),
       compression_(compression),
       conf_d_path_(conf_d_path),
       conf_timer_(io_context_),
       endpoint_(asio::ip::make_address(server_addr), server_port),
+      udp_endpoint_(asio::ip::make_address(server_addr), server_port),
+      udp_socket_(io_context_, udp::endpoint(udp::v4(), 0)),
       reconnect_timer_(io_context_) {
     
     if (ssl_config_.enable) {
@@ -250,12 +254,11 @@ Client::Client(const std::string& server_addr, uint16_t server_port, const std::
         std::cout << "SSL enabled on client." << std::endl;
     }
     
-    std::cout << "Client initialized (TCP Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
+    std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
 }
 
 void Client::Run() {
     DoConnect();
-    io_context_.run();
 }
 
 void Client::AddProxy(const ProxyConfig& proxy) {
@@ -263,6 +266,11 @@ void Client::AddProxy(const ProxyConfig& proxy) {
 }
 
 void Client::DoConnect() {
+    if (protocol_ == "quic") {
+        DoQuicConnect();
+        return;
+    }
+
     std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << "..." << std::endl;
     
     tcp::socket socket(io_context_);
@@ -287,9 +295,45 @@ void Client::DoConnect() {
         });
 }
 
+void Client::DoQuicConnect() {
+    std::cout << "Connecting to server via QUIC " << server_addr_ << ":" << server_port_ << "..." << std::endl;
+    quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
+    
+    if (!ssl_ctx_) {
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+    }
+    quic_session_->init(ssl_ctx_->native_handle());
+    
+    quic_session_->set_on_connected([this](std::shared_ptr<common::quic::QuicSession> session) {
+        std::cout << "QUIC handshake completed. Opening control stream..." << std::endl;
+        auto stream = session->open_stream();
+        if (stream) {
+            OnConnect(std::error_code(), stream);
+        } else {
+            HandleDisconnect("Failed to open QUIC stream after handshake");
+        }
+    });
+
+    quic_session_->send_packets(); // Start handshake
+    DoUdpRead();
+}
+
+void Client::DoUdpRead() {
+    auto endpoint = std::make_shared<udp::endpoint>();
+    udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
+        [this, endpoint](std::error_code ec, std::size_t length) {
+            if (!ec) {
+                if (quic_session_) {
+                    quic_session_->handle_packet(udp_recv_buf_, length);
+                }
+                DoUdpRead();
+            }
+        });
+}
+
 void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream) {
     if (!ec) {
-        std::cout << "Connected to server. Initializing MuxSession..." << std::endl;
+        std::cout << "Connected to server via " << underlying_stream->protocol_name() << ". Initializing MuxSession..." << std::endl;
         reconnect_delay_sec_ = 0;
         
         mux_session_ = std::make_shared<common::mux::Session>(underlying_stream, false);

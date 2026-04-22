@@ -1,7 +1,9 @@
 #include "server.h"
+#include "common/quic_ngtcp2.h"
 #include <iostream>
 #include <chrono>
 #include <zstd.h>
+#include <sstream>
 
 namespace cfrp {
 namespace server {
@@ -19,7 +21,6 @@ void Bridge::DoRead(int direction) {
     auto self(shared_from_this());
     if (!use_compression_) {
         auto& from = (direction == 1) ? s1_ : s2_;
-        auto& to = (direction == 1) ? s2_ : s1_;
         auto& buf = (direction == 1) ? data1_ : data2_;
 
         from->async_read_some(asio::buffer(buf, sizeof(data1_)),
@@ -311,15 +312,8 @@ void ProxyListener::DoAccept() {
 
 // --- ControlSession ---
 void ControlSession::Start() {
-    try {
-        auto endpoint = stream_->lowest_layer().remote_endpoint();
-        std::stringstream ss;
-        ss << endpoint;
-        client_endpoint_ = ss.str();
-    } catch (...) {
-        client_endpoint_ = "unknown";
-    }
-    std::cout << "[Server] New client connecting from " << client_endpoint_ << "..." << std::endl;
+    client_endpoint_ = stream_->remote_endpoint_string();
+    std::cout << "[Server] New " << stream_->protocol_name() << " client connecting from " << client_endpoint_ << "..." << std::endl;
     DoReadHeader();
 }
 
@@ -484,7 +478,8 @@ void ControlSession::HandleLogin(const protocol::json& body) {
     protocol::json resp;
     if (token == server_.GetToken()) {
         client_name_ = server_.AllocateClientName(requested_name);
-        std::cout << "[Server] Client authenticated successfully: " << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
+        std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " 
+                  << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
         std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
         authenticated_ = true;
         resp["status"] = "ok";
@@ -501,26 +496,85 @@ void ControlSession::HandleLogin(const protocol::json& body) {
 }
 
 // --- Server ---
-Server::Server(const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config)
-    : acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
+Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol)
+    : io_context_(io_context),
+      acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
+      udp_socket_(io_context_, udp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       token_(token),
+      protocol_(protocol),
       ssl_config_(ssl_config) {
     
-    if (ssl_config_.enable) {
+    if (ssl_config_.enable || protocol_ == "quic") {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::single_dh_use);
-        ssl_ctx_->use_certificate_chain_file(ssl_config_.cert_file);
-        ssl_ctx_->use_private_key_file(ssl_config_.key_file, asio::ssl::context::pem);
-        std::cout << "SSL enabled on server." << std::endl;
+        
+        std::string cert = ssl_config_.cert_file.empty() ? "server.crt" : ssl_config_.cert_file;
+        std::string key = ssl_config_.key_file.empty() ? "server.key" : ssl_config_.key_file;
+
+        try {
+            ssl_ctx_->use_certificate_chain_file(cert);
+            ssl_ctx_->use_private_key_file(key, asio::ssl::context::pem);
+            std::cout << "SSL/QUIC certificate loaded: " << cert << std::endl;
+        } catch (const std::exception& e) {
+            if (protocol_ == "quic") {
+                std::cerr << "Warning: Failed to load certificate for QUIC: " << e.what() << std::endl;
+                std::cerr << "QUIC requires a certificate to function. Please check config_server.toml" << std::endl;
+            }
+        }
     }
     
-    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (TCP Mux Enabled)" << std::endl;
+    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (" << protocol_ << " Mux Enabled)" << std::endl;
 }
 
 void Server::Run() {
     std::cout << "Starting cfrp server loop..." << std::endl;
     DoAccept();
-    io_context_.run();
+    if (protocol_ == "quic") {
+        DoUdpRead();
+    }
+}
+
+void Server::DoUdpRead() {
+    auto endpoint = std::make_shared<udp::endpoint>();
+    udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
+        [this, endpoint](std::error_code ec, std::size_t length) {
+            if (!ec) {
+                auto it = quic_sessions_.find(*endpoint);
+                if (it == quic_sessions_.end()) {
+                    // Parse QUIC header to get CIDs
+                    ngtcp2_version_cid vcid;
+                    int res = ngtcp2_pkt_decode_version_cid(&vcid, udp_recv_buf_, length, 8);
+                    
+                    if (res != 0) {
+                        DoUdpRead();
+                        return;
+                    }
+
+                    ngtcp2_cid n_dcid, n_scid;
+                    ngtcp2_cid_init(&n_dcid, vcid.dcid, vcid.dcidlen);
+                    ngtcp2_cid_init(&n_scid, vcid.scid, vcid.scidlen);
+
+                    auto session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true);
+                    
+                    if (!ssl_ctx_) {
+                        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+                    }
+                    
+                    session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
+                        auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true);
+                        mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                            HandleNewMuxStream(mux_session, new_stream);
+                        });
+                    });
+
+                    session->init(ssl_ctx_->native_handle(), &n_dcid, &n_scid);
+                    quic_sessions_[*endpoint] = session;
+                    it = quic_sessions_.find(*endpoint);
+                }
+                it->second->handle_packet(udp_recv_buf_, length);
+                DoUdpRead();
+            }
+        });
 }
 
 void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket) {
@@ -575,7 +629,6 @@ void Server::DoAccept() {
                 stream = std::make_shared<common::TcpStream>(std::move(socket));
             }
             
-            auto self = this;
             stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
                 if (!ec) {
                     auto mux_session = std::make_shared<common::mux::Session>(stream, true);

@@ -56,7 +56,7 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     auto self(shared_from_this());
     auto session = session_.lock();
     if (!session) {
-        asio::post(lowest_layer().get_executor(), [handler]() {
+        asio::post(get_executor(), [handler]() {
             handler(asio::error::connection_reset, 0);
         });
         return;
@@ -88,7 +88,7 @@ void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::
 }
 
 void MuxStream::async_handshake(asio::ssl::stream_base::handshake_type, std::function<void(std::error_code)> handler) {
-    asio::post(lowest_layer().get_executor(), [handler]() {
+    asio::post(get_executor(), [handler]() {
         handler(std::error_code());
     });
 }
@@ -110,16 +110,29 @@ void MuxStream::close() {
     }
 
     for (auto& pr : pending_reads_) {
-        asio::post(lowest_layer().get_executor(), [handler = std::move(pr.handler)]() {
+        asio::post(get_executor(), [handler = std::move(pr.handler)]() {
             handler(asio::error::operation_aborted, 0);
         });
     }
     pending_reads_.clear();
 }
 
-asio::ip::tcp::socket& MuxStream::lowest_layer() {
+asio::any_io_executor MuxStream::get_executor() {
     auto session = session_.lock();
-    return session->lowest_layer();
+    if (session) return session->get_executor();
+    throw asio::system_error(asio::error::operation_aborted);
+}
+
+std::string MuxStream::remote_endpoint_string() {
+    auto session = session_.lock();
+    if (session) return session->remote_endpoint_string();
+    return "unknown";
+}
+
+std::string MuxStream::protocol_name() {
+    auto session = session_.lock();
+    if (session) return session->protocol_name();
+    return "unknown";
 }
 
 void MuxStream::handle_data(std::vector<uint8_t> data) {
@@ -149,7 +162,7 @@ void MuxStream::handle_close() {
     closed_ = true;
     for (auto& pr : pending_reads_) {
         if (read_buffer_.empty()) {
-            asio::post(lowest_layer().get_executor(), [handler = std::move(pr.handler)]() {
+            asio::post(get_executor(), [handler = std::move(pr.handler)]() {
                 handler(asio::error::eof, 0);
             });
         }
@@ -172,7 +185,7 @@ void MuxStream::do_read_from_buffer() {
         auto handler = std::move(pr.handler);
         pending_reads_.pop_front();
         
-        asio::post(lowest_layer().get_executor(), [handler, to_copy]() {
+        asio::post(get_executor(), [handler, to_copy]() {
             handler(std::error_code(), to_copy);
         });
     }
