@@ -272,7 +272,7 @@ void QuicStream::close() {
 
 void QuicStream::shutdown_transport() {
     if (connection_handle_) {
-        MsQuic->ConnectionShutdown(connection_handle_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+        MsQuic->ConnectionShutdown(connection_handle_, QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT, 0);
     }
 }
 
