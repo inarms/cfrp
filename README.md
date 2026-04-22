@@ -8,17 +8,20 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 ## Features
 
 - **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
-- **TCP Multiplexing**: Consolidates all traffic into a **single TCP connection** using a custom-built, lightweight multiplexing protocol. No separate work port required.
-- **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**.
+- **Multiplexing over TCP/QUIC**: Consolidates all traffic into a **single connection** using a custom-built, lightweight multiplexing protocol. Supports both traditional TCP and the modern **QUIC (via ngtcp2)** protocol.
+- **Auto Protocol Mode**:
+  - **Server**: Automatically handles both TCP and QUIC clients on the same port.
+  - **Client**: Attempts a QUIC connection first and automatically fails over to TCP if needed.
+- **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**. Uses **wolfSSL** for high-performance cryptography and modern QUIC support.
 - **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
-- **Resilient Client**: Automatic reconnection with exponential backoff (up to 10 minutes) if the server becomes unreachable.
+- **Resilient Client**: Automatic reconnection with exponential backoff if the server becomes unreachable. Supports **graceful cleanup** on exit.
 - **Dynamic Proxying**: Supports multiple **TCP** and **UDP** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `openssl`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
+- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
 ## Architecture
 
-1. **Multiplexed Tunnel**: A single persistent TCP connection (optionally SSL) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
+1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
 2. **Control Stream**: A virtual stream used for command exchange using **MessagePack** binary serialization.
 3. **Data Streams**: Dynamic virtual streams established on-demand to bridge traffic. Supports **automatic compression detection**.
 4. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
@@ -30,7 +33,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - C++17 compatible compiler
 - CMake 3.10+
 - [vcpkg](https://github.com/microsoft/vcpkg) for dependency management
-- OpenSSL
+- wolfSSL (installed via vcpkg)
 
 ### Building
 
@@ -49,6 +52,7 @@ Configure `config_server.toml`:
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "your_secret_token"
+protocol = "auto" # Support both TCP and QUIC simultaneously
 
 [server.ssl]
 enable = true
@@ -68,11 +72,12 @@ server_addr = "your_server_ip"
 server_port = 7001
 token = "your_secret_token"
 name = "my-client"
+protocol = "auto" # Try QUIC first, failover to TCP
 
 [client.ssl]
 enable = true
 verify_peer = false
-
+```
 [[client.proxies]]
 name = "ssh"
 type = "tcp"
@@ -104,6 +109,7 @@ ssh -p 6000 user@your_server_ip
 - `bind_addr`: Address to listen on (default `0.0.0.0`).
 - `bind_port`: Control port (default `7000`).
 - `token`: Authentication token shared with the client.
+- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `quic`.
 - `[server.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS for control and work connections.
   - `cert_file`: Path to the certificate file.
@@ -113,6 +119,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
+- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `quic`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
 - `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
 - `compression`: Enable Zstd compression for all connections (default `true`).
 - `conf_d`: Optional path to a directory for dynamic proxy configurations.
@@ -128,16 +135,17 @@ ssh -p 6000 user@your_server_ip
 - `local_port`: Local service port.
 - `remote_port`: Port on the server to expose the service.
 
-## Security Design: One-Way TLS vs. mTLS
+## Security Design: wolfSSL & QUIC
 
-This project uses **One-Way TLS** (Standard) combined with **Token Authentication**:
+This project has migrated to **wolfSSL** to support the modern **QUIC** protocol while maintaining high-performance TLS for TCP connections:
 
-- **Server-Side**: Requires `cert_file` and `key_file` to prove its identity to clients.
-- **Client-Side**: Only needs to verify the server's identity (using system CA roots or a provided `ca_file`). 
-- **Token-based Auth**: Once the secure TLS tunnel is established, a shared `token` is used to authenticate the client.
+- **QUIC Support**: Leverages `ngtcp2` with `wolfSSL` for state-of-the-art encrypted transport.
+- **One-Way TLS**: Standard TLS combined with **Token Authentication**.
+- **Server-Side**: Requires `cert_file` and `key_file` for both SSL/TLS and QUIC.
+- **Client-Side**: Only needs to verify the server's identity. 
 
-**Why not Mutual TLS (mTLS)?**
-mTLS requires certificates for every client, which adds significant management overhead (generating, distributing, and rotating client certificates). By combining One-Way TLS (to secure the transport) with Token Authentication (to verify the client), we achieve a high level of security with much better usability.
+**Why QUIC?**
+QUIC provides better performance in lossy network environments, faster connection establishment (0-RTT), and eliminates head-of-line blocking which is a common issue with traditional TCP multiplexing.
 
 ## License
 
