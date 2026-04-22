@@ -13,7 +13,7 @@ namespace common {
 
 class QuicStream : public AsyncStream {
 public:
-    QuicStream(asio::any_io_executor executor, HQUIC stream_handle);
+    QuicStream(asio::any_io_executor executor, HQUIC connection_handle, HQUIC stream_handle);
     ~QuicStream() override;
 
     void async_read_some(asio::mutable_buffer buffer, 
@@ -29,6 +29,7 @@ public:
                          std::function<void(std::error_code)> handler) override;
 
     void close() override;
+    void shutdown_transport() override;
     asio::any_io_executor get_executor() override;
     std::string remote_endpoint_string() override;
     std::string protocol_name() override;
@@ -49,6 +50,7 @@ private:
     static std::mutex ConnectionsMutex;
 
     asio::any_io_executor executor_;
+    HQUIC connection_handle_;
     HQUIC stream_handle_;
     
     struct ReadOperation {

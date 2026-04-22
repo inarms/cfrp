@@ -10,8 +10,8 @@ HQUIC QuicStream::Configuration = nullptr;
 std::vector<HQUIC> QuicStream::ActiveConnections;
 std::mutex QuicStream::ConnectionsMutex;
 
-    bool QuicStream::InitializeMsQuic(bool is_server, const std::string& cert_file,
-                                       const std::string& key_file, bool verify_peer) {
+bool QuicStream::InitializeMsQuic(bool is_server, const std::string& cert_file,
+                                   const std::string& key_file, bool verify_peer) {
     if (MsQuic) return true;
 
     QUIC_STATUS status = MsQuicOpen2(&MsQuic);
@@ -28,9 +28,9 @@ std::mutex QuicStream::ConnectionsMutex;
     }
 
     QUIC_SETTINGS settings{0};
-    settings.IdleTimeoutMs = 30000;
+    settings.IdleTimeoutMs = 10000;
     settings.IsSet.IdleTimeoutMs = TRUE;
-    settings.KeepAliveIntervalMs = 20000;
+    settings.KeepAliveIntervalMs = 5000;
     settings.IsSet.KeepAliveIntervalMs = TRUE;
     settings.PeerUnidiStreamCount = 100;
     settings.IsSet.PeerUnidiStreamCount = TRUE;
@@ -86,7 +86,7 @@ void QuicStream::DeinitializeMsQuic() {
         {
             std::lock_guard<std::mutex> lock(ConnectionsMutex);
             for (auto conn : ActiveConnections) {
-                MsQuic->ConnectionShutdown(conn, QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT, 0);
+                MsQuic->ConnectionShutdown(conn, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
             }
         }
 
@@ -110,8 +110,8 @@ void QuicStream::UntrackConnection(HQUIC connection) {
     }
 }
 
-QuicStream::QuicStream(asio::any_io_executor executor, HQUIC stream_handle)
-    : executor_(executor), stream_handle_(stream_handle) {
+QuicStream::QuicStream(asio::any_io_executor executor, HQUIC connection_handle, HQUIC stream_handle)
+    : executor_(executor), connection_handle_(connection_handle), stream_handle_(stream_handle) {
     MsQuic->SetCallbackHandler(stream_handle_, (void*)StreamCallback, this);
     connected_ = true;
 }
@@ -161,7 +161,7 @@ std::string QuicStream::protocol_name() {
     return "QUIC";
 }
 
-    void QuicStream::process_reads() {
+void QuicStream::process_reads() {
     // process_reads is always called under mutex_
     while (!pending_reads_.empty()) {
         size_t available = receive_buffer_.size() - receive_buffer_offset_;
@@ -267,6 +267,12 @@ void QuicStream::close() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         process_reads();
+    }
+}
+
+void QuicStream::shutdown_transport() {
+    if (connection_handle_) {
+        MsQuic->ConnectionShutdown(connection_handle_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
     }
 }
 

@@ -274,9 +274,13 @@ void Client::Stop() {
         mux_session_->stop();
         mux_session_.reset();
     }
+    if (control_stream_) {
+        control_stream_->shutdown_transport();
+        control_stream_.reset();
+    }
     if (quic_connection_) {
         common::QuicStream::UntrackConnection(quic_connection_);
-        common::QuicStream::MsQuic->ConnectionShutdown(quic_connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_SILENT, 0);
+        common::QuicStream::MsQuic->ConnectionShutdown(quic_connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
         common::QuicStream::MsQuic->ConnectionClose(quic_connection_);
         quic_connection_ = nullptr;
     }
@@ -344,7 +348,7 @@ QUIC_STATUS QUIC_API Client::QuicConnectionCallback(HQUIC Connection, void* Cont
             if (QUIC_SUCCEEDED(status)) {
                 status = common::QuicStream::MsQuic->StreamStart(stream_handle, QUIC_STREAM_START_FLAG_NONE);
                 if (QUIC_SUCCEEDED(status)) {
-                    auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), stream_handle);
+                    auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), Connection, stream_handle);
                     asio::post(self->io_context_, [self, quic_stream]() {
                         self->OnConnect(std::error_code(), quic_stream);
                     });

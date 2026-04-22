@@ -336,6 +336,7 @@ void ControlSession::Stop() {
         proxy->Stop();
     }
     udp_proxies_.clear();
+    stream_->shutdown_transport();
     stream_->close();
 }
 
@@ -638,7 +639,7 @@ QUIC_STATUS QUIC_API Server::QuicConnectionCallback(HQUIC Connection, void* Cont
         case QUIC_CONNECTION_EVENT_PEER_STREAM_STARTED: {
             auto stream_handle = Event->PEER_STREAM_STARTED.Stream;
             std::cout << "[Server] QUIC peer stream started." << std::endl;
-            auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), stream_handle);
+            auto quic_stream = std::make_shared<common::QuicStream>(self->io_context_.get_executor(), Connection, stream_handle);
             
             asio::post(self->io_context_, [self, conn_ctx, quic_stream]() {
                 auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true);

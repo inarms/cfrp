@@ -29,6 +29,7 @@ public:
                                  std::function<void(std::error_code)> handler) = 0;
 
     virtual void close() = 0;
+    virtual void shutdown_transport() {}
     virtual asio::any_io_executor get_executor() = 0;
     virtual std::string remote_endpoint_string() = 0;
     virtual std::string protocol_name() = 0;
