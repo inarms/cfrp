@@ -230,6 +230,7 @@ void UdpProxyListener::Start() {
 void UdpProxyListener::Stop() {
     std::error_code ec;
     socket_.close(ec);
+    std::cout << "UDP Proxy listener for [" << proxy_name_ << "] stopped." << std::endl;
 }
 
 void UdpProxyListener::DoReceive() {
@@ -282,6 +283,7 @@ void ProxyListener::Stop() {
     std::cout << "Stopping proxy listener for [" << proxy_name_ << "]" << std::endl;
     std::error_code ec;
     acceptor_.close(ec);
+    std::cout << "Proxy listener for [" << proxy_name_ << "] stopped." << std::endl;
 }
 
 void ProxyListener::DoAccept() {
