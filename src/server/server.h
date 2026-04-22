@@ -154,12 +154,14 @@ public:
 private:
     void DoAccept();
     void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
+    void EvictStalePendingConns();
 
     // QUIC Support
     struct ConnectionContext {
         Server* server;
         std::vector<std::shared_ptr<common::mux::Session>> sessions;
         std::mutex mutex;
+        std::shared_ptr<ConnectionContext> self_ref;
     };
 
     void StartQuicListener();
@@ -175,17 +177,24 @@ private:
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
     HQUIC quic_listener_ = nullptr;
-    std::vector<ConnectionContext*> active_quic_conns_;
+    std::vector<std::shared_ptr<ConnectionContext>> active_quic_conns_;
     
+    struct PendingTcpConn {
+        tcp::socket socket;
+        std::chrono::steady_clock::time_point created_at;
+    };
+
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;
         udp::endpoint endpoint;
+        std::chrono::steady_clock::time_point created_at;
     };
 
-    std::map<std::string, tcp::socket> pending_user_conns_;
+    std::map<std::string, PendingTcpConn> pending_user_conns_;
     std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::vector<std::string> active_client_names_;
     std::mutex map_mutex_;
+    asio::steady_timer pending_evict_timer_;
 };
 
 } // namespace server

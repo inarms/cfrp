@@ -10,7 +10,8 @@ HQUIC QuicStream::Configuration = nullptr;
 std::vector<HQUIC> QuicStream::ActiveConnections;
 std::mutex QuicStream::ConnectionsMutex;
 
-bool QuicStream::InitializeMsQuic(bool is_server, const std::string& cert_file, const std::string& key_file) {
+    bool QuicStream::InitializeMsQuic(bool is_server, const std::string& cert_file,
+                                       const std::string& key_file, bool verify_peer) {
     if (MsQuic) return true;
 
     QUIC_STATUS status = MsQuicOpen2(&MsQuic);
@@ -60,8 +61,10 @@ bool QuicStream::InitializeMsQuic(bool is_server, const std::string& cert_file, 
         QUIC_CREDENTIAL_CONFIG cred_config;
         memset(&cred_config, 0, sizeof(cred_config));
         cred_config.Type = QUIC_CREDENTIAL_TYPE_NONE;
-        cred_config.Flags = QUIC_CREDENTIAL_FLAG_CLIENT | QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
-
+        cred_config.Flags = QUIC_CREDENTIAL_FLAG_CLIENT;
+        if (!verify_peer) {
+            cred_config.Flags |= QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION;
+        }
         status = MsQuic->ConfigurationOpen(Registration, &alpn, 1, &settings, sizeof(settings), nullptr, &Configuration);
         if (QUIC_SUCCEEDED(status)) {
             status = MsQuic->ConfigurationLoadCredential(Configuration, &cred_config);
@@ -145,17 +148,6 @@ void QuicStream::async_handshake(ssl::stream_base::handshake_type type,
     });
 }
 
-void QuicStream::close() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!closed_) {
-        closed_ = true;
-        if (stream_handle_) {
-            MsQuic->StreamClose(stream_handle_);
-            stream_handle_ = nullptr;
-        }
-        process_reads();
-    }
-}
 
 asio::any_io_executor QuicStream::get_executor() {
     return executor_;
@@ -169,30 +161,41 @@ std::string QuicStream::protocol_name() {
     return "QUIC";
 }
 
-void QuicStream::process_reads() {
-    while (!pending_reads_.empty() && (!receive_buffer_.empty() || closed_)) {
-        auto& op = pending_reads_.front();
+    void QuicStream::process_reads() {
+    // process_reads is always called under mutex_
+    while (!pending_reads_.empty()) {
         size_t available = receive_buffer_.size() - receive_buffer_offset_;
-        
-        if (available > 0) {
-            size_t to_copy = std::min(available, op.buffer.size());
-            std::memcpy(op.buffer.data(), receive_buffer_.data() + receive_buffer_offset_, to_copy);
-            receive_buffer_offset_ += to_copy;
-            
-            auto handler = std::move(op.handler);
-            pending_reads_.pop();
-            asio::post(executor_, [handler, transferred = to_copy]() {
-                handler(std::error_code(), transferred);
-            });
-        } else if (closed_) {
-            auto handler = std::move(op.handler);
-            pending_reads_.pop();
-            asio::post(executor_, [handler]() {
-                handler(asio::error::eof, 0);
-            });
+
+        if (available == 0) {
+            if (closed_) {
+                auto handler = std::move(pending_reads_.front().handler);
+                pending_reads_.pop();
+                asio::post(executor_, [handler]() {
+                    handler(asio::error::eof, 0);
+                });
+            }
+            break;
         }
-        
-        if (receive_buffer_offset_ > 0 && receive_buffer_offset_ == receive_buffer_.size()) {
+
+        auto& op = pending_reads_.front();
+
+        // For read_all, wait until the full buffer can be satisfied
+        if (op.read_some == false && available < op.buffer.size()) {
+            break;
+        }
+
+        size_t to_copy = std::min(available, op.buffer.size());
+        std::memcpy(op.buffer.data(), receive_buffer_.data() + receive_buffer_offset_, to_copy);
+        receive_buffer_offset_ += to_copy;
+
+        auto handler = std::move(op.handler);
+        pending_reads_.pop();
+
+        asio::post(executor_, [handler, transferred = to_copy]() {
+            handler(std::error_code(), transferred);
+        });
+
+        if (receive_buffer_offset_ == receive_buffer_.size()) {
             receive_buffer_.clear();
             receive_buffer_offset_ = 0;
         }
@@ -215,10 +218,19 @@ void QuicStream::process_writes() {
         context->quic_buffer.Length = (uint32_t)op.buffer.size();
         context->quic_buffer.Buffer = (uint8_t*)op.buffer.data();
 
-        QUIC_STATUS status = MsQuic->StreamSend(stream_handle_, &context->quic_buffer, 1, QUIC_SEND_FLAG_NONE, context);
-        
+        HQUIC handle = stream_handle_;
         pending_writes_.pop();
-        
+
+        if (!handle) {
+            auto handler = std::move(context->handler);
+            delete context;
+            asio::post(executor_, [handler]() {
+                handler(asio::error::operation_aborted, 0);
+            });
+            continue;
+        }
+
+        QUIC_STATUS status = MsQuic->StreamSend(handle, &context->quic_buffer, 1, QUIC_SEND_FLAG_NONE, context);
         if (QUIC_FAILED(status)) {
             std::cerr << "MsQuic StreamSend failed: " << status << std::endl;
             auto handler = std::move(context->handler);
@@ -227,6 +239,34 @@ void QuicStream::process_writes() {
                 handler(std::make_error_code(std::errc::io_error), 0);
             });
         }
+        // On success the handler fires in SEND_COMPLETE; don't loop further
+        // since StreamSend is async — we must wait for SEND_COMPLETE before
+        // issuing the next send to preserve ordering.
+        break;
+    }
+}
+
+void QuicStream::close() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_.exchange(true)) return;
+        // Drain pending writes with an error
+        while (!pending_writes_.empty()) {
+            auto handler = std::move(pending_writes_.front().handler);
+            pending_writes_.pop();
+            asio::post(executor_, [handler]() {
+                handler(asio::error::operation_aborted, 0);
+            });
+        }
+    }
+    if (stream_handle_) {
+        MsQuic->StreamShutdown(stream_handle_, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+        MsQuic->StreamClose(stream_handle_);
+        stream_handle_ = nullptr;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        process_reads();
     }
 }
 
@@ -250,10 +290,15 @@ QUIC_STATUS QUIC_API QuicStream::StreamCallback(HQUIC Stream, void* Context, QUI
             if (context) {
                 auto handler = std::move(context->handler);
                 size_t size = context->size;
+                delete context;
+                // Kick the next pending write (ordering: one in-flight at a time)
+                {
+                    std::lock_guard<std::mutex> lock(self->mutex_);
+                    self->process_writes();
+                }
                 asio::post(self->executor_, [handler, size]() {
                     handler(std::error_code(), size);
                 });
-                delete context;
             }
             return QUIC_STATUS_SUCCESS;
         }
@@ -261,19 +306,12 @@ QUIC_STATUS QUIC_API QuicStream::StreamCallback(HQUIC Stream, void* Context, QUI
             self->close();
             return QUIC_STATUS_SUCCESS;
         case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
-            {
-                std::lock_guard<std::mutex> lock(self->mutex_);
-                self->closed_ = true;
-                self->process_reads();
-            }
+        case QUIC_STREAM_EVENT_PEER_SEND_ABORTED: {
+            std::lock_guard<std::mutex> lock(self->mutex_);
+            self->closed_ = true;
+            self->process_reads();
             return QUIC_STATUS_SUCCESS;
-        case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
-            {
-                std::lock_guard<std::mutex> lock(self->mutex_);
-                self->closed_ = true;
-                self->process_reads();
-            }
-            return QUIC_STATUS_SUCCESS;
+        }
         default:
             return QUIC_STATUS_SUCCESS;
     }

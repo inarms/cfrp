@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include "common/stream.h"
 #include <msquic.h>
@@ -36,7 +37,8 @@ public:
     static const QUIC_API_TABLE* MsQuic;
     static HQUIC Registration;
     static HQUIC Configuration;
-    static bool InitializeMsQuic(bool is_server, const std::string& cert_file = "", const std::string& key_file = "");
+    static bool InitializeMsQuic(bool is_server, const std::string& cert_file = "",
+                              const std::string& key_file = "", bool verify_peer = true);
     static void DeinitializeMsQuic();
     static void TrackConnection(HQUIC connection);
     static void UntrackConnection(HQUIC connection);
@@ -73,7 +75,7 @@ private:
     std::vector<uint8_t> receive_buffer_;
     size_t receive_buffer_offset_ = 0;
     bool connected_ = false;
-    bool closed_ = false;
+    std::atomic<bool> closed_ = false;
     
     void process_reads();
     void process_writes();

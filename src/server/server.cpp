@@ -1,4 +1,7 @@
 #include "server.h"
+#include <random>
+#include <cstring> // for CRYPTO_memcmp alternative below
+
 #include "common/quic_stream.h"
 #include <iostream>
 #include <chrono>
@@ -240,7 +243,10 @@ void UdpProxyListener::DoReceive() {
                 std::string ticket;
                 auto it = endpoint_to_ticket_.find(sender_endpoint_);
                 if (it == endpoint_to_ticket_.end()) {
-                    ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_" + std::to_string(rand());
+                    static std::atomic<uint64_t> udp_ticket_counter{0};
+
+                    ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count())
+       + "_udp_" + std::to_string(udp_ticket_counter.fetch_add(1, std::memory_order_relaxed));
                     endpoint_to_ticket_[sender_endpoint_] = ticket;
                     std::cout << "New UDP session for [" << proxy_name_ << "] from " << sender_endpoint_ << ", ticket: " << ticket << std::endl;
                     
@@ -294,7 +300,9 @@ void ProxyListener::DoAccept() {
             return;
         }
 
-        std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        static std::atomic<uint64_t> ticket_counter{0};
+        std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count())
+                   + "_" + std::to_string(ticket_counter.fetch_add(1, std::memory_order_relaxed));
         std::cout << "New user connection for proxy [" << proxy_name_ << "], ticket: " << ticket << std::endl;
         
         server_.RegisterUserConn(ticket, std::move(socket));
@@ -337,17 +345,19 @@ void ControlSession::SendMessage(protocol::MessageType type, const protocol::jso
     uint32_t final_len = static_cast<uint32_t>(encoded.size());
     std::vector<uint8_t> to_send_body = encoded;
 
+    // Only compress outgoing if the client sent a compressed message first
     if (compression_enabled_) {
         size_t const cSizeBound = ZSTD_compressBound(encoded.size());
         std::vector<uint8_t> compressed(cSizeBound);
         size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, encoded.data(), encoded.size(), 1);
-        if (!ZSTD_isError(cSize)) {
+        if (!ZSTD_isError(cSize) && cSize < encoded.size()) { // only use if actually smaller
             compressed.resize(cSize);
             to_send_body = compressed;
             final_len = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
         }
+        // else: send uncompressed, final_len already set correctly
     }
-    
+
     auto data = std::make_shared<std::vector<uint8_t>>();
     data->resize(sizeof(final_len) + to_send_body.size());
     std::memcpy(data->data(), &final_len, sizeof(final_len));
@@ -382,6 +392,8 @@ void ControlSession::DoReadHeader() {
 
 void ControlSession::DoReadBody(uint32_t length) {
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
+    // Note: Claude suggestion says "Only compress outgoing if the client sent a compressed message first"
+    // So we keep this flag to enable outgoing compression.
     if (is_compressed) compression_enabled_ = true;
 
     body_data_.resize(length);
@@ -481,9 +493,15 @@ void ControlSession::HandleLogin(const protocol::json& body) {
     std::string token = body.value("token", "");
     std::string requested_name = body.value("name", "");
     protocol::json resp;
-    if (token == server_.GetToken()) {
+
+    const std::string& expected = server_.GetToken();
+    bool token_ok = (token.size() == expected.size()) &&
+                    (std::memcmp(token.data(), expected.data(), expected.size()) == 0);
+
+    if (token_ok) {
         client_name_ = server_.AllocateClientName(requested_name);
-        std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
+        std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): "
+                  << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
         std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
         authenticated_ = true;
         resp["status"] = "ok";
@@ -505,7 +523,8 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
       acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       token_(token),
       protocol_(protocol),
-      ssl_config_(ssl_config) {
+      ssl_config_(ssl_config),
+      pending_evict_timer_(io_context) {
     
     if (ssl_config_.enable) {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
@@ -531,6 +550,7 @@ void Server::Run() {
     
     // Always start TCP acceptor
     DoAccept();
+    EvictStalePendingConns(); // start expiry loop
     
     // Start QUIC listener if configured
     if (protocol_ == "quic") {
@@ -550,7 +570,7 @@ void Server::Stop() {
 
     {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        for (auto ctx : active_quic_conns_) {
+        for (auto& ctx : active_quic_conns_) {
             std::lock_guard<std::mutex> conn_lock(ctx->mutex);
             for (auto& session : ctx->sessions) {
                 session->stop();
@@ -584,13 +604,15 @@ void Server::StartQuicListener() {
 QUIC_STATUS QUIC_API Server::QuicListenerCallback(HQUIC Listener, void* Context, QUIC_LISTENER_EVENT* Event) {
     auto self = (Server*)Context;
     if (Event->Type == QUIC_LISTENER_EVENT_NEW_CONNECTION) {
-        auto conn_ctx = new ConnectionContext{self, {}, {}};
+        auto conn_ctx = std::make_shared<ConnectionContext>();
+        conn_ctx->server = self;
+        conn_ctx->self_ref = conn_ctx;
         {
             std::lock_guard<std::mutex> lock(self->map_mutex_);
             self->active_quic_conns_.push_back(conn_ctx);
         }
         common::QuicStream::TrackConnection(Event->NEW_CONNECTION.Connection);
-        common::QuicStream::MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)QuicConnectionCallback, conn_ctx);
+        common::QuicStream::MsQuic->SetCallbackHandler(Event->NEW_CONNECTION.Connection, (void*)QuicConnectionCallback, conn_ctx.get());
         QUIC_STATUS status = common::QuicStream::MsQuic->ConnectionSetConfiguration(Event->NEW_CONNECTION.Connection, common::QuicStream::Configuration);
         if (QUIC_FAILED(status)) {
             {
@@ -598,7 +620,7 @@ QUIC_STATUS QUIC_API Server::QuicListenerCallback(HQUIC Listener, void* Context,
                 self->active_quic_conns_.erase(std::remove(self->active_quic_conns_.begin(), self->active_quic_conns_.end(), conn_ctx), self->active_quic_conns_.end());
             }
             common::QuicStream::UntrackConnection(Event->NEW_CONNECTION.Connection);
-            delete conn_ctx;
+            conn_ctx->self_ref.reset();
         }
         return status;
     }
@@ -654,11 +676,14 @@ QUIC_STATUS QUIC_API Server::QuicConnectionCallback(HQUIC Connection, void* Cont
             std::cout << "[Server] QUIC connection shutdown complete." << std::endl;
             {
                 std::lock_guard<std::mutex> lock(self->map_mutex_);
-                self->active_quic_conns_.erase(std::remove(self->active_quic_conns_.begin(), self->active_quic_conns_.end(), conn_ctx), self->active_quic_conns_.end());
+                self->active_quic_conns_.erase(
+                    std::remove_if(self->active_quic_conns_.begin(), self->active_quic_conns_.end(),
+                        [conn_ctx](const std::shared_ptr<ConnectionContext>& p){ return p.get() == conn_ctx; }),
+                    self->active_quic_conns_.end());
             }
             common::QuicStream::UntrackConnection(Connection);
             common::QuicStream::MsQuic->ConnectionClose(Connection);
-            delete conn_ctx;
+            conn_ctx->self_ref.reset();
             return QUIC_STATUS_SUCCESS;
         default:
             return QUIC_STATUS_SUCCESS;
@@ -667,12 +692,40 @@ QUIC_STATUS QUIC_API Server::QuicConnectionCallback(HQUIC Connection, void* Cont
 
 void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket) {
     std::lock_guard<std::mutex> lock(map_mutex_);
-    pending_user_conns_.emplace(ticket, std::move(socket));
+    pending_user_conns_.emplace(ticket, PendingTcpConn{std::move(socket), std::chrono::steady_clock::now()});
 }
 
 void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint) {
     std::lock_guard<std::mutex> lock(map_mutex_);
-    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint});
+    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, std::chrono::steady_clock::now()});
+}
+
+void Server::EvictStalePendingConns() {
+    auto now = std::chrono::steady_clock::now();
+    auto deadline = now - std::chrono::seconds(30);
+    {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        for (auto it = pending_user_conns_.begin(); it != pending_user_conns_.end(); ) {
+            if (it->second.created_at < deadline) {
+                std::cerr << "[Server] Evicting stale TCP pending conn for ticket: " << it->first << std::endl;
+                it = pending_user_conns_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = pending_udp_sessions_.begin(); it != pending_udp_sessions_.end(); ) {
+            if (it->second.created_at < deadline) {
+                std::cerr << "[Server] Evicting stale UDP pending session for ticket: " << it->first << std::endl;
+                it = pending_udp_sessions_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    pending_evict_timer_.expires_after(std::chrono::seconds(30));
+    pending_evict_timer_.async_wait([this](std::error_code ec) {
+        if (!ec) EvictStalePendingConns();
+    });
 }
 
 std::string Server::AllocateClientName(const std::string& requested_name) {
@@ -753,7 +806,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                     auto it_tcp = pending_user_conns_.find(ticket);
                     if (it_tcp != pending_user_conns_.end()) {
                         std::cout << "Splicing user TCP connection and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
-                        auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second));
+                        auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second.socket));
                         auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
                         bridge->Start();
                         pending_user_conns_.erase(it_tcp);

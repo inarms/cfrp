@@ -179,8 +179,10 @@ void UdpBridge::DoReadFromStream() {
 
 void UdpBridge::DoReadFromLocal() {
     auto self(shared_from_this());
-    socket_.async_receive_from(asio::buffer(local_recv_buf_, sizeof(local_recv_buf_)), local_endpoint_,
-        [this, self](std::error_code ec, std::size_t length) {
+    // Use a separate endpoint var so receive_from doesn't clobber local_endpoint_
+    auto sender = std::make_shared<udp::endpoint>();
+    socket_.async_receive_from(asio::buffer(local_recv_buf_, sizeof(local_recv_buf_)), *sender,
+        [this, self, sender](std::error_code ec, std::size_t length) {
             if (!ec) {
                 ResetTimer();
                 auto buf = std::make_shared<std::vector<uint8_t>>();
@@ -254,7 +256,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
     }
 
     if (protocol_ == "quic") {
-        if (!common::QuicStream::InitializeMsQuic(false)) {
+        if (!common::QuicStream::InitializeMsQuic(false, "", "", ssl_config_.verify_peer)) {
             throw std::runtime_error("Failed to initialize MsQuic");
         }
     }
