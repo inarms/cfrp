@@ -69,7 +69,16 @@ int main(int argc, char** argv) {
                 }
             }
             
-            server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports));
+            std::vector<std::string> allowed_clients;
+            if (auto clients = config["server"]["allowed_clients"].as_array()) {
+                for (auto& elem : *clients) {
+                    if (auto s = elem.as_string()) {
+                        allowed_clients.push_back(s->get());
+                    }
+                }
+            }
+            
+            server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
             server->Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");

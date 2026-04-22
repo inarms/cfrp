@@ -7,6 +7,9 @@ token = "secret_token"
 # Optional: List of allowed ports or port ranges for proxies
 # allowed_ports = [6000, "8000-9000"]
 
+# Optional: List of allowed client names (whitelisting)
+# allowed_clients = ["my-client", "office-pc"]
+
 [server.ssl]
 enable = false
 auto_generate = true

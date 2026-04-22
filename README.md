@@ -151,6 +151,7 @@ ssh -p 6000 user@your_server_ip
 - `bind_port`: Control port (default `7000`).
 - `token`: Authentication token shared with the client.
 - `allowed_ports`: Optional list of allowed ports or port ranges (e.g., `[6000, "8000-9000"]`). If omitted, all ports are allowed.
+- `allowed_clients`: Optional whitelist of allowed client names (e.g., `["my-client", "office-pc"]`). If omitted, any client name is allowed.
 - `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`.
 - `[server.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS for control and work connections (TCP only).

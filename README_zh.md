@@ -150,6 +150,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `bind_port`: 控制端口 (默认 `7000`)。
 - `token`: 与客户端共享的身份验证密钥。
 - `allowed_ports`: 可选，允许代理使用的端口或端口范围列表 (例如 `[6000, "8000-9000"]`)。如果省略，则允许所有端口。
+- `allowed_clients`: 可选，允许连接的客户端名称白名单 (例如 `["my-client", "office-pc"]`)。如果省略，则允许任何客户端名称。
 - `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `auto`。
 - `[server.ssl]`: SSL 设置。
   - `enable`: 为控制连接和工作连接启用 SSL/TLS (仅限 TCP)。

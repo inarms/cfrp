@@ -150,7 +150,7 @@ private:
 
 class Server {
 public:
-    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto", const std::vector<PortRange>& allowed_ports = {});
+    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto", const std::vector<PortRange>& allowed_ports = {}, const std::vector<std::string>& allowed_clients = {});
     void Run();
     void Stop();
 
@@ -163,6 +163,7 @@ public:
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
     bool IsPortAllowed(uint16_t port) const;
+    bool IsClientAllowed(const std::string& name) const;
 
 private:
     void DoAccept();
@@ -177,6 +178,7 @@ private:
     std::string protocol_;
     SslConfig ssl_config_;
     std::vector<PortRange> allowed_ports_;
+    std::vector<std::string> allowed_clients_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
     struct UdpSessionInfo {

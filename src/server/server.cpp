@@ -489,34 +489,45 @@ void ControlSession::HandleLogin(const protocol::json& body) {
     std::string token = body.value("token", "");
     std::string requested_name = body.value("name", "");
     protocol::json resp;
-    if (token == server_.GetToken()) {
-        client_name_ = server_.AllocateClientName(requested_name);
-        std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " 
-                  << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
-        std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
-        authenticated_ = true;
-        resp["status"] = "ok";
-        resp["name"] = client_name_;
-    } else {
-        std::cout << "Client authentication failed." << std::endl;
+
+    if (token != server_.GetToken()) {
+        std::cout << "Client authentication failed: invalid token." << std::endl;
         resp["status"] = "error";
         resp["message"] = "Invalid token";
         SendMessage(protocol::MessageType::LoginResp, resp);
         Stop();
         return;
     }
+
+    if (!server_.IsClientAllowed(requested_name)) {
+        std::cout << "[Server] Client registration rejected: name [" << requested_name << "] is not in whitelist." << std::endl;
+        resp["status"] = "error";
+        resp["message"] = "client name not allowed";
+        SendMessage(protocol::MessageType::LoginResp, resp);
+        Stop();
+        return;
+    }
+
+    client_name_ = server_.AllocateClientName(requested_name);
+    std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " 
+                << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
+    std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
+    authenticated_ = true;
+    resp["status"] = "ok";
+    resp["name"] = client_name_;
     SendMessage(protocol::MessageType::LoginResp, resp);
 }
 
 // --- Server ---
-Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol, const std::vector<PortRange>& allowed_ports)
+Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol, const std::vector<PortRange>& allowed_ports, const std::vector<std::string>& allowed_clients)
     : io_context_(io_context),
       acceptor_(io_context_, tcp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       udp_socket_(io_context_, udp::endpoint(asio::ip::make_address(bind_addr), bind_port)),
       token_(token),
       protocol_(protocol),
       ssl_config_(ssl_config),
-      allowed_ports_(allowed_ports) {
+      allowed_ports_(allowed_ports),
+      allowed_clients_(allowed_clients) {
     
     if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
         if (ssl_config_.auto_generate) {
@@ -743,6 +754,11 @@ bool Server::IsPortAllowed(uint16_t port) const {
         }
     }
     return false;
+}
+
+bool Server::IsClientAllowed(const std::string& name) const {
+    if (allowed_clients_.empty()) return true;
+    return std::find(allowed_clients_.begin(), allowed_clients_.end(), name) != allowed_clients_.end();
 }
 
 } // namespace server
