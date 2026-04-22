@@ -506,7 +506,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
       protocol_(protocol),
       ssl_config_(ssl_config) {
     
-    if (ssl_config_.enable || protocol_ == "quic") {
+    if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::single_dh_use);
         
@@ -518,20 +518,22 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
             ssl_ctx_->use_private_key_file(key, asio::ssl::context::pem);
             std::cout << "SSL/QUIC certificate loaded: " << cert << std::endl;
         } catch (const std::exception& e) {
-            if (protocol_ == "quic") {
-                std::cerr << "Warning: Failed to load certificate for QUIC: " << e.what() << std::endl;
+            if (protocol_ == "quic" || protocol_ == "auto") {
+                std::cerr << "Warning: Failed to load certificate for QUIC/SSL: " << e.what() << std::endl;
                 std::cerr << "QUIC requires a certificate to function. Please check config_server.toml" << std::endl;
             }
         }
     }
     
-    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (" << protocol_ << " Mux Enabled)" << std::endl;
+    std::string display_proto = protocol_;
+    if (protocol_ == "auto") display_proto = "auto (TCP/QUIC)";
+    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (" << display_proto << " Mux Enabled)" << std::endl;
 }
 
 void Server::Run() {
     std::cout << "Starting cfrp server loop..." << std::endl;
     DoAccept();
-    if (protocol_ == "quic") {
+    if (protocol_ == "quic" || protocol_ == "auto") {
         DoUdpRead();
     }
 }
