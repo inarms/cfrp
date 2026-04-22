@@ -237,8 +237,14 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
       endpoint_(asio::ip::make_address(server_addr), server_port),
       udp_endpoint_(asio::ip::make_address(server_addr), server_port),
       udp_socket_(io_context_, udp::endpoint(udp::v4(), 0)),
-      reconnect_timer_(io_context_) {
+      reconnect_timer_(io_context_),
+      handshake_timer_(io_context_) {
     
+    current_protocol_ = protocol_;
+    if (current_protocol_ == "auto") {
+        current_protocol_ = "quic";
+    }
+
     if (ssl_config_.enable) {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
         if (ssl_config_.verify_peer) {
@@ -271,12 +277,12 @@ void Client::AddProxy(const ProxyConfig& proxy) {
 }
 
 void Client::DoConnect() {
-    if (protocol_ == "quic") {
+    if (current_protocol_ == "quic") {
         DoQuicConnect();
         return;
     }
 
-    std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << "..." << std::endl;
+    std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << " (TCP)..." << std::endl;
     
     tcp::socket socket(io_context_);
     auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
@@ -309,7 +315,18 @@ void Client::DoQuicConnect() {
     }
     quic_session_->init(ssl_ctx_->native_handle());
     
+    if (protocol_ == "auto") {
+        handshake_timer_.expires_after(std::chrono::seconds(5));
+        handshake_timer_.async_wait([this](std::error_code ec) {
+            if (!ec && current_protocol_ == "quic") {
+                std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
+                HandleDisconnect("QUIC_TIMEOUT");
+            }
+        });
+    }
+
     quic_session_->set_on_connected([this](std::shared_ptr<common::quic::QuicSession> session) {
+        handshake_timer_.cancel();
         std::cout << "QUIC handshake completed. Opening control stream..." << std::endl;
         auto stream = session->open_stream();
         if (stream) {
@@ -320,6 +337,7 @@ void Client::DoQuicConnect() {
     });
 
     quic_session_->set_on_closed([this](std::shared_ptr<common::quic::QuicSession> session) {
+        handshake_timer_.cancel();
         HandleDisconnect("QUIC session closed by peer");
     });
 
@@ -341,6 +359,7 @@ void Client::DoUdpRead() {
 }
 
 void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream) {
+    handshake_timer_.cancel();
     if (!ec) {
         std::cout << "Connected to server via " << underlying_stream->protocol_name() << ". Initializing MuxSession..." << std::endl;
         reconnect_delay_sec_ = 0;
@@ -361,7 +380,10 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
 }
 
 void Client::HandleDisconnect(const std::string& reason) {
-    std::cout << reason << std::endl;
+    if (reason != "QUIC_TIMEOUT") {
+        std::cout << reason << std::endl;
+    }
+
     if (mux_session_) {
         mux_session_->stop();
         mux_session_.reset();
@@ -370,6 +392,18 @@ void Client::HandleDisconnect(const std::string& reason) {
         quic_session_->close_session();
         quic_session_.reset();
     }
+
+    if (protocol_ == "auto") {
+        if (current_protocol_ == "quic") {
+            std::cout << "Switching to TCP failover..." << std::endl;
+            current_protocol_ = "tcp";
+            reconnect_delay_sec_ = 0; // Immediate failover
+        } else {
+            // Already on TCP, try QUIC again for the next reconnection attempt
+            current_protocol_ = "quic";
+        }
+    }
+
     ScheduleReconnect();
 }
 

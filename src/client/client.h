@@ -128,7 +128,9 @@ private:
     std::map<std::string, ProxyConfig> dynamic_proxies_;
     
     asio::steady_timer reconnect_timer_;
+    asio::steady_timer handshake_timer_;
     int reconnect_delay_sec_ = 0;
+    std::string current_protocol_;
 
     // ngtcp2 state
     std::shared_ptr<common::quic::QuicSession> quic_session_;
