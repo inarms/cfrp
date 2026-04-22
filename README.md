@@ -109,7 +109,7 @@ ssh -p 6000 user@your_server_ip
 - `bind_addr`: Address to listen on (default `0.0.0.0`).
 - `bind_port`: Control port (default `7000`).
 - `token`: Authentication token shared with the client.
-- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `quic`.
+- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`.
 - `[server.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS for control and work connections.
   - `cert_file`: Path to the certificate file.
@@ -119,7 +119,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
-- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `quic`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
+- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
 - `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
 - `compression`: Enable Zstd compression for all connections (default `true`).
 - `conf_d`: Optional path to a directory for dynamic proxy configurations.

@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = config["server"]["token"].value_or("");
-            std::string protocol = config["server"]["protocol"].value_or("quic");
+            std::string protocol = config["server"]["protocol"].value_or("auto");
             
             cfrp::server::SslConfig ssl_config;
             if (auto ssl = config["server"]["ssl"].as_table()) {
@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
             std::string token = config["client"]["token"].value_or("");
             std::string client_name = config["client"]["name"].value_or("");
             std::string conf_d = config["client"]["conf_d"].value_or("");
-            std::string protocol = config["client"]["protocol"].value_or("quic");
+            std::string protocol = config["client"]["protocol"].value_or("auto");
             bool compression = config["client"]["compression"].value_or(true);
 
             cfrp::client::SslConfig ssl_config;

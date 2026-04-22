@@ -108,7 +108,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `bind_addr`: 监听地址 (默认 `0.0.0.0`)。
 - `bind_port`: 控制端口 (默认 `7000`)。
 - `token`: 与客户端共享的身份验证密钥。
-- `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `quic`。
+- `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `auto`。
 - `[server.ssl]`: SSL 设置。
   - `enable`: 为控制连接和工作连接启用 SSL/TLS。
   - `cert_file`: 证书文件路径。
@@ -118,7 +118,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `server_addr`: 服务端 IP 或域名。
 - `server_port`: 服务端控制端口。
 - `token`: 身份验证密钥。
-- `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `quic`。在 `auto` 模式下，客户端会尝试 QUIC 并在 5 秒超时后降级到 TCP。
+- `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `auto`。在 `auto` 模式下，客户端会尝试 QUIC 并在 5 秒超时后降级到 TCP。
 - `name`: 客户端的可选唯一名称。如果省略，服务端将自动分配一个，并通过添加后缀（如 `client_1`）确保唯一性。
 - `compression`: 为所有连接启用 Zstd 压缩 (默认 `true`)。
 - `conf_d`: 可选，用于动态代理配置的目录路径。
