@@ -27,39 +27,6 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 2. **Auto-Cleanup**: Certificates are stored in the `certs/` directory and renewed automatically when they near expiration.
 3. **Easy Distribution**: Simply copy the generated `certs/ca.crt` to your client devices to enable full peer verification.
 
-## Proxy Hot-Reloading
-
-`cfrp` supports dynamic proxy management without restarting the client. By monitoring a directory (default `./conf.d`), you can add, update, or remove proxies on the fly.
-
-### Steps to use Hot-Reloading:
-
-1. **Enable in Client Config**:
-   Ensure `conf_d` is set in your `config_client.toml`:
-   ```toml
-   [client]
-   conf_d = "./conf.d"
-   ```
-
-2. **Create the Directory**:
-   ```bash
-   mkdir -p ./conf.d
-   ```
-
-3. **Add a Proxy**:
-   Create a new `.toml` file inside `./conf.d/` (e.g., `web.toml`):
-   ```toml
-   name = "my-web-service"
-   type = "tcp"
-   local_ip = "127.0.0.1"
-   local_port = 8080
-   remote_port = 8081
-   ```
-   The client will detect the new file and register the proxy with the server immediately.
-
-4. **Update or Remove**:
-   - **Update**: Modify the fields in `web.toml`. The client will unregister the old config and register the new one.
-   - **Remove**: Delete `web.toml`. The client will stop the proxy and inform the server.
-
 ## Architecture
 
 1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
@@ -118,7 +85,7 @@ protocol = "auto" # Try QUIC first, failover to TCP
 [client.ssl]
 enable = true
 verify_peer = false
-```
+
 [[client.proxies]]
 name = "ssh"
 type = "tcp"
@@ -143,6 +110,39 @@ You can now access your local service via the server's public IP:
 ```bash
 ssh -p 6000 user@your_server_ip
 ```
+
+## Proxy Hot-Reloading
+
+`cfrp` supports dynamic proxy management without restarting the client. By monitoring a directory (default `./conf.d`), you can add, update, or remove proxies on the fly.
+
+### Steps to use Hot-Reloading:
+
+1. **Enable in Client Config**:
+   Ensure `conf_d` is set in your `config_client.toml`:
+   ```toml
+   [client]
+   conf_d = "./conf.d"
+   ```
+
+2. **Create the Directory**:
+   ```bash
+   mkdir -p ./conf.d
+   ```
+
+3. **Add a Proxy**:
+   Create a new `.toml` file inside `./conf.d/` (e.g., `web.toml`):
+   ```toml
+   name = "my-web-service"
+   type = "tcp"
+   local_ip = "127.0.0.1"
+   local_port = 8080
+   remote_port = 8081
+   ```
+   The client will detect the new file and register the proxy with the server immediately.
+
+4. **Update or Remove**:
+   - **Update**: Modify the fields in `web.toml`. The client will unregister the old config and register the new one.
+   - **Remove**: Delete `web.toml`. The client will stop the proxy and inform the server.
 
 ## Configuration Options
 
