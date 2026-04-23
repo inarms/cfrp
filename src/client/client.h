@@ -33,6 +33,7 @@ struct ProxyConfig {
     std::string local_ip;
     uint16_t local_port;
     uint16_t remote_port;
+    std::vector<std::string> custom_domains;
 };
 
 class Client;

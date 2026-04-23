@@ -144,6 +144,7 @@ private:
     std::vector<char> body_data_;
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
     std::vector<std::shared_ptr<UdpProxyListener>> udp_proxies_;
+    std::vector<std::string> registered_domains_;
     bool authenticated_ = false;
     bool compression_enabled_ = false;
 };
@@ -154,9 +155,17 @@ public:
     void Run();
     void Stop();
 
-    void RegisterUserConn(const std::string& ticket, tcp::socket socket);
+    void SetVhostPorts(uint16_t http_port, uint16_t https_port) {
+        vhost_http_port_ = http_port;
+        vhost_https_port_ = https_port;
+    }
+
+    void RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::vector<uint8_t>& initial_data = {});
     void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
     
+    void AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type);
+    void RemoveVhostRoute(const std::string& domain);
+
     std::string AllocateClientName(const std::string& requested_name);
     void ReleaseClientName(const std::string& name);
 
@@ -167,6 +176,7 @@ public:
 
 private:
     void DoAccept();
+    void DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::string& type);
     void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
 
     void DoUdpRead();
@@ -180,13 +190,30 @@ private:
     std::vector<PortRange> allowed_ports_;
     std::vector<std::string> allowed_clients_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
+
+    uint16_t vhost_http_port_ = 0;
+    uint16_t vhost_https_port_ = 0;
+    std::unique_ptr<tcp::acceptor> vhost_http_acceptor_;
+    std::unique_ptr<tcp::acceptor> vhost_https_acceptor_;
+
+    struct VhostRoute {
+        std::weak_ptr<ControlSession> session;
+        std::string proxy_name;
+        std::string type; // "http" or "https"
+    };
+    std::map<std::string, VhostRoute> vhost_routes_;
     
+    struct TcpSessionInfo {
+        tcp::socket socket;
+        std::vector<uint8_t> initial_data;
+    };
+
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;
         udp::endpoint endpoint;
     };
 
-    std::map<std::string, tcp::socket> pending_user_conns_;
+    std::map<std::string, TcpSessionInfo> pending_user_conns_;
     std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::vector<std::string> active_client_names_;
     std::mutex map_mutex_;

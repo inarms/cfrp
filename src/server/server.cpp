@@ -331,6 +331,10 @@ void ControlSession::Stop() {
         proxy->Stop();
     }
     udp_proxies_.clear();
+    for (const auto& domain : registered_domains_) {
+        server_.RemoveVhostRoute(domain);
+    }
+    registered_domains_.clear();
     stream_->close();
 }
 
@@ -428,8 +432,16 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
         std::string name = msg.body["name"];
         uint16_t remote_port = msg.body["remote_port"];
         std::string type = msg.body.value("type", "tcp");
+        std::vector<std::string> custom_domains;
+        if (msg.body.contains("custom_domains")) {
+            if (msg.body["custom_domains"].is_array()) {
+                custom_domains = msg.body["custom_domains"].get<std::vector<std::string>>();
+            } else {
+                custom_domains.push_back(msg.body["custom_domains"].get<std::string>());
+            }
+        }
 
-        if (!server_.IsPortAllowed(remote_port)) {
+        if (type != "http" && type != "https" && !server_.IsPortAllowed(remote_port)) {
             std::cerr << "[Server] Proxy registration rejected: port " << remote_port << " is not in allowed ranges." << std::endl;
             protocol::json resp;
             resp["status"] = "error";
@@ -444,6 +456,11 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
                 auto listener = std::make_shared<UdpProxyListener>(server_, io_context_, remote_port, shared_from_this(), name);
                 listener->Start();
                 udp_proxies_.push_back(listener);
+            } else if (type == "http" || type == "https") {
+                for (const auto& domain : custom_domains) {
+                    server_.AddVhostRoute(domain, shared_from_this(), name, type);
+                    registered_domains_.push_back(domain);
+                }
             } else {
                 auto listener = std::make_shared<ProxyListener>(server_, io_context_, remote_port, shared_from_this(), name);
                 listener->Start();
@@ -571,6 +588,26 @@ void Server::Run() {
     if (protocol_ == "quic" || protocol_ == "auto") {
         DoUdpRead();
     }
+
+    if (vhost_http_port_ > 0) {
+        try {
+            vhost_http_acceptor_ = std::make_unique<tcp::acceptor>(io_context_, tcp::endpoint(tcp::v4(), vhost_http_port_));
+            std::cout << "[Server] Vhost HTTP listener started on port " << vhost_http_port_ << std::endl;
+            DoVhostAccept(vhost_http_acceptor_, "http");
+        } catch (const std::exception& e) {
+            std::cerr << "[Server] Failed to start Vhost HTTP listener: " << e.what() << std::endl;
+        }
+    }
+
+    if (vhost_https_port_ > 0) {
+        try {
+            vhost_https_acceptor_ = std::make_unique<tcp::acceptor>(io_context_, tcp::endpoint(tcp::v4(), vhost_https_port_));
+            std::cout << "[Server] Vhost HTTPS listener started on port " << vhost_https_port_ << std::endl;
+            DoVhostAccept(vhost_https_acceptor_, "https");
+        } catch (const std::exception& e) {
+            std::cerr << "[Server] Failed to start Vhost HTTPS listener: " << e.what() << std::endl;
+        }
+    }
 }
 
 void Server::Stop() {
@@ -638,9 +675,9 @@ void Server::DoUdpRead() {
         });
 }
 
-void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket) {
+void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::vector<uint8_t>& initial_data) {
     std::lock_guard<std::mutex> lock(map_mutex_);
-    pending_user_conns_.emplace(ticket, std::move(socket));
+    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data});
 }
 
 void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint) {
@@ -725,10 +762,23 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                     auto it_tcp = pending_user_conns_.find(ticket);
                     if (it_tcp != pending_user_conns_.end()) {
                         std::cout << "Splicing user TCP connection and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
-                        auto user_stream = std::make_shared<common::TcpStream>(std::move(it_tcp->second));
-                        auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
-                        bridge->Start();
+                        auto initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
+                        auto user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
                         pending_user_conns_.erase(it_tcp);
+
+                        if (!initial_data->empty()) {
+                            stream->async_write(asio::buffer(*initial_data), [stream, initial_data, user_socket, use_compression](std::error_code ec, std::size_t) {
+                                if (!ec) {
+                                    auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
+                                    auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
+                                    bridge->Start();
+                                }
+                            });
+                        } else {
+                            auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
+                            auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
+                            bridge->Start();
+                        }
                     } else {
                         auto it_udp = pending_udp_sessions_.find(ticket);
                         if (it_udp != pending_udp_sessions_.end()) {
@@ -744,6 +794,119 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                 }
             });
     }
+}
+
+void Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    vhost_routes_[domain] = {session, proxy_name, type};
+    std::cout << "[Server] Added vhost route: " << domain << " -> " << proxy_name << " (" << type << ")" << std::endl;
+}
+
+void Server::RemoveVhostRoute(const std::string& domain) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    vhost_routes_.erase(domain);
+}
+
+void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::string& type) {
+    auto socket = std::make_shared<tcp::socket>(io_context_);
+    acceptor->async_accept(*socket, [this, socket, &acceptor, type](std::error_code ec) {
+        if (!ec) {
+            auto buffer = std::make_shared<std::vector<uint8_t>>(4096);
+            socket->async_read_some(asio::buffer(*buffer), [this, socket, buffer, type](std::error_code ec, std::size_t length) {
+                if (!ec) {
+                    buffer->resize(length);
+                    std::string domain;
+                    if (type == "http") {
+                        std::string data(reinterpret_cast<char*>(buffer->data()), length);
+                        size_t pos = data.find("Host: ");
+                        if (pos != std::string::npos) {
+                            size_t end = data.find("\r\n", pos);
+                            if (end != std::string::npos) {
+                                domain = data.substr(pos + 6, end - (pos + 6));
+                                size_t colon = domain.find(":");
+                                if (colon != std::string::npos) domain = domain.substr(0, colon);
+                                // Trim whitespace
+                                domain.erase(0, domain.find_first_not_of(" \t\r\n"));
+                                domain.erase(domain.find_last_not_of(" \t\r\n") + 1);
+                            }
+                        }
+                    } else if (type == "https") {
+                        // Basic SNI parser
+                        const uint8_t* data = buffer->data();
+                        size_t size = buffer->size();
+                        if (size > 5 && data[0] == 0x16) { // Handshake
+                            size_t len = (data[3] << 8) | data[4];
+                            if (len + 5 <= size && data[5] == 0x01) { // ClientHello
+                                size_t pos = 5 + 4; // Skip Handshake header
+                                pos += 2; // Version
+                                pos += 32; // Random
+                                if (pos < size) {
+                                    size_t sess_id_len = data[pos];
+                                    pos += 1 + sess_id_len;
+                                    if (pos + 2 <= size) {
+                                        size_t cipher_len = (data[pos] << 8) | data[pos+1];
+                                        pos += 2 + cipher_len;
+                                        if (pos + 1 <= size) {
+                                            size_t comp_len = data[pos];
+                                            pos += 1 + comp_len;
+                                            if (pos + 2 <= size) {
+                                                size_t ext_len = (data[pos] << 8) | data[pos+1];
+                                                pos += 2;
+                                                size_t end_ext = pos + ext_len;
+                                                while (pos + 4 <= size && pos + 4 <= end_ext) {
+                                                    size_t etype = (data[pos] << 8) | data[pos+1];
+                                                    size_t elen = (data[pos+2] << 8) | data[pos+3];
+                                                    pos += 4;
+                                                    if (etype == 0x0000) { // SNI
+                                                        if (pos + 2 <= size) {
+                                                            size_t list_len = (data[pos] << 8) | data[pos+1];
+                                                            pos += 2;
+                                                            if (pos + 3 <= size && data[pos] == 0x00) { // Name type: host_name
+                                                                size_t name_len = (data[pos+1] << 8) | data[pos+2];
+                                                                pos += 3;
+                                                                if (pos + name_len <= size) {
+                                                                    domain = std::string(reinterpret_cast<const char*>(data + pos), name_len);
+                                                                }
+                                                            }
+                                                        }
+                                                        break;
+                                                    }
+                                                    pos += elen;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    std::shared_ptr<ControlSession> session;
+                    std::string proxy_name;
+                    {
+                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        auto it = vhost_routes_.find(domain);
+                        if (it != vhost_routes_.end()) {
+                            session = it->second.session.lock();
+                            proxy_name = it->second.proxy_name;
+                        }
+                    }
+
+                    if (session) {
+                        std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_vhost_" + std::to_string(rand());
+                        RegisterUserConn(ticket, std::move(*socket), *buffer);
+                        protocol::json body;
+                        body["proxy_name"] = proxy_name;
+                        body["ticket"] = ticket;
+                        session->SendMessage(protocol::MessageType::NewUserConn, body);
+                    } else {
+                        // std::cerr << "[Server] No vhost route for domain: [" << domain << "] (" << type << ")" << std::endl;
+                    }
+                }
+            });
+        }
+        DoVhostAccept(acceptor, type);
+    });
 }
 
 bool Server::IsPortAllowed(uint16_t port) const {

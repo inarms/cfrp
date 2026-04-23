@@ -4,6 +4,10 @@ bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "secret_token"
 
+# Virtual Host ports for HTTP and HTTPS (SNI routing)
+vhost_http_port = 8080
+vhost_https_port = 8443
+
 # Optional: List of allowed ports or port ranges for proxies
 # allowed_ports = [6000, "8000-9000"]
 

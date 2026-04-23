@@ -16,7 +16,9 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**. Uses **wolfSSL** for high-performance cryptography and modern QUIC support.
 - **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
 - **Resilient Client**: Automatic reconnection with exponential backoff if the server becomes unreachable. Supports **graceful cleanup** on exit.
-- **Dynamic Proxying**: Supports multiple **TCP** and **UDP** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
+- **Dynamic Proxying**: Supports multiple **TCP**, **UDP**, **HTTP**, and **HTTPS (SNI)** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
+- **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
+- **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
 - **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
@@ -149,6 +151,8 @@ ssh -p 6000 user@your_server_ip
 ### Server Section
 - `bind_addr`: Address to listen on (default `0.0.0.0`).
 - `bind_port`: Control port (default `7000`).
+- `vhost_http_port`: Port for HTTP vhost routing (e.g., `80`).
+- `vhost_https_port`: Port for HTTPS SNI routing (e.g., `443`).
 - `token`: Authentication token shared with the client.
 - `allowed_ports`: Optional list of allowed ports or port ranges (e.g., `[6000, "8000-9000"]`). If omitted, all ports are allowed.
 - `allowed_clients`: Optional whitelist of allowed client names (e.g., `["my-client", "office-pc"]`). If omitted, any client name is allowed.
@@ -175,10 +179,11 @@ ssh -p 6000 user@your_server_ip
 
 ### Proxy Section (`[[client.proxies]]`)
 - `name`: Unique name for the proxy.
-- `type`: Protocol type (`tcp` or `udp`).
-- `local_ip`: Local service IP.
+- `type`: Protocol type (`tcp`, `udp`, `http`, or `https`).
+- `local_ip`: Local service IP or hostname (e.g., `127.0.0.1` or `localhost`).
 - `local_port`: Local service port.
-- `remote_port`: Port on the server to expose the service.
+- `remote_port`: Port on the server to expose the service (required for `tcp`/`udp`).
+- `custom_domains`: Domain name(s) for `http`/`https` types (e.g., `["a.com", "b.com"]`).
 
 ## Security Design: wolfSSL & QUIC
 

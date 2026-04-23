@@ -78,7 +78,11 @@ int main(int argc, char** argv) {
                 }
             }
             
+            uint16_t vhost_http_port = static_cast<uint16_t>(config["server"]["vhost_http_port"].value_or(0));
+            uint16_t vhost_https_port = static_cast<uint16_t>(config["server"]["vhost_https_port"].value_or(0));
+
             server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
+            server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
         } else if (config["client"]) {
             std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
@@ -107,6 +111,13 @@ int main(int argc, char** argv) {
                         pc.local_ip = (*table)["local_ip"].value_or("127.0.0.1");
                         pc.local_port = static_cast<uint16_t>((*table)["local_port"].value_or(0));
                         pc.remote_port = static_cast<uint16_t>((*table)["remote_port"].value_or(0));
+                        if (auto domains = (*table)["custom_domains"].as_array()) {
+                            for (auto& d : *domains) {
+                                if (auto s = d.as_string()) pc.custom_domains.push_back(s->get());
+                            }
+                        } else if (auto d = (*table)["custom_domains"].as_string()) {
+                            pc.custom_domains.push_back(d->get());
+                        }
                         client->AddProxy(pc);
                     }
                 }

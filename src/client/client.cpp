@@ -544,6 +544,9 @@ void Client::RegisterProxy(const ProxyConfig& pc) {
     body["name"] = pc.name;
     body["type"] = pc.type;
     body["remote_port"] = pc.remote_port;
+    if (!pc.custom_domains.empty()) {
+        body["custom_domains"] = pc.custom_domains;
+    }
     SendMessage(protocol::MessageType::RegisterProxy, body);
 }
 
@@ -658,31 +661,39 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
     }
 
     auto local_socket = std::make_shared<tcp::socket>(io_context_);
+    auto resolver = std::make_shared<tcp::resolver>(io_context_);
     
-    local_socket->async_connect(tcp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port),
-        [this, self, local_socket, ticket, pc](std::error_code ec) {
+    resolver->async_resolve(pc.local_ip, std::to_string(pc.local_port),
+        [this, self, local_socket, ticket, pc, resolver](std::error_code ec, tcp::resolver::results_type results) {
             if (!ec) {
-                if (!mux_session_) return;
-                auto work_stream = mux_session_->open_stream();
-                
-                auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
-                ticket_buf->push_back(compression_ ? 0x01 : 0x00);
-                ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
-                ticket_buf->resize(65, ' ');
-                
-                work_stream->async_write(asio::buffer(*ticket_buf),
-                    [this, self, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
+                asio::async_connect(*local_socket, results,
+                    [this, self, local_socket, ticket, pc](std::error_code ec, tcp::endpoint) {
                         if (!ec) {
-                            std::cout << "Bridging local service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
-                            auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
-                            auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_);
-                            bridge->Start();
+                            if (!mux_session_) return;
+                            auto work_stream = mux_session_->open_stream();
+                            
+                            auto ticket_buf = std::make_shared<std::vector<uint8_t>>();
+                            ticket_buf->push_back(compression_ ? 0x01 : 0x00);
+                            ticket_buf->insert(ticket_buf->end(), ticket.begin(), ticket.end());
+                            ticket_buf->resize(65, ' ');
+                            
+                            work_stream->async_write(asio::buffer(*ticket_buf),
+                                [this, self, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
+                                    if (!ec) {
+                                        std::cout << "Bridging local service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
+                                        auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
+                                        auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_);
+                                        bridge->Start();
+                                    } else {
+                                        std::cerr << "Failed to send ticket over mux stream" << std::endl;
+                                    }
+                                });
                         } else {
-                            std::cerr << "Failed to send ticket over mux stream" << std::endl;
+                            std::cerr << "Failed to connect to local service (" << pc.local_ip << ":" << pc.local_port << "): " << ec.message() << std::endl;
                         }
                     });
             } else {
-                std::cerr << "Failed to connect to local service (" << pc.local_ip << ":" << pc.local_port << "): " << ec.message() << std::endl;
+                std::cerr << "Failed to resolve local service (" << pc.local_ip << "): " << ec.message() << std::endl;
             }
         });
 }
@@ -700,9 +711,17 @@ void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& tick
     work_stream->async_write(asio::buffer(*ticket_buf),
         [this, self, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
             if (!ec) {
+    auto resolver = std::make_shared<udp::resolver>(io_context_);
+    resolver->async_resolve(pc.local_ip, std::to_string(pc.local_port),
+        [this, self, work_stream, ticket_buf, pc, resolver](std::error_code ec, udp::resolver::results_type results) {
+            if (!ec && !results.empty()) {
                 std::cout << "Bridging local UDP service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
-                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, udp::endpoint(asio::ip::make_address(pc.local_ip), pc.local_port), compression_);
+                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, *results.begin(), compression_);
                 bridge->Start();
+            } else {
+                std::cerr << "Failed to resolve local UDP service (" << pc.local_ip << "): " << (ec ? ec.message() : "No results") << std::endl;
+            }
+        });
             } else {
                 std::cerr << "Failed to send ticket over mux stream for UDP" << std::endl;
             }
