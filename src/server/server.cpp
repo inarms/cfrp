@@ -1,6 +1,7 @@
 #include "server.h"
 #include "common/quic_ngtcp2.h"
 #include "common/ssl_utils.h"
+#include "common/websocket_stream.h"
 #include <iostream>
 #include <chrono>
 #include <zstd.h>
@@ -781,9 +782,12 @@ void Server::DoAccept() {
             } else {
                 stream = std::make_shared<common::TcpStream>(std::move(socket));
             }
-            
-            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
-                if (!ec) {
+
+            if (protocol_ == "websocket") {
+                stream = std::make_shared<common::WebsocketStream>(stream, false);
+            }
+
+            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {                if (!ec) {
                     auto mux_session = std::make_shared<common::mux::Session>(stream, true);
                     mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
                         HandleNewMuxStream(mux_session, new_stream);

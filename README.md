@@ -17,6 +17,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
 - **Resilient Client**: Automatic reconnection with exponential backoff if the server becomes unreachable. Supports **graceful cleanup** on exit.
 - **Dynamic Proxying**: Supports multiple **TCP**, **UDP**, **HTTP**, and **HTTPS (SNI)** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
+- **Protocol Flexibility**: Supports **TCP**, **QUIC**, and **WebSocket** for the underlying tunnel. WebSocket support allows for firewall traversal and CDN (e.g. Cloudflare) integration.
 - **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
 - **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
 - **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
@@ -157,7 +158,7 @@ ssh -p 6000 user@your_server_ip
 - `token`: Authentication token shared with the client.
 - `allowed_ports`: Optional list of allowed ports or port ranges (e.g., `[6000, "8000-9000"]`). If omitted, all ports are allowed.
 - `allowed_clients`: Optional whitelist of allowed client names (e.g., `["my-client", "office-pc"]`). If omitted, any client name is allowed.
-- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`.
+- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`.
 - `[server.ssl]`: SSL settings.
   - `enable`: Enable SSL/TLS for control and work connections (TCP only).
   - `auto_generate`: Automatically generate CA and Server certificates if missing or expired (default `true`).
@@ -169,7 +170,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
-- `protocol`: Protocol to use (`tcp`, `quic`, or `auto`). Default is `auto`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
+- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
 - `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
 - `compression`: Enable Zstd compression for all connections (default `true`).
 - `conf_d`: Optional path to a directory for dynamic proxy configurations.

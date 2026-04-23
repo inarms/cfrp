@@ -1,6 +1,7 @@
 #include "client.h"
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
+#include "common/websocket_stream.h"
 #include <iostream>
 #include <zstd.h>
 #include <filesystem>
@@ -346,6 +347,10 @@ void Client::DoConnect() {
                     stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
                 } else {
                     stream = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
+                }
+
+                if (current_protocol_ == "websocket") {
+                    stream = std::make_shared<common::WebsocketStream>(stream, true);
                 }
                 
                 stream->async_handshake(asio::ssl::stream_base::client, [this, stream](std::error_code ec) {

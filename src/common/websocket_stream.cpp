@@ -1,0 +1,267 @@
+#include "common/websocket_stream.h"
+#include "common/websocket_utils.h"
+#include <iostream>
+#include <sstream>
+
+namespace cfrp {
+namespace common {
+
+WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client)
+    : underlying_(std::move(underlying)), is_client_(is_client) {
+    std::random_device rd;
+    rng_.seed(rd());
+}
+
+void WebsocketStream::async_handshake(ssl::stream_base::handshake_type, std::function<void(std::error_code)> handler) {
+    if (is_client_) {
+        DoClientHandshake(handler);
+    } else {
+        DoServerHandshake(handler);
+    }
+}
+
+void WebsocketStream::DoClientHandshake(std::function<void(std::error_code)> handler) {
+    auto self = shared_from_this();
+    std::string key = "dGhlIHNhbXBsZSBub25jZQ=="; // Simplified for now, should be random
+    
+    std::stringstream ss;
+    ss << "GET / HTTP/1.1\r\n";
+    ss << "Host: cfrp\r\n";
+    ss << "Upgrade: websocket\r\n";
+    ss << "Connection: Upgrade\r\n";
+    ss << "Sec-WebSocket-Key: " << key << "\r\n";
+    ss << "Sec-WebSocket-Version: 13\r\n\r\n";
+    
+    auto request = std::make_shared<std::string>(ss.str());
+    underlying_->async_write(asio::buffer(*request), [this, self, request, handler](std::error_code ec, std::size_t) {
+        if (ec) {
+            handler(ec);
+            return;
+        }
+        
+        auto response_buf = std::make_shared<std::vector<char>>(1024);
+        underlying_->async_read_some(asio::buffer(*response_buf), [this, self, response_buf, handler](std::error_code ec, std::size_t length) {
+            if (ec) {
+                handler(ec);
+                return;
+            }
+            // Simple check for 101 Switching Protocols
+            std::string resp(response_buf->data(), length);
+            if (resp.find("101 Switching Protocols") != std::string::npos) {
+                handshaked_ = true;
+                handler(std::error_code());
+            } else {
+                handler(asio::error::access_denied);
+            }
+        });
+    });
+}
+
+void WebsocketStream::DoServerHandshake(std::function<void(std::error_code)> handler) {
+    auto self = shared_from_this();
+    auto request_buf = std::make_shared<std::vector<char>>(2048);
+    
+    underlying_->async_read_some(asio::buffer(*request_buf), [this, self, request_buf, handler](std::error_code ec, std::size_t length) {
+        if (ec) {
+            handler(ec);
+            return;
+        }
+        
+        std::string req(request_buf->data(), length);
+        size_t key_pos = req.find("Sec-WebSocket-Key: ");
+        if (key_pos == std::string::npos) {
+            handler(asio::error::invalid_argument);
+            return;
+        }
+        
+        size_t key_end = req.find("\r\n", key_pos);
+        std::string client_key = req.substr(key_pos + 19, key_end - (key_pos + 19));
+        std::string accept_key = WebSocketUtils::GenerateAcceptKey(client_key);
+        
+        std::stringstream ss;
+        ss << "HTTP/1.1 101 Switching Protocols\r\n";
+        ss << "Upgrade: websocket\r\n";
+        ss << "Connection: Upgrade\r\n";
+        ss << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
+        
+        auto response = std::make_shared<std::string>(ss.str());
+        underlying_->async_write(asio::buffer(*response), [this, self, response, handler](std::error_code ec, std::size_t) {
+            if (!ec) handshaked_ = true;
+            handler(ec);
+        });
+    });
+}
+
+void WebsocketStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
+    auto self = shared_from_this();
+    size_t payload_len = buffer.size();
+    
+    std::vector<uint8_t> frame;
+    frame.push_back(0x82); // FIN + Binary
+    
+    uint8_t mask_bit = is_client_ ? 0x80 : 0x00;
+    
+    if (payload_len <= 125) {
+        frame.push_back(mask_bit | (uint8_t)payload_len);
+    } else if (payload_len <= 65535) {
+        frame.push_back(mask_bit | 126);
+        frame.push_back((payload_len >> 8) & 0xFF);
+        frame.push_back(payload_len & 0xFF);
+    } else {
+        frame.push_back(mask_bit | 127);
+        for (int i = 7; i >= 0; --i) {
+            frame.push_back((payload_len >> (i * 8)) & 0xFF);
+        }
+    }
+    
+    uint8_t mask[4];
+    if (is_client_) {
+        std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+        uint32_t m = dist(rng_);
+        std::memcpy(mask, &m, 4);
+        frame.insert(frame.end(), mask, mask + 4);
+    }
+    
+    size_t header_size = frame.size();
+    frame.resize(header_size + payload_len);
+    std::memcpy(frame.data() + header_size, buffer.data(), payload_len);
+    
+    if (is_client_) {
+        for (size_t i = 0; i < payload_len; ++i) {
+            frame[header_size + i] ^= mask[i % 4];
+        }
+    }
+    
+    auto frame_ptr = std::make_shared<std::vector<uint8_t>>(std::move(frame));
+    underlying_->async_write(asio::buffer(*frame_ptr), [this, self, frame_ptr, handler, payload_len](std::error_code ec, std::size_t) {
+        handler(ec, payload_len);
+    });
+}
+
+void WebsocketStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
+    // For simplicity, each async_read_some will read one full WS frame.
+    // In a production-grade implementation, we'd need to handle fragmentation and multi-frame reads.
+    ReadWsFrame(handler, buffer);
+}
+
+void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
+    // Websocket framing handles the "exact length" naturally per frame.
+    // But cfrp expects to read exactly N bytes.
+    // We'll need a bit of buffering logic if the WS frame is larger than the requested buffer.
+    
+    if (read_remaining_ > 0) {
+        size_t to_copy = std::min(read_remaining_, buffer.size());
+        std::memcpy(buffer.data(), read_buffer_.data() + read_offset_, to_copy);
+        read_offset_ += to_copy;
+        read_remaining_ -= to_copy;
+        asio::post(underlying_->get_executor(), [handler, to_copy]() {
+            handler(std::error_code(), to_copy);
+        });
+        return;
+    }
+
+    auto self = shared_from_this();
+    ReadWsFrame([this, self, buffer, handler](std::error_code ec, std::size_t length) {
+        if (ec) {
+            handler(ec, length);
+            return;
+        }
+        
+        size_t to_copy = std::min(length, buffer.size());
+        std::memcpy(buffer.data(), read_buffer_.data(), to_copy);
+        
+        if (length > to_copy) {
+            read_offset_ = to_copy;
+            read_remaining_ = length - to_copy;
+        } else {
+            read_offset_ = 0;
+            read_remaining_ = 0;
+        }
+        
+        handler(std::error_code(), to_copy);
+    }, buffer);
+}
+
+void WebsocketStream::ReadWsFrame(std::function<void(std::error_code, std::size_t)> handler, asio::mutable_buffer user_buffer) {
+    auto self = shared_from_this();
+    auto header = std::make_shared<std::vector<uint8_t>>(2);
+    
+    underlying_->async_read(asio::buffer(*header), [this, self, header, handler](std::error_code ec, std::size_t) {
+        if (ec) {
+            handler(ec, 0);
+            return;
+        }
+        
+        uint8_t b0 = (*header)[0];
+        uint8_t b1 = (*header)[1];
+        
+        // FIN + Opcode check (ignore pings/pongs/closes for now)
+        // uint8_t opcode = b0 & 0x0F;
+        
+        bool masked = (b1 & 0x80) != 0;
+        uint64_t payload_len = b1 & 0x7F;
+        
+        auto next_step = [this, self, masked, handler](uint64_t len) {
+            size_t extra = masked ? 4 : 0;
+            auto payload = std::make_shared<std::vector<uint8_t>>(len + extra);
+            
+            underlying_->async_read(asio::buffer(*payload), [this, self, payload, masked, len, handler](std::error_code ec, std::size_t) {
+                if (ec) {
+                    handler(ec, 0);
+                    return;
+                }
+                
+                uint8_t* data = payload->data();
+                if (masked) {
+                    uint8_t mask[4];
+                    std::memcpy(mask, data, 4);
+                    data += 4;
+                    for (size_t i = 0; i < len; ++i) {
+                        data[i] ^= mask[i % 4];
+                    }
+                }
+                
+                read_buffer_.assign(data, data + len);
+                handler(std::error_code(), len);
+            });
+        };
+        
+        if (payload_len == 126) {
+            auto ext = std::make_shared<std::vector<uint8_t>>(2);
+            underlying_->async_read(asio::buffer(*ext), [this, self, ext, next_step, handler](std::error_code ec, std::size_t) {
+                if (ec) { handler(ec, 0); return; }
+                uint16_t len = ((*ext)[0] << 8) | (*ext)[1];
+                next_step(len);
+            });
+        } else if (payload_len == 127) {
+            auto ext = std::make_shared<std::vector<uint8_t>>(8);
+            underlying_->async_read(asio::buffer(*ext), [this, self, ext, next_step, handler](std::error_code ec, std::size_t) {
+                if (ec) { handler(ec, 0); return; }
+                uint64_t len = 0;
+                for (int i = 0; i < 8; ++i) len = (len << 8) | (*ext)[i];
+                next_step(len);
+            });
+        } else {
+            next_step(payload_len);
+        }
+    });
+}
+
+void WebsocketStream::close() {
+    underlying_->close();
+}
+
+asio::any_io_executor WebsocketStream::get_executor() {
+    return underlying_->get_executor();
+}
+
+std::string WebsocketStream::remote_endpoint_string() {
+    return underlying_->remote_endpoint_string();
+}
+
+std::string WebsocketStream::protocol_name() {
+    return "WebSocket";
+}
+
+} // namespace common
+} // namespace cfrp

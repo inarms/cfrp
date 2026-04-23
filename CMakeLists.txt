@@ -30,6 +30,7 @@ add_executable(cfrp
     src/common/mux.cpp
     src/common/quic_ngtcp2.cpp
     src/common/ssl_utils.cpp
+    src/common/websocket_stream.cpp
 )
 
 target_include_directories(cfrp PRIVATE 
