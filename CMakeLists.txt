@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 
-set(CMAKE_TOOLCHAIN_FILE $ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake)
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+endif()
 
 project(cfrp LANGUAGES C CXX)
 
@@ -13,7 +15,6 @@ find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
-find_package(ngtcp2 CONFIG REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
@@ -35,17 +36,18 @@ add_executable(cfrp
 
 target_include_directories(cfrp PRIVATE 
     src
-    ${CMAKE_CURRENT_BINARY_DIR}/vcpkg_installed/${VCPKG_TARGET_TRIPLET}/include/wolfssl
 )
 
 # For ASIO to find openssl/*.h as wolfSSL headers
-target_include_directories(cfrp SYSTEM PRIVATE 
-    ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/wolfssl
-)
+if(DEFINED ENV{VCPKG_ROOT})
+    target_include_directories(cfrp SYSTEM PRIVATE 
+        ${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/wolfssl
+    )
+endif()
 
 target_link_libraries(cfrp PRIVATE 
     CLI11::CLI11 
-    PkgConfig::tomlplusplus 
+    PkgConfig::tomlplusplus
     asio::asio 
     zstd::libzstd
     wolfssl::wolfssl
