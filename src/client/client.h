@@ -15,6 +15,8 @@
 #include "common/mux.h"
 #include "common/quic_ngtcp2.h"
 
+#include "common/rate_limiter.h"
+
 namespace cfrp {
 namespace client {
 
@@ -34,13 +36,14 @@ struct ProxyConfig {
     uint16_t local_port;
     uint16_t remote_port;
     std::vector<std::string> custom_domains;
+    int64_t bandwidth_limit = 0;
 };
 
 class Client;
 
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
-    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression);
+    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -48,6 +51,7 @@ private:
 
     std::shared_ptr<common::AsyncStream> s1_;
     std::shared_ptr<common::AsyncStream> s2_;
+    std::shared_ptr<common::RateLimiter> rate_limiter_;
     bool use_compression_;
     char data1_[8192];
     char data2_[8192];
@@ -57,7 +61,7 @@ private:
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -68,6 +72,7 @@ private:
 
     asio::steady_timer timer_;
     std::shared_ptr<common::AsyncStream> stream_;
+    std::shared_ptr<common::RateLimiter> rate_limiter_;
     udp::socket socket_;
     udp::endpoint local_endpoint_;
     bool use_compression_;
@@ -127,6 +132,7 @@ private:
     std::string conf_d_path_;
     asio::steady_timer conf_timer_;
     std::map<std::string, ProxyConfig> dynamic_proxies_;
+    std::map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
     
     asio::steady_timer reconnect_timer_;
     asio::steady_timer handshake_timer_;

@@ -10,8 +10,8 @@ namespace cfrp {
 namespace server {
 
 // --- Bridge ---
-Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression)
-    : s1_(std::move(s1)), s2_(std::move(s2)), use_compression_(use_compression) {}
+Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
+    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression) {}
 
 void Bridge::Start() {
     DoRead(1);
@@ -29,12 +29,21 @@ void Bridge::DoRead(int direction) {
                 if (!ec) {
                     auto& to_inner = (direction == 1) ? s2_ : s1_;
                     auto& buf_inner = (direction == 1) ? data1_ : data2_;
-                    to_inner->async_write(asio::buffer(buf_inner, length),
-                        [this, self, direction](std::error_code ec, std::size_t) {
-                            if (!ec) {
-                                DoRead(direction);
-                            }
-                        });
+                    
+                    auto write_op = [this, self, direction, &to_inner, &buf_inner, length]() {
+                        to_inner->async_write(asio::buffer(buf_inner, length),
+                            [this, self, direction](std::error_code ec, std::size_t) {
+                                if (!ec) {
+                                    DoRead(direction);
+                                }
+                            });
+                    };
+
+                    if (rate_limiter_) {
+                        rate_limiter_->async_wait(length, std::move(write_op));
+                    } else {
+                        write_op();
+                    }
                 }
             });
     } else {
@@ -65,11 +74,19 @@ void Bridge::DoRead(int direction) {
                         std::memcpy(packet->data(), &final_header, sizeof(final_header));
                         std::memcpy(packet->data() + sizeof(final_header), write_buf, write_len);
 
-                        s2_->async_write(asio::buffer(*packet), [this, self, packet](std::error_code ec, std::size_t) {
-                            if (!ec) {
-                                DoRead(1);
-                            }
-                        });
+                        auto write_op = [this, self, packet]() {
+                            s2_->async_write(asio::buffer(*packet), [this, self, packet](std::error_code ec, std::size_t) {
+                                if (!ec) {
+                                    DoRead(1);
+                                }
+                            });
+                        };
+
+                        if (rate_limiter_) {
+                            rate_limiter_->async_wait(length, std::move(write_op));
+                        } else {
+                            write_op();
+                        }
                     }
                 });
         } else { // Work -> Raw (Unframe & Decompress)
@@ -86,13 +103,30 @@ void Bridge::DoRead(int direction) {
                                     std::vector<uint8_t> decompressed(decodedSize);
                                     ZSTD_decompress(decompressed.data(), decodedSize, body->data(), body->size());
                                     auto d_buf = std::make_shared<std::vector<uint8_t>>(std::move(decompressed));
-                                    s1_->async_write(asio::buffer(*d_buf), [this, self, d_buf](std::error_code ec, std::size_t) {
-                                        if (!ec) DoRead(2);
-                                    });
+                                    
+                                    auto write_op = [this, self, d_buf]() {
+                                        s1_->async_write(asio::buffer(*d_buf), [this, self, d_buf](std::error_code ec, std::size_t) {
+                                            if (!ec) DoRead(2);
+                                        });
+                                    };
+
+                                    if (rate_limiter_) {
+                                        rate_limiter_->async_wait(d_buf->size(), std::move(write_op));
+                                    } else {
+                                        write_op();
+                                    }
                                 } else {
-                                    s1_->async_write(asio::buffer(*body), [this, self, body](std::error_code ec, std::size_t) {
-                                        if (!ec) DoRead(2);
-                                    });
+                                    auto write_op = [this, self, body]() {
+                                        s1_->async_write(asio::buffer(*body), [this, self, body](std::error_code ec, std::size_t) {
+                                            if (!ec) DoRead(2);
+                                        });
+                                    };
+
+                                    if (rate_limiter_) {
+                                        rate_limiter_->async_wait(body->size(), std::move(write_op));
+                                    } else {
+                                        write_op();
+                                    }
                                 }
                             }
                         });
@@ -103,8 +137,8 @@ void Bridge::DoRead(int direction) {
 }
 
 // --- UdpBridge ---
-UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression)
-    : timer_(io_context), stream_(std::move(stream)), socket_(socket), remote_endpoint_(remote_endpoint), use_compression_(use_compression) {
+UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
+    : timer_(io_context), stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(socket), remote_endpoint_(remote_endpoint), use_compression_(use_compression) {
     read_buf_.resize(65535);
 }
 
@@ -157,12 +191,20 @@ void UdpBridge::DoReadFromStream() {
                                 send_len = decodedSize;
                             }
 
-                            socket_.async_send_to(asio::buffer(send_buf, send_len), remote_endpoint_,
-                                [this, self](std::error_code ec, std::size_t) {
-                                    if (!ec) {
-                                        DoReadFromStream();
-                                    }
-                                });
+                            auto send_op = [this, self, send_buf, send_len]() {
+                                socket_.async_send_to(asio::buffer(send_buf, send_len), remote_endpoint_,
+                                    [this, self](std::error_code ec, std::size_t) {
+                                        if (!ec) {
+                                            DoReadFromStream();
+                                        }
+                                    });
+                            };
+
+                            if (rate_limiter_) {
+                                rate_limiter_->async_wait(send_len, std::move(send_op));
+                            } else {
+                                send_op();
+                            }
                         } else {
                             stream_->close();
                         }
@@ -202,13 +244,21 @@ void UdpBridge::DoWriteToStream(const std::vector<uint8_t>& data) {
     std::memcpy(buf->data(), &n_header, sizeof(n_header));
     std::memcpy(buf->data() + sizeof(n_header), write_data, write_len);
 
-    stream_->async_write(asio::buffer(*buf), [this, self, buf](std::error_code ec, std::size_t) {
-        if (!ec) {
-            ResetTimer();
-        } else {
-            stream_->close();
-        }
-    });
+    auto write_op = [this, self, buf]() {
+        stream_->async_write(asio::buffer(*buf), [this, self, buf](std::error_code ec, std::size_t) {
+            if (!ec) {
+                ResetTimer();
+            } else {
+                stream_->close();
+            }
+        });
+    };
+
+    if (rate_limiter_) {
+        rate_limiter_->async_wait(data.size(), std::move(write_op));
+    } else {
+        write_op();
+    }
 }
 
 void UdpBridge::HandleUdpPacket(const std::vector<uint8_t>& data) {
@@ -246,7 +296,7 @@ void UdpProxyListener::DoReceive() {
                     endpoint_to_ticket_[sender_endpoint_] = ticket;
                     std::cout << "New UDP session for [" << proxy_name_ << "] from " << sender_endpoint_ << ", ticket: " << ticket << std::endl;
                     
-                    server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_);
+                    server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_, proxy_name_);
 
                     if (auto session = session_.lock()) {
                         protocol::json body;
@@ -300,7 +350,7 @@ void ProxyListener::DoAccept() {
         std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
         std::cout << "New user connection for proxy [" << proxy_name_ << "], ticket: " << ticket << std::endl;
         
-        server_.RegisterUserConn(ticket, std::move(socket));
+        server_.RegisterUserConn(ticket, std::move(socket), proxy_name_);
 
         if (auto session = session_.lock()) {
             protocol::json body;
@@ -439,6 +489,11 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             } else {
                 custom_domains.push_back(msg.body["custom_domains"].get<std::string>());
             }
+        }
+
+        int64_t bandwidth_limit = msg.body.value("bandwidth_limit", 0LL);
+        if (bandwidth_limit > 0) {
+            server_.CreateRateLimiter(name, bandwidth_limit);
         }
 
         if (type != "http" && type != "https" && !server_.IsPortAllowed(remote_port)) {
@@ -675,14 +730,14 @@ void Server::DoUdpRead() {
         });
 }
 
-void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::vector<uint8_t>& initial_data) {
+void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data) {
     std::lock_guard<std::mutex> lock(map_mutex_);
-    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data});
+    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name});
 }
 
-void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint) {
+void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name) {
     std::lock_guard<std::mutex> lock(map_mutex_);
-    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint});
+    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name});
 }
 
 std::string Server::AllocateClientName(const std::string& requested_name) {
@@ -764,26 +819,30 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                         std::cout << "Splicing user TCP connection and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
                         auto initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
                         auto user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
+                        auto proxy_name = it_tcp->second.proxy_name;
                         pending_user_conns_.erase(it_tcp);
 
+                        auto rl = GetRateLimiter(proxy_name);
+
                         if (!initial_data->empty()) {
-                            stream->async_write(asio::buffer(*initial_data), [stream, initial_data, user_socket, use_compression](std::error_code ec, std::size_t) {
+                            stream->async_write(asio::buffer(*initial_data), [this, stream, initial_data, user_socket, use_compression, rl](std::error_code ec, std::size_t) {
                                 if (!ec) {
                                     auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
-                                    auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
+                                    auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression, rl);
                                     bridge->Start();
                                 }
                             });
                         } else {
                             auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
-                            auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression);
+                            auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression, rl);
                             bridge->Start();
                         }
                     } else {
                         auto it_udp = pending_udp_sessions_.find(ticket);
                         if (it_udp != pending_udp_sessions_.end()) {
                             std::cout << "Splicing user UDP session and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
-                            auto bridge = std::make_shared<UdpBridge>(io_context_, stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression);
+                            auto rl = GetRateLimiter(it_udp->second.proxy_name);
+                            auto bridge = std::make_shared<UdpBridge>(io_context_, stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression, rl);
                             bridge->Start();
                             pending_udp_sessions_.erase(it_udp);
                         } else {
@@ -805,6 +864,22 @@ void Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSes
 void Server::RemoveVhostRoute(const std::string& domain) {
     std::lock_guard<std::mutex> lock(map_mutex_);
     vhost_routes_.erase(domain);
+}
+
+std::shared_ptr<common::RateLimiter> Server::GetRateLimiter(const std::string& proxy_name) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    auto it = proxy_rate_limiters_.find(proxy_name);
+    if (it != proxy_rate_limiters_.end()) return it->second;
+    return nullptr;
+}
+
+void Server::CreateRateLimiter(const std::string& proxy_name, int64_t bytes_per_sec) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    if (proxy_rate_limiters_.find(proxy_name) == proxy_rate_limiters_.end()) {
+        proxy_rate_limiters_[proxy_name] = std::make_shared<common::RateLimiter>(io_context_, bytes_per_sec);
+    } else {
+        proxy_rate_limiters_[proxy_name]->set_rate(bytes_per_sec);
+    }
 }
 
 void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::string& type) {
@@ -894,7 +969,7 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
 
                     if (session) {
                         std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_vhost_" + std::to_string(rand());
-                        RegisterUserConn(ticket, std::move(*socket), *buffer);
+                        RegisterUserConn(ticket, std::move(*socket), proxy_name, *buffer);
                         protocol::json body;
                         body["proxy_name"] = proxy_name;
                         body["ticket"] = ticket;

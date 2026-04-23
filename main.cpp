@@ -5,6 +5,7 @@
 #include "server/server.h"
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
+#include "common/utils.h"
 
 static cfrp::server::PortRange ParsePortRange(const std::string& s) {
     size_t dash = s.find('-');
@@ -117,6 +118,11 @@ int main(int argc, char** argv) {
                             }
                         } else if (auto d = (*table)["custom_domains"].as_string()) {
                             pc.custom_domains.push_back(d->get());
+                        }
+                        if (auto bw = (*table)["bandwidth_limit"].as_string()) {
+                            pc.bandwidth_limit = cfrp::common::ParseBandwidth(bw->get());
+                        } else if (auto bw_int = (*table)["bandwidth_limit"].as_integer()) {
+                            pc.bandwidth_limit = bw_int->get();
                         }
                         client->AddProxy(pc);
                     }

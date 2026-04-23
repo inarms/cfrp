@@ -18,6 +18,7 @@
 #include "common/stream.h"
 #include "common/mux.h"
 #include "common/quic_ngtcp2.h"
+#include "common/rate_limiter.h"
 
 namespace cfrp {
 namespace server {
@@ -43,7 +44,7 @@ class ControlSession;
 
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
-    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression);
+    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -51,6 +52,7 @@ private:
 
     std::shared_ptr<common::AsyncStream> s1_;
     std::shared_ptr<common::AsyncStream> s2_;
+    std::shared_ptr<common::RateLimiter> rate_limiter_;
     bool use_compression_;
     char data1_[8192];
     char data2_[8192];
@@ -62,7 +64,7 @@ private:
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -74,6 +76,7 @@ private:
 
     asio::steady_timer timer_;
     std::shared_ptr<common::AsyncStream> stream_;
+    std::shared_ptr<common::RateLimiter> rate_limiter_;
     udp::socket& socket_;
     udp::endpoint remote_endpoint_;
     bool use_compression_;
@@ -160,11 +163,14 @@ public:
         vhost_https_port_ = https_port;
     }
 
-    void RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::vector<uint8_t>& initial_data = {});
-    void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint);
+    void RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data = {});
+    void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name);
     
     void AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type);
     void RemoveVhostRoute(const std::string& domain);
+
+    std::shared_ptr<common::RateLimiter> GetRateLimiter(const std::string& proxy_name);
+    void CreateRateLimiter(const std::string& proxy_name, int64_t bytes_per_sec);
 
     std::string AllocateClientName(const std::string& requested_name);
     void ReleaseClientName(const std::string& name);
@@ -202,15 +208,18 @@ private:
         std::string type; // "http" or "https"
     };
     std::map<std::string, VhostRoute> vhost_routes_;
+    std::map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
     
     struct TcpSessionInfo {
         tcp::socket socket;
         std::vector<uint8_t> initial_data;
+        std::string proxy_name;
     };
 
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;
         udp::endpoint endpoint;
+        std::string proxy_name;
     };
 
     std::map<std::string, TcpSessionInfo> pending_user_conns_;

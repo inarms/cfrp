@@ -25,6 +25,7 @@ type = "http"
 local_ip = "localhost" # Supports domain names now!
 local_port = 8080
 custom_domains = ["a.com", "b.com"]
+bandwidth_limit = "1M" # Limit to 1MB/s aggregate for this proxy
 
 [[client.proxies]]
 name = "web-https"

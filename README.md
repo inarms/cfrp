@@ -19,6 +19,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **Dynamic Proxying**: Supports multiple **TCP**, **UDP**, **HTTP**, and **HTTPS (SNI)** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
 - **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
 - **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
+- **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
 - **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
@@ -184,6 +185,7 @@ ssh -p 6000 user@your_server_ip
 - `local_port`: Local service port.
 - `remote_port`: Port on the server to expose the service (required for `tcp`/`udp`).
 - `custom_domains`: Domain name(s) for `http`/`https` types (e.g., `["a.com", "b.com"]`).
+- `bandwidth_limit`: Bandwidth limit for the proxy (e.g., `"1M"`, `"512K"`, or bytes as integer).
 
 ## Security Design: wolfSSL & QUIC
 
