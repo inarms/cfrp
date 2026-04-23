@@ -787,11 +787,42 @@ void Server::DoAccept() {
                 stream = std::make_shared<common::WebsocketStream>(stream, false);
             }
 
-            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {                if (!ec) {
-                    auto mux_session = std::make_shared<common::mux::Session>(stream, true);
-                    mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
-                        HandleNewMuxStream(mux_session, new_stream);
-                    });
+            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
+                if (!ec) {
+                    auto start_mux = [this](std::shared_ptr<common::AsyncStream> s) {
+                        auto mux_session = std::make_shared<common::mux::Session>(s, true);
+                        mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                            HandleNewMuxStream(mux_session, new_stream);
+                        });
+                    };
+
+                    if (protocol_ == "auto") {
+                        auto first_byte = std::make_shared<uint8_t>(0);
+                        stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux](std::error_code ec, std::size_t) {
+                            if (!ec) {
+                                std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
+                                if (*first_byte == 'G') { // 'G' from GET (WebSocket)
+                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false);
+                                    ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux](std::error_code ec) {
+                                        if (!ec) {
+                                            start_mux(ws_stream);
+                                        }
+                                    });
+                                } else {
+                                    start_mux(buffered);
+                                }
+                            }
+                        });
+                    } else if (protocol_ == "websocket") {
+                        // Already wrapped, but we need to complete the WS handshake
+                        stream->async_handshake(asio::ssl::stream_base::server, [stream, start_mux](std::error_code ec) {
+                            if (!ec) {
+                                start_mux(stream);
+                            }
+                        });
+                    } else {
+                        start_mux(stream);
+                    }
                 } else {
                     std::cerr << "SSL handshake failed: " << ec.message() << std::endl;
                 }

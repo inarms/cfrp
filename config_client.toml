@@ -4,6 +4,9 @@ server_addr = "127.0.0.1"
 server_port = 7001
 token = "secret_token"
 name = "my-client"
+# Protocol to use ("tcp", "quic", "websocket", or "auto")
+# "auto" will try QUIC -> TCP -> WebSocket in sequence.
+protocol = "auto"
 conf_d = "./conf.d"
 compression = true
 

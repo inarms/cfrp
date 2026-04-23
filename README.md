@@ -170,7 +170,7 @@ ssh -p 6000 user@your_server_ip
 - `server_addr`: Server IP or hostname.
 - `server_port`: Server control port.
 - `token`: Authentication token.
-- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`. In `auto` mode, the client tries QUIC and fails over to TCP after a 5-second timeout.
+- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`. In `auto` mode, the client tries protocols in the following order: **QUIC -> TCP -> WebSocket**, failing over to the next if the previous one fails or times out.
 - `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
 - `compression`: Enable Zstd compression for all connections (default `true`).
 - `conf_d`: Optional path to a directory for dynamic proxy configurations.

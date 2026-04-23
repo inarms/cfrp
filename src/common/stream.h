@@ -140,5 +140,68 @@ private:
     ssl::stream<tcp::socket> stream_;
 };
 
+class BufferedStream : public AsyncStream {
+public:
+    BufferedStream(std::shared_ptr<AsyncStream> underlying, std::vector<uint8_t> initial_data)
+        : underlying_(std::move(underlying)), buffer_(std::move(initial_data)) {}
+
+    void async_read_some(asio::mutable_buffer buffer, 
+                         std::function<void(std::error_code, std::size_t)> handler) override {
+        if (!buffer_.empty()) {
+            size_t to_copy = std::min(buffer_.size(), buffer.size());
+            std::memcpy(buffer.data(), buffer_.data(), to_copy);
+            buffer_.erase(buffer_.begin(), buffer_.begin() + to_copy);
+            asio::post(underlying_->get_executor(), [handler, to_copy]() {
+                handler(std::error_code(), to_copy);
+            });
+            return;
+        }
+        underlying_->async_read_some(buffer, std::move(handler));
+    }
+
+    void async_read(asio::mutable_buffer buffer,
+                    std::function<void(std::error_code, std::size_t)> handler) override {
+        if (!buffer_.empty()) {
+            size_t to_copy = std::min(buffer_.size(), buffer.size());
+            std::memcpy(buffer.data(), buffer_.data(), to_copy);
+            buffer_.erase(buffer_.begin(), buffer_.begin() + to_copy);
+            
+            if (to_copy < buffer.size()) {
+                void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
+                size_t next_size = buffer.size() - to_copy;
+                underlying_->async_read(asio::mutable_buffer(next_ptr, next_size), 
+                    [handler, to_copy](std::error_code ec, std::size_t length) {
+                        handler(ec, to_copy + length);
+                    });
+            } else {
+                asio::post(underlying_->get_executor(), [handler, to_copy]() {
+                    handler(std::error_code(), to_copy);
+                });
+            }
+            return;
+        }
+        underlying_->async_read(buffer, std::move(handler));
+    }
+
+    void async_write(asio::const_buffer buffer, 
+                     std::function<void(std::error_code, std::size_t)> handler) override {
+        underlying_->async_write(buffer, std::move(handler));
+    }
+
+    void async_handshake(ssl::stream_base::handshake_type type,
+                         std::function<void(std::error_code)> handler) override {
+        underlying_->async_handshake(type, std::move(handler));
+    }
+
+    void close() override { underlying_->close(); }
+    asio::any_io_executor get_executor() override { return underlying_->get_executor(); }
+    std::string remote_endpoint_string() override { return underlying_->remote_endpoint_string(); }
+    std::string protocol_name() override { return underlying_->protocol_name(); }
+
+private:
+    std::shared_ptr<AsyncStream> underlying_;
+    std::vector<uint8_t> buffer_;
+};
+
 } // namespace common
 } // namespace cfrp

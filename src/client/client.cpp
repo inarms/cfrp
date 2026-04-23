@@ -454,8 +454,12 @@ void Client::HandleDisconnect(const std::string& reason) {
             std::cout << "Switching to TCP failover..." << std::endl;
             current_protocol_ = "tcp";
             reconnect_delay_sec_ = 0; // Immediate failover
+        } else if (current_protocol_ == "tcp") {
+            std::cout << "Switching to WebSocket failover..." << std::endl;
+            current_protocol_ = "websocket";
+            reconnect_delay_sec_ = 0; // Immediate failover
         } else {
-            // Already on TCP, try QUIC again for the next reconnection attempt
+            // Already on WebSocket, try QUIC again for the next reconnection cycle
             current_protocol_ = "quic";
         }
     }

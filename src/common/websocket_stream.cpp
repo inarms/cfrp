@@ -145,25 +145,38 @@ void WebsocketStream::async_read_some(asio::mutable_buffer buffer, std::function
 }
 
 void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    // Websocket framing handles the "exact length" naturally per frame.
-    // But cfrp expects to read exactly N bytes.
-    // We'll need a bit of buffering logic if the WS frame is larger than the requested buffer.
-    
+    if (buffer.size() == 0) {
+        asio::post(underlying_->get_executor(), [handler]() {
+            handler(std::error_code(), 0);
+        });
+        return;
+    }
+
     if (read_remaining_ > 0) {
         size_t to_copy = std::min(read_remaining_, buffer.size());
         std::memcpy(buffer.data(), read_buffer_.data() + read_offset_, to_copy);
         read_offset_ += to_copy;
         read_remaining_ -= to_copy;
-        asio::post(underlying_->get_executor(), [handler, to_copy]() {
-            handler(std::error_code(), to_copy);
-        });
+        
+        if (to_copy < buffer.size()) {
+            // Still need more data
+            void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
+            size_t next_size = buffer.size() - to_copy;
+            async_read(asio::mutable_buffer(next_ptr, next_size), [handler, to_copy](std::error_code ec, std::size_t length) {
+                handler(ec, to_copy + length);
+            });
+        } else {
+            asio::post(underlying_->get_executor(), [handler, to_copy]() {
+                handler(std::error_code(), to_copy);
+            });
+        }
         return;
     }
 
     auto self = shared_from_this();
     ReadWsFrame([this, self, buffer, handler](std::error_code ec, std::size_t length) {
         if (ec) {
-            handler(ec, length);
+            handler(ec, 0);
             return;
         }
         
@@ -178,7 +191,15 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
             read_remaining_ = 0;
         }
         
-        handler(std::error_code(), to_copy);
+        if (to_copy < buffer.size()) {
+            void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
+            size_t next_size = buffer.size() - to_copy;
+            async_read(asio::mutable_buffer(next_ptr, next_size), [handler, to_copy](std::error_code ec, std::size_t length) {
+                handler(ec, to_copy + length);
+            });
+        } else {
+            handler(std::error_code(), to_copy);
+        }
     }, buffer);
 }
 
