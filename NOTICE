@@ -1,0 +1,11 @@
+cfrp (C++ Fast Reverse Proxy)
+Copyright 2026 neesonqk
+
+This product is inspired by and derived from the frp (Fast Reverse Proxy) project,
+originally developed by fatedier (https://github.com/fatedier/frp).
+
+The original frp project is licensed under the Apache License 2.0.
+This project (cfrp) is also licensed under the Apache License 2.0.
+
+* frp: https://github.com/fatedier/frp
+* Copyright (c) 2017, fatedier

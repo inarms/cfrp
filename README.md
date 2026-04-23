@@ -202,4 +202,6 @@ QUIC provides better performance in lossy network environments, faster connectio
 
 ## License
 
-[MIT License](LICENSE)
+This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+
+This project is inspired by the original [frp](https://github.com/fatedier/frp) project by fatedier, which is also licensed under the Apache License 2.0.

@@ -193,4 +193,6 @@ QUIC 在丢包严重的网络环境中表现更佳，连接建立速度更快 (0
 
 ## 开源协议
 
-[MIT License](LICENSE)
+本项目基于 Apache License 2.0 协议。详情请参阅 [LICENSE](LICENSE) 文件。
+
+本项目深受 fatedier 开发的 [frp](https://github.com/fatedier/frp) 项目启发，该项目同样基于 Apache License 2.0 协议。
