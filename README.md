@@ -53,8 +53,6 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 mkdir build && cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=[path/to/vcpkg]/scripts/buildsystems/vcpkg.cmake
 cmake --build .
-```
-
 ### Usage
 
 You can run `cfrp` with or without parameters. If no configuration file is specified via `-c`, it will follow this search and generation order:
@@ -62,12 +60,24 @@ You can run `cfrp` with or without parameters. If no configuration file is speci
 2. Use `client.toml` if it exists in the current directory (starts a client node).
 3. Automatically generate a default `server.toml` if neither exists.
 
-**Note:** If both `server.toml` and `client.toml` are present, `server.toml` takes precedence.
+**New: Quick Client Setup**
+Run `./cfrp -ca certs/ca.crt` to:
+- Automatically generate a `client.toml` (if missing) with SSL enabled and server verification using the provided CA.
+- Force client mode even if `server.toml` exists.
+
+**Note:** If both `server.toml` and `client.toml` are present, `server.toml` takes precedence unless `-ca` is used.
 
 #### 1. Start the Server
-Configure `server.toml`:
-```toml
-[server]
+...
+## Configuration Options
+
+### CLI Options
+- `-c, --config`: Path to the configuration file (TOML).
+- `-ca`: Path to the CA file for server verification. This forces client mode and overrides `ssl.ca_file` and `ssl.verify_peer` settings.
+
+### Server Section
+...
+
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "your_secret_token"

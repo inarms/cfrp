@@ -43,12 +43,49 @@ int main(int argc, char** argv) {
     CLI::App app{"cfrp - A C++ Fast Reverse Proxy"};
 
     std::string config_path;
+    std::string ca_path;
     auto* config_opt = app.add_option("-c,--config", config_path, "Path to the configuration file (TOML)");
+    auto* ca_opt = app.add_option("-ca", ca_path, "Path to the CA file for server verification (forces client mode)");
 
     CLI11_PARSE(app, argc, argv);
 
     if (config_opt->count() == 0) {
-        if (fs::exists("server.toml")) {
+        if (ca_opt->count() > 0) {
+            if (fs::exists("client.toml")) {
+                config_path = "client.toml";
+            } else {
+                std::cout << "No client configuration found. Generating default client.toml..." << std::endl;
+                std::ofstream ofs("client.toml");
+                if (ofs) {
+                    ofs << R"(# Default Client Configuration
+[client]
+server_addr = "127.0.0.1"
+server_port = 7001
+token = "secret_token"
+name = "my-client"
+protocol = "auto"
+compression = true
+
+[client.ssl]
+enable = true
+verify_peer = true
+ca_file = ")" << ca_path << R"("
+
+[[client.proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 6000
+)" << std::endl;
+                    ofs.close();
+                    config_path = "client.toml";
+                } else {
+                    std::cerr << "Error: Could not generate default client.toml" << std::endl;
+                    return 1;
+                }
+            }
+        } else if (fs::exists("server.toml")) {
             config_path = "server.toml";
         } else if (fs::exists("client.toml")) {
             config_path = "client.toml";
@@ -102,7 +139,7 @@ ca_file = "certs/ca.crt"
             io_context.stop();
         });
 
-        if (config["server"]) {
+        if (config["server"] && ca_opt->count() == 0) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = config["server"]["token"].value_or("");
@@ -145,25 +182,35 @@ ca_file = "certs/ca.crt"
             server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
-        } else if (config["client"]) {
-            std::string server_addr = config["client"]["server_addr"].value_or("127.0.0.1");
-            uint16_t server_port = config["client"]["server_port"].value_or(7001);
-            std::string token = config["client"]["token"].value_or("");
-            std::string client_name = config["client"]["name"].value_or("");
-            std::string conf_d = config["client"]["conf_d"].value_or("");
-            std::string protocol = config["client"]["protocol"].value_or("auto");
-            bool compression = config["client"]["compression"].value_or(true);
+        } else if (config["client"] || (config["server"] && ca_opt->count() > 0)) {
+            // Force client mode if -ca is provided, even if config has [server]
+            auto client_node = config["client"];
+            if (!client_node) client_node = config["server"]; // Use server node as base if client node is missing (unlikely but safe)
+
+            std::string server_addr = client_node["server_addr"].value_or("127.0.0.1");
+            uint16_t server_port = static_cast<uint16_t>(client_node["server_port"].value_or(7001));
+            std::string token = client_node["token"].value_or("");
+            std::string client_name = client_node["name"].value_or("");
+            std::string conf_d = client_node["conf_d"].value_or("");
+            std::string protocol = client_node["protocol"].value_or("auto");
+            bool compression = client_node["compression"].value_or(true);
 
             cfrp::client::SslConfig ssl_config;
-            if (auto ssl = config["client"]["ssl"].as_table()) {
+            if (auto ssl = client_node["ssl"].as_table()) {
                 ssl_config.enable = (*ssl)["enable"].value_or(false);
                 ssl_config.verify_peer = (*ssl)["verify_peer"].value_or(false);
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
+            if (ca_opt->count() > 0) {
+                ssl_config.enable = true;
+                ssl_config.verify_peer = true;
+                ssl_config.ca_file = ca_path;
+            }
+
             client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol));
 
-            if (auto proxies = config["client"]["proxies"].as_array()) {
+            if (auto proxies = client_node["proxies"].as_array()) {
                 for (auto& elem : *proxies) {
                     if (auto table = elem.as_table()) {
                         cfrp::client::ProxyConfig pc;
