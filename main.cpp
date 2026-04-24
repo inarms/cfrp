@@ -16,12 +16,16 @@
 
 #include <iostream>
 #include <string>
+#include <filesystem>
+#include <fstream>
 #include <CLI/CLI.hpp>
 #include <toml++/toml.h>
 #include "server/server.h"
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
+
+namespace fs = std::filesystem;
 
 static cfrp::server::PortRange ParsePortRange(const std::string& s) {
     size_t dash = s.find('-');
@@ -38,10 +42,50 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 int main(int argc, char** argv) {
     CLI::App app{"cfrp - A C++ Fast Reverse Proxy"};
 
-    std::string config_path = "config_server.toml";
-    app.add_option("-c,--config", config_path, "Path to the configuration file (TOML)")->capture_default_str();
+    std::string config_path;
+    auto* config_opt = app.add_option("-c,--config", config_path, "Path to the configuration file (TOML)");
 
     CLI11_PARSE(app, argc, argv);
+
+    if (config_opt->count() == 0) {
+        if (fs::exists("config_server.toml")) {
+            config_path = "config_server.toml";
+        } else if (fs::exists("config_client.toml")) {
+            config_path = "config_client.toml";
+        } else {
+            std::cout << "No configuration file found. Generating default config_server.toml..." << std::endl;
+            std::ofstream ofs("config_server.toml");
+            if (ofs) {
+                ofs << R"(# Default Server Configuration
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+token = "secret_token"
+
+# Virtual Host ports for HTTP and HTTPS (SNI routing)
+vhost_http_port = 8080
+vhost_https_port = 8443
+
+[server.ssl]
+enable = false
+auto_generate = true
+cert_file = "certs/server.crt"
+key_file = "certs/server.key"
+ca_file = "certs/ca.crt"
+)" << std::endl;
+                ofs.close();
+                config_path = "config_server.toml";
+            } else {
+                std::cerr << "Error: Could not generate default config_server.toml" << std::endl;
+                return 1;
+            }
+        }
+    }
+
+    if (!fs::exists(config_path)) {
+        std::cerr << "Error: Configuration file not found: " << config_path << std::endl;
+        return 1;
+    }
 
     try {
         auto config = toml::parse_file(config_path);
