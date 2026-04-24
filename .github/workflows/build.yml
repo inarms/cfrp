@@ -175,13 +175,9 @@ jobs:
         with:
           vcpkgJsonGlob: vcpkg.json
 
-      # 🔥 FIX pkgconf
-      - name: Setup pkg-config path
+      - name: Install pkg-config
         shell: pwsh
-        run: |
-          $triplet="x64-windows"
-          $root="$env:VCPKG_INSTALLATION_ROOT\installed\$triplet"
-          echo "PKG_CONFIG_PATH=$root\lib\pkgconfig;$root\share\pkgconfig" >> $env:GITHUB_ENV
+        run: choco install pkgconf -y
 
       - name: Configure
         run: |
@@ -224,13 +220,9 @@ jobs:
         with:
           vcpkgJsonGlob: vcpkg.json
 
-      # 🔥 FIX pkgconf
-      - name: Setup pkg-config path
+      - name: Install pkg-config
         shell: pwsh
-        run: |
-          $triplet="arm64-windows"
-          $root="$env:VCPKG_INSTALLATION_ROOT\installed\$triplet"
-          echo "PKG_CONFIG_PATH=$root\lib\pkgconfig;$root\share\pkgconfig" >> $env:GITHUB_ENV
+        run: choco install pkgconf -y
 
       - name: Configure
         run: |
