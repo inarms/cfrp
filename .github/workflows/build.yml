@@ -13,6 +13,8 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_BINARY_SOURCES: "clear;default"
     strategy:
       fail-fast: false
       matrix:
@@ -58,13 +60,14 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgTriplet: ${{ matrix.triplet }}
 
       - name: Configure and Build
         shell: bash
         run: |
           EXTRA_ARGS=""
           if [ "${{ matrix.target }}" == "linux-arm64" ]; then
-            printf "set(CMAKE_SYSTEM_NAME Linux)\nset(CMAKE_SYSTEM_PROCESSOR aarch64)\nset(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)\nset(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)\ninclude(\$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake)\n" > arm64-toolchain.cmake
+            printf "set(CMAKE_SYSTEM_NAME Linux)\nset(CMAKE_SYSTEM_PROCESSOR aarch64)\nset(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)\nset(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)\ninclude(\$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake)\n" > arm64-toolchain.cmake
             EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=$(pwd)/arm64-toolchain.cmake"
           elif [ "${{ matrix.os }}" == "macos-13" ] || [ "${{ matrix.os }}" == "macos-14" ]; then
             EXTRA_ARGS="-DCMAKE_OSX_ARCHITECTURES=${{ matrix.target == 'macos-arm64' && 'arm64' || 'x86_64' }}"
