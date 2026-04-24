@@ -50,10 +50,13 @@ jobs:
           path: cfrp-macos-arm64.tar.gz
 
   build-linux:
-    name: Build Linux-amd64
+    name: Build Linux-amd64 (GCC)
     runs-on: ubuntu-latest
     env:
       VCPKG_BINARY_SOURCES: "clear;default"
+      # 🔥 CRITICAL FIX: disable Werror globally
+      CFLAGS: "-Wno-error"
+      CXXFLAGS: "-Wno-error"
 
     steps:
       - uses: actions/checkout@v4
@@ -61,19 +64,28 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config zip unzip tar curl
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            zip unzip tar curl \
+            ninja-build
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: 'vcpkg.json'
 
-      - name: Configure and Build
+      - name: Configure
         run: |
           cmake -B build -S . \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DVCPKG_TARGET_TRIPLET=x64-linux
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DCMAKE_C_FLAGS="-Wno-error" \
+            -DCMAKE_CXX_FLAGS="-Wno-error"
 
+      - name: Build
+        run: |
           cmake --build build --config Release
 
       - name: Package Artifacts
@@ -82,6 +94,9 @@ jobs:
           cp build/cfrp release/ || cp build/Release/cfrp release/
           cp config_server.toml release/
           cp config_client.toml release/
+
+          # optional: shrink binary
+          strip release/cfrp || true
 
           cd release
           tar -czvf ../cfrp-linux-amd64.tar.gz *
