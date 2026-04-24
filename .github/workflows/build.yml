@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-macos:
     name: Build macOS-arm64
     runs-on: macos-14
     env:
@@ -25,23 +25,21 @@ jobs:
           vcpkgJsonGlob: 'vcpkg.json'
 
       - name: Configure and Build
-        shell: bash
         run: |
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=Release \
             -DVCPKG_TARGET_TRIPLET=arm64-osx \
             -DCMAKE_OSX_ARCHITECTURES=arm64
-            
+
           cmake --build build --config Release
 
       - name: Package Artifacts
-        shell: bash
         run: |
           mkdir -p release
-          cp build/cfrp release/
+          cp build/cfrp release/ || cp build/Release/cfrp release/
           cp config_server.toml release/
           cp config_client.toml release/
-          
+
           cd release
           tar -czvf ../cfrp-macos-arm64.tar.gz *
 
@@ -50,23 +48,69 @@ jobs:
         with:
           name: cfrp-macos-arm64
           path: cfrp-macos-arm64.tar.gz
-          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux-amd64
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;default"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config zip unzip tar curl
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: 'vcpkg.json'
+
+      - name: Configure and Build
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_TARGET_TRIPLET=x64-linux
+
+          cmake --build build --config Release
+
+      - name: Package Artifacts
+        run: |
+          mkdir -p release
+          cp build/cfrp release/ || cp build/Release/cfrp release/
+          cp config_server.toml release/
+          cp config_client.toml release/
+
+          cd release
+          tar -czvf ../cfrp-linux-amd64.tar.gz *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfrp-linux-amd64
+          path: cfrp-linux-amd64.tar.gz
 
   release:
     name: Create Release
-    needs: build
+    needs: [build-macos, build-linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Debug list files
+        run: ls -R artifacts
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/cfrp-*/*.tar.gz
+          files: artifacts/**/*.tar.gz
           draft: false
           prerelease: false
         env:
