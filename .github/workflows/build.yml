@@ -10,8 +10,10 @@ permissions:
   contents: write
 
 jobs:
+
+  # ---------------- macOS ----------------
   build-macos:
-    name: Build macOS-arm64
+    name: macOS-arm64
     runs-on: macos-14
     env:
       VCPKG_BINARY_SOURCES: "clear;default"
@@ -19,13 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgJsonGlob: vcpkg.json
 
-      - name: Configure and Build
-        run: |
+      - run: |
           cmake -B build -S . \
             -DCMAKE_BUILD_TYPE=Release \
             -DVCPKG_TARGET_TRIPLET=arm64-osx \
@@ -33,23 +33,23 @@ jobs:
 
           cmake --build build --config Release
 
-      - name: Package
-        run: |
-          mkdir -p release
+      - run: |
+          mkdir release
           cp build/cfrp release/ || cp build/Release/cfrp release/
-          cp config_server.toml release/
-          cp config_client.toml release/
+          cp config_*.toml release/
 
           cd release
-          tar -czvf ../cfrp-macos-arm64.tar.gz *
+          tar -czf ../cfrp-macos-arm64.tar.gz *
 
       - uses: actions/upload-artifact@v4
         with:
           name: cfrp-macos-arm64
           path: cfrp-macos-arm64.tar.gz
 
+
+  # ---------------- Linux amd64 ----------------
   build-linux-amd64:
-    name: Build Linux-amd64 (GCC)
+    name: Linux-amd64 (GCC)
     runs-on: ubuntu-latest
     env:
       VCPKG_BINARY_SOURCES: "clear;default"
@@ -59,50 +59,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
+      - run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            zip unzip tar curl \
-            ninja-build
+          sudo apt-get install -y build-essential ninja-build pkg-config
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgJsonGlob: vcpkg.json
 
-      - name: Configure
-        run: |
-          cmake -B build -S . \
-            -G Ninja \
+      - run: |
+          cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DVCPKG_TARGET_TRIPLET=x64-linux \
             -DCMAKE_C_FLAGS="-Wno-error" \
             -DCMAKE_CXX_FLAGS="-Wno-error"
 
-      - name: Build
-        run: cmake --build build
+          cmake --build build
 
-      - name: Package
-        run: |
-          mkdir -p release
-          cp build/cfrp release/ || cp build/Release/cfrp release/
-          cp config_server.toml release/
-          cp config_client.toml release/
+      - run: |
+          mkdir release
+          cp build/cfrp release/
+          cp config_*.toml release/
           strip release/cfrp || true
 
           cd release
-          tar -czvf ../cfrp-linux-amd64.tar.gz *
+          tar -czf ../cfrp-linux-amd64.tar.gz *
 
       - uses: actions/upload-artifact@v4
         with:
           name: cfrp-linux-amd64
           path: cfrp-linux-amd64.tar.gz
 
+
+  # ---------------- Linux arm64 ----------------
   build-linux-arm64:
-    name: Build Linux-arm64 (GCC)
+    name: Linux-arm64 (GCC)
     runs-on: ubuntu-24.04-arm
     env:
       VCPKG_BINARY_SOURCES: "clear;default"
@@ -112,51 +103,140 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deps
-        run: |
+      - run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            zip unzip tar curl \
-            ninja-build
+          sudo apt-get install -y build-essential ninja-build pkg-config
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      - uses: lukka/run-vcpkg@v11
         with:
-          vcpkgJsonGlob: 'vcpkg.json'
+          vcpkgJsonGlob: vcpkg.json
 
-      - name: Configure
-        run: |
-          cmake -B build -S . \
-            -G Ninja \
+      - run: |
+          cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DVCPKG_TARGET_TRIPLET=arm64-linux \
             -DCMAKE_C_FLAGS="-Wno-error" \
             -DCMAKE_CXX_FLAGS="-Wno-error"
 
-      - name: Build
-        run: cmake --build build
+          cmake --build build
 
-      - name: Package
-        run: |
-          mkdir -p release
-          cp build/cfrp release/ || cp build/Release/cfrp release/
-          cp config_server.toml release/
-          cp config_client.toml release/
+      - run: |
+          mkdir release
+          cp build/cfrp release/
+          cp config_*.toml release/
           strip release/cfrp || true
 
           cd release
-          tar -czvf ../cfrp-linux-arm64.tar.gz *
+          tar -czf ../cfrp-linux-arm64.tar.gz *
 
       - uses: actions/upload-artifact@v4
         with:
           name: cfrp-linux-arm64
           path: cfrp-linux-arm64.tar.gz
 
+
+  # ---------------- Windows amd64 ----------------
+  build-windows-amd64:
+    name: Windows-amd64
+    runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;default"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: vcpkg.json
+
+      # 🔥 pkgconf fix
+      - name: Setup pkg-config path
+        shell: pwsh
+        run: |
+          $triplet="x64-windows"
+          $root="$env:VCPKG_INSTALLATION_ROOT\installed\$triplet"
+          echo "PKG_CONFIG_PATH=$root\lib\pkgconfig;$root\share\pkgconfig" >> $env:GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cmake -B build -S . `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          mkdir release
+          copy build\Release\cfrp.exe release\
+          copy config_*.toml release\
+
+          powershell Compress-Archive -Path release\* -DestinationPath cfrp-windows-amd64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfrp-windows-amd64
+          path: cfrp-windows-amd64.zip
+
+
+  # ---------------- Windows arm64 ----------------
+  build-windows-arm64:
+    name: Windows-arm64
+    runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;default"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: vcpkg.json
+
+      # 🔥 pkgconf fix
+      - name: Setup pkg-config path
+        shell: pwsh
+        run: |
+          $triplet="arm64-windows"
+          $root="$env:VCPKG_INSTALLATION_ROOT\installed\$triplet"
+          echo "PKG_CONFIG_PATH=$root\lib\pkgconfig;$root\share\pkgconfig" >> $env:GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cmake -B build -S . `
+            -A ARM64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DVCPKG_TARGET_TRIPLET=arm64-windows
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          mkdir release
+          copy build\Release\cfrp.exe release\
+          copy config_*.toml release\
+
+          powershell Compress-Archive -Path release\* -DestinationPath cfrp-windows-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cfrp-windows-arm64
+          path: cfrp-windows-arm64.zip
+
+
+  # ---------------- Release ----------------
   release:
-    name: Create Release
-    needs: [build-macos, build-linux-amd64, build-linux-arm64]
+    needs:
+      [
+        build-macos,
+        build-linux-amd64,
+        build-linux-arm64,
+        build-windows-amd64,
+        build-windows-arm64
+      ]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
@@ -169,6 +249,6 @@ jobs:
 
       - uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*.tar.gz
+          files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
