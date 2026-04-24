@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     std::string config_path;
     std::string ca_path;
     auto* config_opt = app.add_option("-c,--config", config_path, "Path to the configuration file (TOML)");
-    auto* ca_opt = app.add_option("-ca", ca_path, "Path to the CA file for server verification (forces client mode)");
+    auto* ca_opt = app.add_option("--ca", ca_path, "Path to the CA file for server verification (forces client mode)");
 
     CLI11_PARSE(app, argc, argv);
 

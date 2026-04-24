@@ -64,7 +64,7 @@ If no configuration file is specified via `-c`, the application searches for fil
 2. **`client.toml`**: If found, starts as a **Client**.
 3. **None**: Automatically generates a default `server.toml` and starts as a **Server**.
 
-*Note: `server.toml` takes precedence if both files are present, unless `-ca` is used.*
+*Note: `server.toml` takes precedence if both files are present, unless `--ca` is used.*
 
 ### Examples
 
@@ -117,11 +117,11 @@ remote_port = 6000
 #### 3. Quick Client Setup (Automatic Generation)
 If you have the server's CA certificate (`ca.crt`), you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
 ```bash
-./cfrp -ca certs/ca.crt
+./cfrp --ca certs/ca.crt
 ```
 - **Forces Client Mode** even if `server.toml` is present.
 - If `client.toml` is **missing**, it generates a default one using the provided CA for verification.
-- If `client.toml` **exists**, it uses the existing configuration (the `-ca` parameter is ignored for SSL settings).
+- If `client.toml` **exists**, it uses the existing configuration (the `--ca` parameter is ignored for SSL settings).
 
 #### 4. Access your service
 Once the tunnel is established, access your local service via the server's public IP:

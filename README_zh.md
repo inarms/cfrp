@@ -59,7 +59,7 @@ cmake --build .
 2. **`client.toml`**: 如果存在，以**客户端**模式启动。
 3. **无配置文件**: 自动生成默认的 `server.toml` 并以**服务端**模式启动。
 
-*注意：如果同时存在 `server.toml` 和 `client.toml`，程序将优先使用 `server.toml`（除非使用了 `-ca` 参数）。*
+*注意：如果同时存在 `server.toml` 和 `client.toml`，程序将优先使用 `server.toml`（除非使用了 `--ca` 参数）。*
 
 ### 示例
 
@@ -112,11 +112,11 @@ remote_port = 6000
 #### 3. 快速客户端设置 (自动生成)
 如果你有服务端的 CA 证书 (`ca.crt`)，可以快速启动客户端。如果配置文件不存在，`cfrp` 会自动生成 `client.toml`:
 ```bash
-./cfrp -ca certs/ca.crt
+./cfrp --ca certs/ca.crt
 ```
 - **强制进入客户端模式**，即使存在 `server.toml`。
 - 如果 `client.toml` **不存在**，将自动生成一个并配置为使用提供的 CA 进行验证。
-- 如果 `client.toml` **已存在**，将直接使用现有配置（忽略 `-ca` 的 SSL 覆盖设置）。
+- 如果 `client.toml` **已存在**，将直接使用现有配置（忽略 `--ca` 的 SSL 覆盖设置）。
 
 #### 4. 访问服务
 隧道建立后，通过服务端的公网 IP 访问本地服务：
