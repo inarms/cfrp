@@ -18,6 +18,7 @@
 #include <string>
 #include <filesystem>
 #include <fstream>
+#include <csignal>
 #include <CLI/CLI.hpp>
 #include <toml++/toml.h>
 #include "server/server.h"
