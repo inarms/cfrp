@@ -50,54 +50,57 @@ cmake .. -DCMAKE_TOOLCHAIN_FILE=[vcpkg 路径]/scripts/buildsystems/vcpkg.cmake
 cmake --build .
 ```
 
-### 使用方法
+## 使用方法
 
-您可以带参数或不带参数运行 `cfrp`。如果未通过 `-c` 指定配置文件，它将遵循以下查找和生成顺序：
-1. 使用当前目录下的 `server.toml`（如果存在，启动服务端节点）。
-2. 使用当前目录下的 `client.toml`（如果存在，启动客户端节点）。
-3. 如果两者都不存在，自动生成默认的 `server.toml`。
+`cfrp` 可以作为服务端节点或客户端节点启动。
 
-**新增：快速客户端设置**
-运行 `./cfrp -ca certs/ca.crt` 可以：
-- 自动生成 `client.toml`（如果不存在），并启用 SSL 以及使用提供的 CA 进行服务端验证。
-- 即使存在 `server.toml`，也会强制以客户端模式运行。
-- **注意：** 如果 `client.toml` 已经存在，则会忽略 `-ca` 参数并直接使用现有的配置文件。
+### 配置文件自动选择
+如果未通过 `-c` 指定配置文件，程序将按以下顺序在当前目录中查找：
+1. **`server.toml`**: 如果存在，以**服务端**模式启动。
+2. **`client.toml`**: 如果存在，以**客户端**模式启动。
+3. **无配置文件**: 自动生成默认的 `server.toml` 并以**服务端**模式启动。
 
-**注意：** 如果同时存在 `server.toml` 和 `client.toml`，程序将优先使用 `server.toml`，除非使用了 `-ca` 参数。
+*注意：如果同时存在 `server.toml` 和 `client.toml`，程序将优先使用 `server.toml`（除非使用了 `-ca` 参数）。*
 
-#### 1. 启动服务端
-配置 `server.toml`:
+### 示例
+
+#### 1. 以服务端模式启动
+使用默认的 `server.toml`:
+```bash
+./cfrp
+```
+或者明确指定配置文件：
+```bash
+./cfrp -c my_server.toml
+```
+
+示例 **`server.toml`**:
 ```toml
 [server]
 bind_addr = "0.0.0.0"
 bind_port = 7001
-token = "你的密钥"
+token = "your_secret_token"
 protocol = "auto" # 同时支持 TCP 和 QUIC
 
 [server.ssl]
 enable = true
-cert_file = "server.crt"
-key_file = "server.key"
+auto_generate = true # 自动生成 CA 和证书
 ```
-运行服务端:
+
+#### 2. 以客户端模式启动
+使用默认的 `client.toml`:
 ```bash
 ./cfrp
-# 或者明确指定: ./cfrp -c server.toml
 ```
 
-#### 2. 启动客户端
-配置 `client.toml`:
+示例 **`client.toml`**:
 ```toml
 [client]
-server_addr = "你的服务器IP"
+server_addr = "your_server_ip"
 server_port = 7001
-token = "你的密钥"
+token = "your_secret_token"
 name = "my-client"
 protocol = "auto" # 优先尝试 QUIC，失败后降级到 TCP
-
-[client.ssl]
-enable = true
-verify_peer = false
 
 [[client.proxies]]
 name = "ssh"
@@ -105,22 +108,19 @@ type = "tcp"
 local_ip = "127.0.0.1"
 local_port = 22
 remote_port = 6000
-
-[[client.proxies]]
-name = "dns"
-type = "udp"
-local_ip = "8.8.8.8"
-local_port = 53
-remote_port = 5300
 ```
-运行客户端:
+
+#### 3. 快速客户端设置 (自动生成)
+如果你有服务端的 CA 证书 (`ca.crt`)，可以快速启动客户端。如果配置文件不存在，`cfrp` 会自动生成 `client.toml`:
 ```bash
-./cfrp
-# 或者明确指定: ./cfrp -c client.toml
+./cfrp -ca certs/ca.crt
 ```
+- **强制进入客户端模式**，即使存在 `server.toml`。
+- 如果 `client.toml` **不存在**，将自动生成一个并配置为使用提供的 CA 进行验证。
+- 如果 `client.toml` **已存在**，将直接使用现有配置（忽略 `-ca` 的 SSL 覆盖设置）。
 
-#### 3. 访问你的服务
-你现在可以通过服务器的公网 IP 访问本地服务:
+#### 4. 访问服务
+隧道建立后，通过服务端的公网 IP 访问本地服务：
 ```bash
 ssh -p 6000 用户名@你的服务器IP
 ```

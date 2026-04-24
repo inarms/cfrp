@@ -53,50 +53,52 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 mkdir build && cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=[path/to/vcpkg]/scripts/buildsystems/vcpkg.cmake
 cmake --build .
-### Usage
+```
 
-You can run `cfrp` with or without parameters. If no configuration file is specified via `-c`, it will follow this search and generation order:
-1. Use `server.toml` if it exists in the current directory (starts a server node).
-2. Use `client.toml` if it exists in the current directory (starts a client node).
-3. Automatically generate a default `server.toml` if neither exists.
+## Usage
 
-**New: Quick Client Setup**
-Run `./cfrp -ca certs/ca.crt` to:
-- Automatically generate a `client.toml` (if missing) with SSL enabled and server verification using the provided CA.
-- Force client mode even if `server.toml` exists.
-- **Note:** If `client.toml` already exists, the `-ca` parameter is ignored and the existing configuration is used as-is.
+`cfrp` can be started as either a server or a client node.
 
-**Note:** If both `server.toml` and `client.toml` are present, `server.toml` takes precedence unless `-ca` is used.
+### Automatic Configuration Selection
+If no configuration file is specified via `-c`, the application searches for files in the current directory in the following order:
+1. **`server.toml`**: If found, starts as a **Server**.
+2. **`client.toml`**: If found, starts as a **Client**.
+3. **None**: Automatically generates a default `server.toml` and starts as a **Server**.
 
-#### 1. Start the Server
-...
-## Configuration Options
+*Note: `server.toml` takes precedence if both files are present, unless `-ca` is used.*
 
-### CLI Options
-- `-c, --config`: Path to the configuration file (TOML).
-- `-ca`: Path to the CA file for server verification. This forces client mode and overrides `ssl.ca_file` and `ssl.verify_peer` settings.
+### Examples
 
-### Server Section
-...
+#### 1. Start as a Server
+To run a server using the default `server.toml`:
+```bash
+./cfrp
+```
+Or specify a custom configuration:
+```bash
+./cfrp -c my_server.toml
+```
 
+Example **`server.toml`**:
+```toml
+[server]
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "your_secret_token"
-protocol = "auto" # Support both TCP and QUIC simultaneously
+protocol = "auto" # Supports TCP and QUIC simultaneously
 
 [server.ssl]
 enable = true
-cert_file = "server.crt"
-key_file = "server.key"
-```
-Run the server:
-```bash
-./cfrp
-# Or explicitly: ./cfrp -c server.toml
+auto_generate = true # Auto-generate CA and certificates
 ```
 
-#### 2. Start the Client
-Configure `client.toml`:
+#### 2. Start as a Client
+To run a client using the default `client.toml`:
+```bash
+./cfrp
+```
+
+Example **`client.toml`**:
 ```toml
 [client]
 server_addr = "your_server_ip"
@@ -105,32 +107,25 @@ token = "your_secret_token"
 name = "my-client"
 protocol = "auto" # Try QUIC first, failover to TCP
 
-[client.ssl]
-enable = true
-verify_peer = false
-
 [[client.proxies]]
 name = "ssh"
 type = "tcp"
 local_ip = "127.0.0.1"
 local_port = 22
 remote_port = 6000
-
-[[client.proxies]]
-name = "dns"
-type = "udp"
-local_ip = "8.8.8.8"
-local_port = 53
-remote_port = 5300
 ```
-Run the client:
+
+#### 3. Quick Client Setup (Automatic Generation)
+If you have the server's CA certificate (`ca.crt`), you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
 ```bash
-./cfrp
-# Or explicitly: ./cfrp -c client.toml
+./cfrp -ca certs/ca.crt
 ```
+- **Forces Client Mode** even if `server.toml` is present.
+- If `client.toml` is **missing**, it generates a default one using the provided CA for verification.
+- If `client.toml` **exists**, it uses the existing configuration (the `-ca` parameter is ignored for SSL settings).
 
-#### 3. Access your service
-You can now access your local service via the server's public IP:
+#### 4. Access your service
+Once the tunnel is established, access your local service via the server's public IP:
 ```bash
 ssh -p 6000 user@your_server_ip
 ```
@@ -142,7 +137,7 @@ ssh -p 6000 user@your_server_ip
 ### Steps to use Hot-Reloading:
 
 1. **Enable in Client Config**:
-   Ensure `conf_d` is set in your `config_client.toml`:
+   Ensure `conf_d` is set in your `client.toml`:
    ```toml
    [client]
    conf_d = "./conf.d"
