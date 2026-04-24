@@ -177,7 +177,7 @@ jobs:
 
       - name: Install pkg-config
         shell: pwsh
-        run: choco install pkgconf -y
+        run: choco install pkgconfiglite -y
 
       - name: Configure
         run: |
