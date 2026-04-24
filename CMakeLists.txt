@@ -63,7 +63,7 @@ target_link_libraries(cfrp PRIVATE
 
 # Copy configuration files to the build directory
 file(COPY 
-    ${CMAKE_CURRENT_SOURCE_DIR}/config_server.toml 
-    ${CMAKE_CURRENT_SOURCE_DIR}/config_client.toml 
+    ${CMAKE_CURRENT_SOURCE_DIR}/server.toml 
+    ${CMAKE_CURRENT_SOURCE_DIR}/client.toml 
     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
 )

@@ -48,13 +48,13 @@ int main(int argc, char** argv) {
     CLI11_PARSE(app, argc, argv);
 
     if (config_opt->count() == 0) {
-        if (fs::exists("config_server.toml")) {
-            config_path = "config_server.toml";
-        } else if (fs::exists("config_client.toml")) {
-            config_path = "config_client.toml";
+        if (fs::exists("server.toml")) {
+            config_path = "server.toml";
+        } else if (fs::exists("client.toml")) {
+            config_path = "client.toml";
         } else {
-            std::cout << "No configuration file found. Generating default config_server.toml..." << std::endl;
-            std::ofstream ofs("config_server.toml");
+            std::cout << "No configuration file found. Generating default server.toml..." << std::endl;
+            std::ofstream ofs("server.toml");
             if (ofs) {
                 ofs << R"(# Default Server Configuration
 [server]
@@ -74,9 +74,9 @@ key_file = "certs/server.key"
 ca_file = "certs/ca.crt"
 )" << std::endl;
                 ofs.close();
-                config_path = "config_server.toml";
+                config_path = "server.toml";
             } else {
-                std::cerr << "Error: Could not generate default config_server.toml" << std::endl;
+                std::cerr << "Error: Could not generate default server.toml" << std::endl;
                 return 1;
             }
         }

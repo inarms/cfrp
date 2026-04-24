@@ -53,12 +53,12 @@ cmake --build .
 ### 使用方法
 
 您可以带参数或不带参数运行 `cfrp`。如果未通过 `-c` 指定配置文件，它将遵循以下查找和生成顺序：
-1. 使用当前目录下的 `config_server.toml`（如果存在）。
-2. 使用当前目录下的 `config_client.toml`（如果存在）。
-3. 如果两者都不存在，自动生成默认的 `config_server.toml`。
+1. 使用当前目录下的 `server.toml`（如果存在）。
+2. 使用当前目录下的 `client.toml`（如果存在）。
+3. 如果两者都不存在，自动生成默认的 `server.toml`。
 
 #### 1. 启动服务端
-配置 `config_server.toml`:
+配置 `server.toml`:
 ```toml
 [server]
 bind_addr = "0.0.0.0"
@@ -74,11 +74,11 @@ key_file = "server.key"
 运行服务端:
 ```bash
 ./cfrp
-# 或者明确指定: ./cfrp -c config_server.toml
+# 或者明确指定: ./cfrp -c server.toml
 ```
 
 #### 2. 启动客户端
-配置 `config_client.toml`:
+配置 `client.toml`:
 ```toml
 [client]
 server_addr = "你的服务器IP"
@@ -108,7 +108,7 @@ remote_port = 5300
 运行客户端:
 ```bash
 ./cfrp
-# 或者明确指定: ./cfrp -c config_client.toml
+# 或者明确指定: ./cfrp -c client.toml
 ```
 
 #### 3. 访问你的服务
