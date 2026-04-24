@@ -31,11 +31,22 @@ namespace client {
 
 // --- Bridge ---
 Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression) {}
+    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), timer_(s1_->get_executor()), use_compression_(use_compression) {}
 
 void Bridge::Start() {
+    ResetTimer();
     DoRead(1);
     DoRead(2);
+}
+
+void Bridge::ResetTimer() {
+    timer_.expires_after(std::chrono::minutes(10));
+    auto self(shared_from_this());
+    timer_.async_wait([this, self](std::error_code ec) {
+        if (!ec) {
+            s1_->close(); s2_->close();
+        }
+    });
 }
 
 void Bridge::DoRead(int direction) {
@@ -47,6 +58,7 @@ void Bridge::DoRead(int direction) {
         from->async_read_some(asio::buffer(buf, sizeof(data1_)),
             [this, self, direction](std::error_code ec, std::size_t length) {
                 if (!ec) {
+                    ResetTimer();
                     auto to_inner = (direction == 1) ? s2_ : s1_;
                     auto buf_inner = (direction == 1) ? data1_ : data2_;
                     
@@ -55,6 +67,8 @@ void Bridge::DoRead(int direction) {
                             [this, self, direction](std::error_code ec, std::size_t) {
                                 if (!ec) {
                                     DoRead(direction);
+                                } else {
+                                    s1_->close(); s2_->close();
                                 }
                             });
                     };
@@ -64,6 +78,8 @@ void Bridge::DoRead(int direction) {
                     } else {
                         write_op();
                     }
+                } else {
+                    s1_->close(); s2_->close();
                 }
             });
     } else {
@@ -71,6 +87,7 @@ void Bridge::DoRead(int direction) {
             s1_->async_read_some(asio::buffer(data1_, sizeof(data1_)),
                 [this, self](std::error_code ec, std::size_t length) {
                     if (!ec) {
+                        ResetTimer();
                         size_t const cSizeBound = ZSTD_compressBound(length);
                         std::vector<uint8_t> compressed(cSizeBound);
                         size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, 1);
@@ -80,11 +97,11 @@ void Bridge::DoRead(int direction) {
                         size_t write_len;
 
                         if (!ZSTD_isError(cSize) && cSize < length) {
-                            final_header = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
+                            final_header = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG);
                             write_buf = compressed.data();
                             write_len = cSize;
                         } else {
-                            final_header = static_cast<uint32_t>(length);
+                            final_header = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(length));
                             write_buf = data1_;
                             write_len = length;
                         }
@@ -98,6 +115,8 @@ void Bridge::DoRead(int direction) {
                             s2_->async_write(asio::buffer(*packet), [this, self, packet](std::error_code ec, std::size_t) {
                                 if (!ec) {
                                     DoRead(1);
+                                } else {
+                                    s1_->close(); s2_->close();
                                 }
                             });
                         };
@@ -107,38 +126,46 @@ void Bridge::DoRead(int direction) {
                         } else {
                             write_op();
                         }
+                    } else {
+                        s1_->close(); s2_->close();
                     }
                 });
         } else { // Work -> Raw (Unframe & Decompress)
             s2_->async_read(asio::buffer(&header2_, sizeof(header2_)),
                 [this, self](std::error_code ec, std::size_t) {
                     if (!ec) {
-                        uint32_t len = header2_ & protocol::LENGTH_MASK;
-                        bool compressed = (header2_ & protocol::COMPRESSION_FLAG) != 0;
+                        ResetTimer();
+                        uint32_t h2 = asio::detail::socket_ops::network_to_host_long(header2_);
+                        uint32_t len = h2 & protocol::LENGTH_MASK;
+                        bool compressed = (h2 & protocol::COMPRESSION_FLAG) != 0;
+                        if (len > 1024 * 1024) { s1_->close(); s2_->close(); return; }
                         auto body = std::make_shared<std::vector<uint8_t>>(len);
                         s2_->async_read(asio::buffer(*body), [this, self, body, compressed](std::error_code ec, std::size_t) {
                             if (!ec) {
                                 if (compressed) {
                                     unsigned long long const decodedSize = ZSTD_getFrameContentSize(body->data(), body->size());
-                                    std::vector<uint8_t> decompressed(decodedSize);
-                                    ZSTD_decompress(decompressed.data(), decodedSize, body->data(), body->size());
-                                    auto d_buf = std::make_shared<std::vector<uint8_t>>(std::move(decompressed));
+                                    if (decodedSize == ZSTD_CONTENTSIZE_ERROR || decodedSize == ZSTD_CONTENTSIZE_UNKNOWN) { 
+                                        s1_->close(); s2_->close(); return; 
+                                    }
+                                    auto decompressed = std::make_shared<std::vector<uint8_t>>(decodedSize);
+                                    size_t const dSize = ZSTD_decompress(decompressed->data(), decodedSize, body->data(), body->size());
+                                    if (ZSTD_isError(dSize)) { s1_->close(); s2_->close(); return; }
                                     
-                                    auto write_op = [this, self, d_buf]() {
-                                        s1_->async_write(asio::buffer(*d_buf), [this, self, d_buf](std::error_code ec, std::size_t) {
-                                            if (!ec) DoRead(2);
+                                    auto write_op = [this, self, decompressed]() {
+                                        s1_->async_write(asio::buffer(*decompressed), [this, self, decompressed](std::error_code ec, std::size_t) {
+                                            if (!ec) DoRead(2); else { s1_->close(); s2_->close(); }
                                         });
                                     };
 
                                     if (rate_limiter_) {
-                                        rate_limiter_->async_wait(d_buf->size(), std::move(write_op));
+                                        rate_limiter_->async_wait(decompressed->size(), std::move(write_op));
                                     } else {
                                         write_op();
                                     }
                                 } else {
                                     auto write_op = [this, self, body]() {
                                         s1_->async_write(asio::buffer(*body), [this, self, body](std::error_code ec, std::size_t) {
-                                            if (!ec) DoRead(2);
+                                            if (!ec) DoRead(2); else { s1_->close(); s2_->close(); }
                                         });
                                     };
 
@@ -148,8 +175,12 @@ void Bridge::DoRead(int direction) {
                                         write_op();
                                     }
                                 }
+                            } else {
+                                s1_->close(); s2_->close();
                             }
                         });
+                    } else {
+                        s1_->close(); s2_->close();
                     }
                 });
         }
@@ -358,6 +389,7 @@ void Client::DoConnect() {
     socket_ptr->async_connect(endpoint_,
         [this, socket_ptr](std::error_code ec) {
             if (!ec) {
+                common::SetTcpKeepalive(*socket_ptr);
                 std::shared_ptr<common::AsyncStream> stream;
                 if (ssl_config_.enable) {
                     stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
@@ -465,6 +497,8 @@ void Client::HandleDisconnect(const std::string& reason) {
         quic_session_.reset();
     }
 
+    if (stopping_) return;
+
     if (protocol_ == "auto") {
         if (current_protocol_ == "quic") {
             std::cout << "Switching to TCP failover..." << std::endl;
@@ -517,12 +551,13 @@ void Client::SendMessage(protocol::MessageType type, const protocol::json& body)
             final_len = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
         }
     }
-    
+
+    uint32_t net_len = asio::detail::socket_ops::host_to_network_long(final_len);
     auto data = std::make_shared<std::vector<uint8_t>>();
-    data->resize(sizeof(final_len) + to_send_body.size());
-    std::memcpy(data->data(), &final_len, sizeof(final_len));
-    std::memcpy(data->data() + sizeof(final_len), to_send_body.data(), to_send_body.size());
-    
+    data->resize(sizeof(net_len) + to_send_body.size());
+    std::memcpy(data->data(), &net_len, sizeof(net_len));
+    std::memcpy(data->data() + sizeof(net_len), to_send_body.data(), to_send_body.size());
+
     if (control_stream_) {
         control_stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
             if (ec) {
@@ -537,14 +572,15 @@ void Client::DoReadHeader() {
     control_stream_->async_read(asio::buffer(&header_, sizeof(header_)),
         [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
-                uint32_t length = header_.body_length & protocol::LENGTH_MASK;
+                uint32_t h = asio::detail::socket_ops::network_to_host_long(header_.body_length);
+                header_.body_length = h; // Store host-byte order back
+                uint32_t length = h & protocol::LENGTH_MASK;
                 DoReadBody(length);
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());
             }
         });
 }
-
 void Client::DoReadBody(uint32_t length) {
     auto self(shared_from_this());
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
@@ -759,6 +795,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                 asio::async_connect(*local_socket, results,
                     [this, self, local_socket, ticket, pc](std::error_code ec, tcp::endpoint) {
                         if (!ec) {
+                            common::SetTcpKeepalive(*local_socket);
                             if (!mux_session_) return;
                             auto work_stream = mux_session_->open_stream();
                             

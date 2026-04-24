@@ -92,7 +92,7 @@ public:
     std::shared_ptr<QuicStream> open_stream();
     void close_session();
     void close_stream(int64_t stream_id);
-    void write_stream(int64_t stream_id, const uint8_t* data, size_t len);
+    void write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler);
 
     asio::any_io_executor get_executor() { return socket_.get_executor(); }
     std::string remote_endpoint_string() { return remote_endpoint_.address().to_string() + ":" + std::to_string(remote_endpoint_.port()); }
@@ -106,6 +106,7 @@ public:
 private:
     void schedule_timer();
     void check_closed();
+    void do_write();
 
     asio::ip::udp::socket& socket_;
     asio::ip::udp::endpoint remote_endpoint_;
@@ -124,6 +125,16 @@ private:
     std::mutex streams_mutex_;
     
     asio::steady_timer timer_;
+    struct PendingWrite {
+        int64_t stream_id;
+        std::vector<uint8_t> data;
+        size_t consumed = 0;
+        std::function<void(std::error_code, std::size_t)> handler;
+    };
+    std::deque<std::shared_ptr<PendingWrite>> write_queue_;
+    std::mutex write_mutex_;
+    bool is_writing_ = false;
+    
     std::function<void(std::shared_ptr<QuicSession>)> on_connected_cb_;
     std::function<void(std::shared_ptr<QuicStream>)> on_new_stream_cb_;
     std::function<void(std::shared_ptr<QuicSession>)> on_closed_cb_;

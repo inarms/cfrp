@@ -65,13 +65,15 @@ public:
 
 private:
     void DoRead(int direction);
+    void ResetTimer();
 
     std::shared_ptr<common::AsyncStream> s1_;
     std::shared_ptr<common::AsyncStream> s2_;
     std::shared_ptr<common::RateLimiter> rate_limiter_;
+    asio::steady_timer timer_;
     bool use_compression_;
-    char data1_[8192];
-    char data2_[8192];
+    char data1_[32768];
+    char data2_[32768];
     uint32_t header1_;
     uint32_t header2_;
 };

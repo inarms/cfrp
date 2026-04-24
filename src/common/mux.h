@@ -88,6 +88,7 @@ private:
     std::weak_ptr<Session> session_;
     size_t local_window_size_;
     size_t remote_window_size_;
+    size_t consumed_since_last_update_ = 0;
     std::deque<uint8_t> read_buffer_;
     std::mutex mutex_;
     
@@ -118,6 +119,7 @@ private:
     void do_read_body(Header h);
     void handle_frame(Header h, std::vector<uint8_t> body);
     void do_write();
+    void schedule_heartbeat();
 
     std::shared_ptr<AsyncStream> underlying_stream_;
     bool is_server_;
@@ -136,6 +138,7 @@ private:
     bool is_writing_ = false;
     
     uint8_t header_buf_[Header::size];
+    asio::steady_timer heartbeat_timer_;
 };
 
 } // namespace mux

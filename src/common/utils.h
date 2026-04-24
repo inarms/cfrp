@@ -23,6 +23,18 @@
 namespace cfrp {
 namespace common {
 
+inline void SetTcpKeepalive(asio::ip::tcp::socket& socket) {
+    std::error_code ec;
+    socket.set_option(asio::ip::tcp::no_delay(true), ec);
+    socket.set_option(asio::socket_base::keep_alive(true), ec);
+#ifdef _WIN32
+    // Windows specific keepalive settings could go here
+#else
+    // For Linux/macOS, we can set more fine-grained options if needed
+    // but the basic keep_alive(true) is a good start.
+#endif
+}
+
 inline int64_t ParseBandwidth(const std::string& s) {
     if (s.empty()) return 0;
     std::string val_s = s;

@@ -79,6 +79,7 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     }
 
     size_t length = buffer.size();
+    // std::cout << "[MuxStream " << id_ << "] async_write: " << length << " bytes" << std::endl;
     std::vector<uint8_t> body(static_cast<const uint8_t*>(buffer.data()), static_cast<const uint8_t*>(buffer.data()) + length);
     
     Header h;
@@ -136,7 +137,7 @@ void MuxStream::close() {
 asio::any_io_executor MuxStream::get_executor() {
     auto session = session_.lock();
     if (session) return session->get_executor();
-    throw asio::system_error(asio::error::operation_aborted);
+    return asio::system_executor();
 }
 
 std::string MuxStream::remote_endpoint_string() {
@@ -155,17 +156,6 @@ void MuxStream::handle_data(std::vector<uint8_t> data) {
     std::lock_guard<std::mutex> lock(mutex_);
     read_buffer_.insert(read_buffer_.end(), data.begin(), data.end());
     do_read_from_buffer();
-    
-    auto session = session_.lock();
-    if (session && read_buffer_.size() < 128 * 1024) {
-        Header h;
-        h.version = 0;
-        h.type = (uint8_t)Type::WindowUpdate;
-        h.flags = 0;
-        h.stream_id = id_;
-        h.length = static_cast<uint32_t>(data.size());
-        session->async_send_frame(h, {});
-    }
 }
 
 void MuxStream::handle_window_update(uint32_t delta) {
@@ -176,22 +166,34 @@ void MuxStream::handle_window_update(uint32_t delta) {
 void MuxStream::handle_close() {
     std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
-    for (auto& pr : pending_reads_) {
-        if (read_buffer_.empty()) {
-            asio::post(get_executor(), [handler = std::move(pr.handler)]() {
-                handler(asio::error::eof, 0);
-            });
-        }
-    }
-    if (read_buffer_.empty()) pending_reads_.clear();
+    do_read_from_buffer();
 }
 
 void MuxStream::do_read_from_buffer() {
-    while (!pending_reads_.empty() && !read_buffer_.empty()) {
+    while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
+        if (read_buffer_.empty()) {
+            if (closed_) {
+                auto handler = std::move(pr.handler);
+                pending_reads_.pop_front();
+                asio::post(get_executor(), [handler]() {
+                    handler(asio::error::eof, 0);
+                });
+                continue;
+            }
+            break;
+        }
+
         size_t to_copy = std::min(pr.buffer.size(), read_buffer_.size());
-        
         if (pr.read_all && to_copy < pr.buffer.size()) {
+            if (closed_) {
+                auto handler = std::move(pr.handler);
+                pending_reads_.pop_front();
+                asio::post(get_executor(), [handler]() {
+                    handler(asio::error::eof, 0);
+                });
+                continue;
+            }
             break;
         }
 
@@ -204,26 +206,64 @@ void MuxStream::do_read_from_buffer() {
         asio::post(get_executor(), [handler, to_copy]() {
             handler(std::error_code(), to_copy);
         });
+
+        // Send window update to peer when a significant amount of data is consumed from our local buffer
+        consumed_since_last_update_ += to_copy;
+        if (consumed_since_last_update_ >= 128 * 1024) {
+            auto session = session_.lock();
+            if (session) {
+                Header h;
+                h.version = 0;
+                h.type = (uint8_t)Type::WindowUpdate;
+                h.flags = 0;
+                h.stream_id = id_;
+                h.length = static_cast<uint32_t>(consumed_since_last_update_);
+                session->async_send_frame(h, {});
+                consumed_since_last_update_ = 0;
+            }
+        }
     }
 }
 
 // --- Session ---
 
 Session::Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server)
-    : underlying_stream_(std::move(underlying_stream)), is_server_(is_server), next_stream_id_(is_server ? 2 : 1) {}
+    : underlying_stream_(std::move(underlying_stream)), 
+      is_server_(is_server), 
+      next_stream_id_(is_server ? 2 : 1),
+      heartbeat_timer_(underlying_stream_->get_executor()) {}
 
 void Session::start(std::function<void(std::shared_ptr<MuxStream>)> on_new_stream) {
     on_new_stream_ = std::move(on_new_stream);
     do_read_header();
+    schedule_heartbeat();
 }
 
 void Session::stop() {
+    heartbeat_timer_.cancel();
     underlying_stream_->close();
     std::lock_guard<std::mutex> lock(streams_mutex_);
     for (auto& [id, stream] : streams_) {
         stream->handle_close();
     }
     streams_.clear();
+}
+
+void Session::schedule_heartbeat() {
+    heartbeat_timer_.expires_after(std::chrono::seconds(30));
+    auto self = shared_from_this();
+    heartbeat_timer_.async_wait([this, self](std::error_code ec) {
+        if (!ec) {
+            Header h;
+            h.version = 0;
+            h.type = (uint8_t)Type::Ping;
+            h.flags = Flags::SYN; // Ping request
+            h.stream_id = 0;
+            h.length = 0;
+            async_send_frame(h, {});
+            schedule_heartbeat();
+        }
+    });
 }
 
 std::shared_ptr<MuxStream> Session::open_stream() {
@@ -350,6 +390,16 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
         if (stream) {
             stream->handle_window_update(h.length);
         }
+    } else if (h.type == (uint8_t)Type::Ping) {
+        if (h.flags & Flags::SYN) {
+            Header resp;
+            resp.version = 0;
+            resp.type = (uint8_t)Type::Ping;
+            resp.flags = Flags::ACK;
+            resp.stream_id = 0;
+            resp.length = 0;
+            async_send_frame(resp, {});
+        }
     } else if (h.type == (uint8_t)Type::GoAway) {
         stop();
     }
@@ -369,12 +419,14 @@ void Session::do_write() {
     auto self = shared_from_this();
     underlying_stream_->async_write(asio::buffer(pw->data),
         [this, self, pw](std::error_code ec, std::size_t) {
-            if (pw->handler) pw->handler(ec);
-            
             {
                 std::lock_guard<std::mutex> lock(write_mutex_);
-                write_queue_.pop_front();
+                if (!write_queue_.empty() && write_queue_.front() == pw) {
+                    write_queue_.pop_front();
+                }
             }
+            
+            if (pw->handler) pw->handler(ec);
             
             if (!ec) {
                 do_write();
