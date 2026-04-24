@@ -53,9 +53,11 @@ cmake --build .
 ### 使用方法
 
 您可以带参数或不带参数运行 `cfrp`。如果未通过 `-c` 指定配置文件，它将遵循以下查找和生成顺序：
-1. 使用当前目录下的 `server.toml`（如果存在）。
-2. 使用当前目录下的 `client.toml`（如果存在）。
+1. 使用当前目录下的 `server.toml`（如果存在，启动服务端节点）。
+2. 使用当前目录下的 `client.toml`（如果存在，启动客户端节点）。
 3. 如果两者都不存在，自动生成默认的 `server.toml`。
+
+**注意：** 如果同时存在 `server.toml` 和 `client.toml`，程序将优先使用 `server.toml`。
 
 #### 1. 启动服务端
 配置 `server.toml`:

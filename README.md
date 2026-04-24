@@ -58,9 +58,11 @@ cmake --build .
 ### Usage
 
 You can run `cfrp` with or without parameters. If no configuration file is specified via `-c`, it will follow this search and generation order:
-1. Use `server.toml` if it exists in the current directory.
-2. Use `client.toml` if it exists in the current directory.
+1. Use `server.toml` if it exists in the current directory (starts a server node).
+2. Use `client.toml` if it exists in the current directory (starts a client node).
 3. Automatically generate a default `server.toml` if neither exists.
+
+**Note:** If both `server.toml` and `client.toml` are present, `server.toml` takes precedence.
 
 #### 1. Start the Server
 Configure `server.toml`:
