@@ -17,6 +17,11 @@ find_package(zstd CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
 
 # tomlplusplus and ngtcp2 in vcpkg are easier to find via pkg-config
+# On Windows, we search for pkgconf or pkg-config provided by vcpkg or system
+if(NOT PKG_CONFIG_EXECUTABLE)
+    find_program(PKG_CONFIG_EXECUTABLE NAMES pkgconf pkg-config)
+endif()
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
 pkg_check_modules(ngtcp2 REQUIRED IMPORTED_TARGET libngtcp2)

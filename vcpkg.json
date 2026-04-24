@@ -8,7 +8,6 @@
     "asio",
     "nlohmann-json",
     "zstd",
-    "pkgconf",
     {
       "name": "wolfssl",
       "features": [ "quic", "asio" ]
