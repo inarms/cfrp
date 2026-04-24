@@ -15,11 +15,8 @@ find_package(asio CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
-
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
-pkg_check_modules(ngtcp2 REQUIRED IMPORTED_TARGET libngtcp2)
-pkg_check_modules(ngtcp2_crypto REQUIRED IMPORTED_TARGET libngtcp2_crypto_wolfssl)
+find_package(tomlplusplus CONFIG REQUIRED)
+find_package(ngtcp2 CONFIG REQUIRED)
 
 # Configure Asio to use wolfSSL as OpenSSL replacement
 add_definitions(-DASIO_USE_WOLFSSL)
@@ -47,12 +44,12 @@ endif()
 
 target_link_libraries(cfrp PRIVATE 
     CLI11::CLI11 
-    PkgConfig::tomlplusplus
+    tomlplusplus::tomlplusplus
     asio::asio 
     zstd::libzstd
     wolfssl::wolfssl
-    PkgConfig::ngtcp2
-    PkgConfig::ngtcp2_crypto
+    ngtcp2::ngtcp2
+    ngtcp2::ngtcp2_crypto_wolfssl
 )
 
 # Copy configuration files to the build directory

@@ -88,6 +88,8 @@ jobs:
             cp build/${{ matrix.binary_name }} release/
           elif [ -f "build/Release/${{ matrix.binary_name }}" ]; then
             cp build/Release/${{ matrix.binary_name }} release/
+          elif [ -f "build/Release/cfrp" ]; then
+            cp build/Release/cfrp release/
           fi
           
           cp config_server.toml release/
