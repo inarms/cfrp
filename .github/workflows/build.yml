@@ -15,7 +15,6 @@ jobs:
     runs-on: macos-14
     env:
       VCPKG_BINARY_SOURCES: "clear;default"
-      VCPKG_DEFAULT_TRIPLET: arm64-osx
 
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +23,6 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: 'vcpkg.json'
-          runVcpkgInstall: true
 
       - name: Configure and Build
         shell: bash
