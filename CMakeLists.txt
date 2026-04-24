@@ -61,6 +61,14 @@ target_link_libraries(cfrp PRIVATE
     PkgConfig::ngtcp2_crypto
 )
 
+if(WIN32)
+    target_compile_definitions(cfrp PRIVATE 
+        _WIN32_WINNT=0x0A00
+        _CRT_SECURE_NO_WARNINGS
+    )
+    target_link_libraries(cfrp PRIVATE ws2_32)
+endif()
+
 # Copy configuration files to the build directory
 file(COPY 
     ${CMAKE_CURRENT_SOURCE_DIR}/server.toml 
