@@ -64,6 +64,7 @@ You can run `cfrp` with or without parameters. If no configuration file is speci
 Run `./cfrp -ca certs/ca.crt` to:
 - Automatically generate a `client.toml` (if missing) with SSL enabled and server verification using the provided CA.
 - Force client mode even if `server.toml` exists.
+- **Note:** If `client.toml` already exists, the `-ca` parameter is ignored and the existing configuration is used as-is.
 
 **Note:** If both `server.toml` and `client.toml` are present, `server.toml` takes precedence unless `-ca` is used.
 

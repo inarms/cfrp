@@ -202,12 +202,6 @@ ca_file = "certs/ca.crt"
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
-            if (ca_opt->count() > 0) {
-                ssl_config.enable = true;
-                ssl_config.verify_peer = true;
-                ssl_config.ca_file = ca_path;
-            }
-
             client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol));
 
             if (auto proxies = client_node["proxies"].as_array()) {
