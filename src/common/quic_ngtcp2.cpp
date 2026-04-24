@@ -164,9 +164,9 @@ QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint 
     std::memcpy(&remote_addr_, remote_endpoint_.data(), remote_endpoint_.size());
 
     path_.local.addr = (ngtcp2_sockaddr*)&local_addr_;
-    path_.local.addrlen = local_ep.size();
+    path_.local.addrlen = static_cast<ngtcp2_socklen>(local_ep.size());
     path_.remote.addr = (ngtcp2_sockaddr*)&remote_addr_;
-    path_.remote.addrlen = remote_endpoint_.size();
+    path_.remote.addrlen = static_cast<ngtcp2_socklen>(remote_endpoint_.size());
 }
 
 QuicSession::~QuicSession() {
@@ -332,7 +332,7 @@ void QuicSession::close_session() {
 
 void QuicSession::close_stream(int64_t stream_id) {
     if (!conn_) return;
-    ngtcp2_conn_shutdown_stream(conn_, stream_id, 0, 0);
+    ngtcp2_conn_shutdown_stream(conn_, 0, stream_id, 0);
     send_packets();
 }
 

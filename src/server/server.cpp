@@ -38,16 +38,16 @@ void Bridge::Start() {
 void Bridge::DoRead(int direction) {
     auto self(shared_from_this());
     if (!use_compression_) {
-        auto& from = (direction == 1) ? s1_ : s2_;
-        auto& buf = (direction == 1) ? data1_ : data2_;
+        auto from = (direction == 1) ? s1_ : s2_;
+        auto buf = (direction == 1) ? data1_ : data2_;
 
         from->async_read_some(asio::buffer(buf, sizeof(data1_)),
             [this, self, direction](std::error_code ec, std::size_t length) {
                 if (!ec) {
-                    auto& to_inner = (direction == 1) ? s2_ : s1_;
-                    auto& buf_inner = (direction == 1) ? data1_ : data2_;
+                    auto to_inner = (direction == 1) ? s2_ : s1_;
+                    auto buf_inner = (direction == 1) ? data1_ : data2_;
                     
-                    auto write_op = [this, self, direction, &to_inner, &buf_inner, length]() {
+                    auto write_op = [this, self, direction, to_inner, buf_inner, length]() {
                         to_inner->async_write(asio::buffer(buf_inner, length),
                             [this, self, direction](std::error_code ec, std::size_t) {
                                 if (!ec) {
