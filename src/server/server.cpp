@@ -67,6 +67,9 @@ void Bridge::DoRead(int direction) {
                                 if (!ec) {
                                     DoRead(direction);
                                 } else {
+                                    if (ec != asio::error::operation_aborted) {
+                                        std::cerr << "[Bridge] Write error (" << direction << "): " << ec.message() << std::endl;
+                                    }
                                     s1_->close(); s2_->close();
                                 }
                             });
@@ -78,6 +81,11 @@ void Bridge::DoRead(int direction) {
                         write_op();
                     }
                 } else {
+                    if (ec != asio::error::operation_aborted && ec != asio::error::eof) {
+                        std::cerr << "[Bridge] Connection error (" << direction << "): " << ec.message() << std::endl;
+                    } else if (ec == asio::error::eof) {
+                        std::cout << "[Bridge] Connection closed by peer (" << direction << ")" << std::endl;
+                    }
                     s1_->close(); s2_->close();
                 }
             });
