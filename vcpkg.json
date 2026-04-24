@@ -9,6 +9,10 @@
     "nlohmann-json",
     "zstd",
     {
+      "name": "pkgconf",
+      "platform": "windows"
+    },
+    {
       "name": "wolfssl",
       "features": [ "quic", "asio" ]
     },
