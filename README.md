@@ -57,6 +57,11 @@ cmake --build .
 
 ### Usage
 
+You can run `cfrp` with or without parameters. If no configuration file is specified via `-c`, it will follow this search and generation order:
+1. Use `config_server.toml` if it exists in the current directory.
+2. Use `config_client.toml` if it exists in the current directory.
+3. Automatically generate a default `config_server.toml` if neither exists.
+
 #### 1. Start the Server
 Configure `config_server.toml`:
 ```toml
@@ -73,7 +78,8 @@ key_file = "server.key"
 ```
 Run the server:
 ```bash
-./cfrp -c config_server.toml
+./cfrp
+# Or explicitly: ./cfrp -c config_server.toml
 ```
 
 #### 2. Start the Client
@@ -106,7 +112,8 @@ remote_port = 5300
 ```
 Run the client:
 ```bash
-./cfrp -c config_client.toml
+./cfrp
+# Or explicitly: ./cfrp -c config_client.toml
 ```
 
 #### 3. Access your service

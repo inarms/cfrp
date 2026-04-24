@@ -52,6 +52,11 @@ cmake --build .
 
 ### 使用方法
 
+您可以带参数或不带参数运行 `cfrp`。如果未通过 `-c` 指定配置文件，它将遵循以下查找和生成顺序：
+1. 使用当前目录下的 `config_server.toml`（如果存在）。
+2. 使用当前目录下的 `config_client.toml`（如果存在）。
+3. 如果两者都不存在，自动生成默认的 `config_server.toml`。
+
 #### 1. 启动服务端
 配置 `config_server.toml`:
 ```toml
@@ -68,7 +73,8 @@ key_file = "server.key"
 ```
 运行服务端:
 ```bash
-./cfrp -c config_server.toml
+./cfrp
+# 或者明确指定: ./cfrp -c config_server.toml
 ```
 
 #### 2. 启动客户端
@@ -101,7 +107,8 @@ remote_port = 5300
 ```
 运行客户端:
 ```bash
-./cfrp -c config_client.toml
+./cfrp
+# 或者明确指定: ./cfrp -c config_client.toml
 ```
 
 #### 3. 访问你的服务
@@ -163,7 +170,7 @@ ssh -p 6000 用户名@你的服务器IP
 - `server_addr`: 服务端 IP 或域名。
 - `server_port`: 服务端控制端口。
 - `token`: 身份验证密钥。
-- `protocol`: 要使用的协议 (`tcp`, `quic` 或 `auto`)。默认为 `auto`。在 `auto` 模式下，客户端会尝试 QUIC 并在 5 秒超时后降级到 TCP。
+- `protocol`: 要使用的协议 (`tcp`, `quic`, `websocket` 或 `auto`)。默认为 `auto`。在 `auto` 模式下，客户端会按以下顺序尝试协议：**QUIC -> TCP -> WebSocket**，如果前一个协议失败或超时，则自动降级到下一个。
 - `name`: 客户端的可选唯一名称。如果省略，服务端将自动分配一个，并通过添加后缀（如 `client_1`）确保唯一性。
 - `compression`: 为所有连接启用 Zstd 压缩 (默认 `true`)。
 - `conf_d`: 可选，用于动态代理配置的目录路径。
