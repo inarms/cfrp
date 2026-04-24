@@ -45,7 +45,6 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - C++17 compatible compiler
 - CMake 3.10+
 - [vcpkg](https://github.com/microsoft/vcpkg) for dependency management
-- wolfSSL (installed via vcpkg)
 
 ### Building
 

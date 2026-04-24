@@ -40,7 +40,6 @@
 - 支持 C++17 的编译器
 - CMake 3.10+
 - [vcpkg](https://github.com/microsoft/vcpkg) 用于依赖管理
-- wolfSSL (通过 vcpkg 安装)
 
 ### 构建
 
