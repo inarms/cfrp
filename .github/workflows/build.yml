@@ -177,7 +177,7 @@ jobs:
 
       - name: Install pkg-config
         shell: pwsh
-        run: choco install pkgconfiglite -y
+        run: choco install pkgconfiglite -y --allow-empty-checksums
 
       - name: Configure
         run: |
@@ -222,7 +222,7 @@ jobs:
 
       - name: Install pkg-config
         shell: pwsh
-        run: choco install pkgconfiglite -y
+        run: choco install pkgconfiglite -y --allow-empty-checksums
 
       - name: Configure
         run: |
