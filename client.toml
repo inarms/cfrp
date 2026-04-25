@@ -19,7 +19,7 @@ verify_peer = false
 name = "ssh"
 type = "tcp"
 local_ip = "127.0.0.1"
-local_port = 22
+local_port = 2222
 remote_port = 6000
 
 [[client.proxies]]

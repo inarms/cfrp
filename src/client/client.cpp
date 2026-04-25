@@ -31,22 +31,11 @@ namespace client {
 
 // --- Bridge ---
 Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), timer_(s1_->get_executor()), use_compression_(use_compression) {}
+    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression) {}
 
 void Bridge::Start() {
-    ResetTimer();
     DoRead(1);
     DoRead(2);
-}
-
-void Bridge::ResetTimer() {
-    timer_.expires_after(std::chrono::minutes(10));
-    auto self(shared_from_this());
-    timer_.async_wait([this, self](std::error_code ec) {
-        if (!ec) {
-            s1_->close(); s2_->close();
-        }
-    });
 }
 
 void Bridge::DoRead(int direction) {
@@ -58,7 +47,6 @@ void Bridge::DoRead(int direction) {
         from->async_read_some(asio::buffer(buf, sizeof(data1_)),
             [this, self, direction](std::error_code ec, std::size_t length) {
                 if (!ec) {
-                    ResetTimer();
                     auto to_inner = (direction == 1) ? s2_ : s1_;
                     auto buf_inner = (direction == 1) ? data1_ : data2_;
                     
@@ -92,7 +80,6 @@ void Bridge::DoRead(int direction) {
             s1_->async_read_some(asio::buffer(data1_, sizeof(data1_)),
                 [this, self](std::error_code ec, std::size_t length) {
                     if (!ec) {
-                        ResetTimer();
                         size_t const cSizeBound = ZSTD_compressBound(length);
                         std::vector<uint8_t> compressed(cSizeBound);
                         size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, 1);
@@ -139,7 +126,6 @@ void Bridge::DoRead(int direction) {
             s2_->async_read(asio::buffer(&header2_, sizeof(header2_)),
                 [this, self](std::error_code ec, std::size_t) {
                     if (!ec) {
-                        ResetTimer();
                         uint32_t h2 = asio::detail::socket_ops::network_to_host_long(header2_);
                         uint32_t len = h2 & protocol::LENGTH_MASK;
                         bool compressed = (h2 & protocol::COMPRESSION_FLAG) != 0;
@@ -194,29 +180,13 @@ void Bridge::DoRead(int direction) {
 
 // --- UdpBridge ---
 UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : timer_(io_context), stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(io_context, udp::endpoint(udp::v4(), 0)), local_endpoint_(local_endpoint), use_compression_(use_compression) {
+    : stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(io_context, udp::endpoint(udp::v4(), 0)), local_endpoint_(local_endpoint), use_compression_(use_compression) {
     read_buf_.resize(65535);
 }
 
 void UdpBridge::Start() {
-    StartTimer();
     DoReadFromStream();
     DoReadFromLocal();
-}
-
-void UdpBridge::StartTimer() {
-    timer_.expires_after(std::chrono::seconds(60));
-    auto self(shared_from_this());
-    timer_.async_wait([this, self](std::error_code ec) {
-        if (!ec) {
-            std::cout << "UDP bridge timed out" << std::endl;
-            stream_->close();
-        }
-    });
-}
-
-void UdpBridge::ResetTimer() {
-    timer_.expires_after(std::chrono::seconds(60));
 }
 
 void UdpBridge::DoReadFromStream() {
@@ -235,7 +205,6 @@ void UdpBridge::DoReadFromStream() {
                 stream_->async_read(asio::buffer(read_buf_.data(), len),
                     [this, self, len, compressed](std::error_code ec, std::size_t) {
                         if (!ec) {
-                            ResetTimer();
                             const void* send_buf = read_buf_.data();
                             size_t send_len = len;
                             std::vector<uint8_t> decompressed;
@@ -277,7 +246,6 @@ void UdpBridge::DoReadFromLocal() {
     socket_.async_receive_from(asio::buffer(local_recv_buf_, sizeof(local_recv_buf_)), local_endpoint_,
         [this, self](std::error_code ec, std::size_t length) {
             if (!ec) {
-                ResetTimer();
                 auto buf = std::make_shared<std::vector<uint8_t>>();
                 
                 uint16_t header;

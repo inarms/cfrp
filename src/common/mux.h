@@ -83,6 +83,7 @@ public:
 
 private:
     void do_read_from_buffer();
+    void check_cleanup();
 
     uint32_t id_;
     std::weak_ptr<Session> session_;
@@ -98,7 +99,8 @@ private:
         bool read_all;
     };
     std::deque<PendingRead> pending_reads_;
-    bool closed_ = false;
+    bool local_closed_ = false;
+    bool remote_closed_ = false;
 };
 
 class Session : public std::enable_shared_from_this<Session> {
@@ -108,6 +110,7 @@ public:
     void stop();
 
     std::shared_ptr<MuxStream> open_stream();
+    void remove_stream(uint32_t stream_id);
     void async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler = nullptr);
 
     asio::any_io_executor get_executor() { return underlying_stream_->get_executor(); }

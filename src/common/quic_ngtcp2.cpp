@@ -312,7 +312,14 @@ void QuicSession::send_packets() {
         if (res <= 0) {
             break;
         }
-        socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_);
+        std::error_code ec;
+        socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
+        if (ec) {
+            if (ec != asio::error::operation_aborted) {
+                std::cerr << "[QUIC] send_to error: " << ec.message() << std::endl;
+            }
+            break;
+        }
     }
     
     // Also try to send queued stream data
@@ -342,7 +349,8 @@ void QuicSession::close_session() {
     ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
     ngtcp2_ssize res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
     if (res > 0) {
-        socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_);
+        std::error_code ec;
+        socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
     }
     check_closed();
 }
@@ -401,7 +409,14 @@ void QuicSession::do_write() {
                 
                 if (res > 0) {
                     packets_sent++;
-                    socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_);
+                    std::error_code ec;
+                    socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
+                    if (ec) {
+                        if (ec != asio::error::operation_aborted) {
+                            std::cerr << "[QUIC] do_write send_to error: " << ec.message() << std::endl;
+                        }
+                        break;
+                    }
                     if (consumed_datalen > 0) {
                         pw->consumed += consumed_datalen;
                         progress = true;

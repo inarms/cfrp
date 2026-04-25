@@ -112,8 +112,8 @@ void MuxStream::async_handshake(asio::ssl::stream_base::handshake_type, std::fun
 
 void MuxStream::close() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) return;
-    closed_ = true;
+    if (local_closed_) return;
+    local_closed_ = true;
     
     auto session = session_.lock();
     if (session) {
@@ -132,6 +132,7 @@ void MuxStream::close() {
         });
     }
     pending_reads_.clear();
+    check_cleanup();
 }
 
 asio::any_io_executor MuxStream::get_executor() {
@@ -165,15 +166,25 @@ void MuxStream::handle_window_update(uint32_t delta) {
 
 void MuxStream::handle_close() {
     std::lock_guard<std::mutex> lock(mutex_);
-    closed_ = true;
+    remote_closed_ = true;
     do_read_from_buffer();
+    check_cleanup();
+}
+
+void MuxStream::check_cleanup() {
+    if (local_closed_ && remote_closed_ && read_buffer_.empty()) {
+        auto session = session_.lock();
+        if (session) {
+            session->remove_stream(id_);
+        }
+    }
 }
 
 void MuxStream::do_read_from_buffer() {
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
         if (read_buffer_.empty()) {
-            if (closed_) {
+            if (remote_closed_) {
                 auto handler = std::move(pr.handler);
                 pending_reads_.pop_front();
                 asio::post(get_executor(), [handler]() {
@@ -186,7 +197,7 @@ void MuxStream::do_read_from_buffer() {
 
         size_t to_copy = std::min(pr.buffer.size(), read_buffer_.size());
         if (pr.read_all && to_copy < pr.buffer.size()) {
-            if (closed_) {
+            if (remote_closed_) {
                 auto handler = std::move(pr.handler);
                 pending_reads_.pop_front();
                 asio::post(get_executor(), [handler]() {
@@ -223,6 +234,7 @@ void MuxStream::do_read_from_buffer() {
             }
         }
     }
+    check_cleanup();
 }
 
 // --- Session ---
@@ -289,6 +301,13 @@ std::shared_ptr<MuxStream> Session::open_stream() {
     async_send_frame(h, {});
     
     return stream;
+}
+
+void Session::remove_stream(uint32_t stream_id) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+    if (streams_.erase(stream_id) > 0) {
+        std::cout << "[MuxSession] Cleaned up and removed stream ID: " << stream_id << std::endl;
+    }
 }
 
 void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler) {
