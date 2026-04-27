@@ -41,6 +41,76 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
+    std::string exe_path = cfrp::common::GetExecutablePath();
+    std::string exe_dir = exe_path.empty() ? "." : fs::path(exe_path).parent_path().string();
+    std::string pid_path = (fs::path(exe_dir) / "cfrp.pid").string();
+    std::string log_path = (fs::path(exe_dir) / "cfrp.log").string();
+    std::string status_path = (fs::path(exe_dir) / "cfrp.status").string();
+
+    bool is_daemon_worker = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--daemon-worker") {
+            is_daemon_worker = true;
+            break;
+        }
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "status") {
+        if (fs::exists(pid_path)) {
+            std::ifstream ifs(pid_path);
+            int pid;
+            if (ifs >> pid) {
+                if (cfrp::common::IsProcessRunning(pid)) {
+                    std::cout << "---------------------------------------" << std::endl;
+                    std::cout << "  cfrp status: Running" << std::endl;
+                    std::cout << "  PID:         " << pid << std::endl;
+                    if (fs::exists(status_path)) {
+                        std::ifstream s_ifs(status_path);
+                        std::string line;
+                        while (std::getline(s_ifs, line)) {
+                            std::cout << "  " << line << std::endl;
+                        }
+                    }
+                    std::cout << "---------------------------------------" << std::endl;
+                    return 0;
+                } else {
+                    std::cout << "cfrp is not running (stale PID: " << pid << ")." << std::endl;
+                    return 0;
+                }
+            }
+        }
+        std::cout << "cfrp is not running." << std::endl;
+        return 0;
+    }
+
+    if (argc >= 2 && std::string(argv[1]) == "stop") {
+        if (fs::exists(pid_path)) {
+            std::ifstream ifs(pid_path);
+            int pid;
+            if (ifs >> pid) {
+                if (cfrp::common::IsProcessRunning(pid)) {
+                    if (cfrp::common::StopProcess(pid)) {
+                        std::cout << "Stopped cfrp process " << pid << std::endl;
+                        if (fs::exists(pid_path)) fs::remove(pid_path);
+                        if (fs::exists(status_path)) fs::remove(status_path);
+                        return 0;
+                    }
+ else {
+                        std::cerr << "Error: Failed to stop process " << pid << std::endl;
+                        return 1;
+                    }
+                } else {
+                    std::cout << "Process " << pid << " is not running. Cleaning up stale PID file." << std::endl;
+                    if (fs::exists(pid_path)) fs::remove(pid_path);
+                    if (fs::exists(status_path)) fs::remove(status_path);
+                    return 0;
+                }
+            }
+        }
+        std::cout << "cfrp is not running." << std::endl;
+        return 0;
+    }
+
     std::string home = cfrp::common::GetHomeDirectory();
     std::string home_config_dir = home.empty() ? "" : (fs::path(home) / ".cfrp").string();
     std::string home_config_file = home_config_dir.empty() ? "" : (fs::path(home_config_dir) / "config").string();
@@ -175,6 +245,8 @@ int main(int argc, char** argv) {
             std::cout << "  config set <key> <value>  Set global configuration" << std::endl;
             std::cout << "  config get <key>          Get global configuration" << std::endl;
             std::cout << "  config ls                 List all global configuration" << std::endl;
+            std::cout << "  status                    Show current status" << std::endl;
+            std::cout << "  stop                      Stop background process" << std::endl;
             return 0;
         } else if (!arg.empty() && arg[0] != '-') {
             if (config_path.empty()) {
@@ -208,9 +280,66 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (working_mode == "background") {
-        // TODO: Implement daemonization
-        std::cout << "Starting in background mode..." << std::endl;
+    if (working_mode == "background" || is_daemon_worker) {
+        if (!is_daemon_worker && fs::exists(pid_path)) {
+            std::ifstream ifs(pid_path);
+            int existing_pid;
+            if (ifs >> existing_pid) {
+                if (cfrp::common::IsProcessRunning(existing_pid)) {
+                    std::cerr << "Error: cfrp is already running with PID " << existing_pid << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        if (working_mode == "background" && !is_daemon_worker) {
+#ifndef _WIN32
+            pid_t pid = fork();
+            if (pid < 0) {
+                std::cerr << "Error: Failed to fork" << std::endl;
+                return 1;
+            }
+            if (pid > 0) {
+                std::cout << "Starting in background mode (PID: " << pid << ")" << std::endl;
+                return 0;
+            }
+            if (setsid() < 0) return 1;
+            int fd = open(log_path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0644);
+            if (fd != -1) {
+                dup2(fd, STDIN_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                if (fd > 2) close(fd);
+            }
+#else
+            std::string cmd = "\"" + exe_path + "\"";
+            for (int i = 1; i < argc; ++i) {
+                cmd += " \"" + std::string(argv[i]) + "\"";
+            }
+            cmd += " --daemon-worker";
+
+            STARTUPINFOA si = { sizeof(si) };
+            PROCESS_INFORMATION pi;
+            if (CreateProcessA(NULL, (char*)cmd.c_str(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                std::ofstream ofs(pid_path);
+                ofs << pi.dwProcessId;
+                std::cout << "Starting in background mode (PID: " << pi.dwProcessId << ")" << std::endl;
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                return 0;
+            } else {
+                std::cerr << "Error: Failed to start background process" << std::endl;
+                return 1;
+            }
+#endif
+        }
+
+        std::ofstream ofs(pid_path);
+#ifdef _WIN32
+        ofs << GetCurrentProcessId();
+#else
+        ofs << getpid();
+#endif
     }
 
     // 2. Handle Functional Configuration (server.toml / client.toml)
@@ -316,6 +445,23 @@ ca_file = "certs/ca.crt"
             std::cout << "\nCaught signal, exiting..." << std::endl;
             if (server) server->Stop();
             if (client) client->Stop();
+            if (fs::exists(pid_path)) {
+                std::ifstream ifs(pid_path);
+                int saved_pid;
+                if (ifs >> saved_pid) {
+#ifdef _WIN32
+                    if (saved_pid == (int)GetCurrentProcessId()) {
+                        fs::remove(pid_path);
+                        if (fs::exists(status_path)) fs::remove(status_path);
+                    }
+#else
+                    if (saved_pid == (int)getpid()) {
+                        fs::remove(pid_path);
+                        if (fs::exists(status_path)) fs::remove(status_path);
+                    }
+#endif
+                }
+            }
             io_context.stop();
         });
 
@@ -359,6 +505,12 @@ ca_file = "certs/ca.crt"
             uint16_t vhost_http_port = static_cast<uint16_t>(config["server"]["vhost_http_port"].value_or(0));
             uint16_t vhost_https_port = static_cast<uint16_t>(config["server"]["vhost_https_port"].value_or(0));
 
+            std::ofstream status_ofs(status_path);
+            if (status_ofs) {
+                status_ofs << "Mode:        Server\n";
+                status_ofs << "Config:      " << config_path << "\n";
+            }
+
             server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
@@ -383,6 +535,12 @@ ca_file = "certs/ca.crt"
             }
 
             client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol));
+
+            std::ofstream status_ofs(status_path);
+            if (status_ofs) {
+                status_ofs << "Mode:        Client\n";
+                status_ofs << "Config:      " << config_path << "\n";
+            }
 
             if (auto proxies = client_node["proxies"].as_array()) {
                 for (auto& elem : *proxies) {

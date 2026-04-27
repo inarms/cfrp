@@ -20,9 +20,69 @@
 #include <cstdint>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <unistd.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#endif
 
 namespace cfrp {
 namespace common {
+
+inline std::string GetExecutablePath() {
+    std::error_code ec;
+#ifdef _WIN32
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    return std::string(buffer);
+#elif defined(__APPLE__)
+    char buffer[1024];
+    uint32_t size = sizeof(buffer);
+    if (_NSGetExecutablePath(buffer, &size) == 0) {
+        return std::filesystem::canonical(buffer, ec).string();
+    }
+    return "";
+#else
+    return std::filesystem::read_symlink("/proc/self/exe", ec).string();
+#endif
+}
+
+inline bool IsProcessRunning(int pid) {
+#ifdef _WIN32
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (process == NULL) return false;
+    DWORD exitCode;
+    GetExitCodeProcess(process, &exitCode);
+    CloseHandle(process);
+    return exitCode == STILL_ACTIVE;
+#else
+    return kill(pid, 0) == 0;
+#endif
+}
+
+inline bool StopProcess(int pid) {
+#ifdef _WIN32
+    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (process == NULL) return false;
+    bool result = TerminateProcess(process, 1);
+    CloseHandle(process);
+    return result;
+#else
+    return kill(pid, SIGTERM) == 0;
+#endif
+}
 
 inline std::string GetHomeDirectory() {
     const char* home = nullptr;
