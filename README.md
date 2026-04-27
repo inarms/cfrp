@@ -75,6 +75,10 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 ```
 - **Config Path:** `C:\Program Files\cfrp\client.toml`
 
+**Uninstall Client:**
+- **Linux/macOS:** `curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.sh | sudo bash -s -- --mode client`
+- **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode client"`
+
 #### Client Management
 | Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
 | :--- | :--- | :--- | :--- |
