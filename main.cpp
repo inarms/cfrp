@@ -70,6 +70,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (fs::exists("server.toml")) {
+        config_path = "server.toml";
+    } else if (fs::exists("client.toml")) {
+        config_path = "client.toml";
+    }
+
     if (!config_path.empty()) {
         ca_path.clear();
         cli_token.clear();
@@ -87,13 +93,10 @@ int main(int argc, char** argv) {
 
     if (!config_provided) {
         if (ca_provided) {
-            if (fs::exists("client.toml")) {
-                config_path = "client.toml";
-            } else {
-                std::cout << "No client configuration found. Generating default client.toml..." << std::endl;
-                std::ofstream ofs("client.toml");
-                if (ofs) {
-                    ofs << R"(# Default Client Configuration
+            std::cout << "No client configuration found. Generating default client.toml..." << std::endl;
+            std::ofstream ofs("client.toml");
+            if (ofs) {
+                ofs << R"(# Default Client Configuration
 [client]
 server_addr = "127.0.0.1"
 server_port = 7001
@@ -114,17 +117,12 @@ local_ip = "127.0.0.1"
 local_port = 22
 remote_port = 6000
 )" << std::endl;
-                    ofs.close();
-                    config_path = "client.toml";
-                } else {
-                    std::cerr << "Error: Could not generate default client.toml" << std::endl;
-                    return 1;
-                }
+                ofs.close();
+                config_path = "client.toml";
+            } else {
+                std::cerr << "Error: Could not generate default client.toml" << std::endl;
+                return 1;
             }
-        } else if (fs::exists("server.toml")) {
-            config_path = "server.toml";
-        } else if (fs::exists("client.toml")) {
-            config_path = "client.toml";
         } else {
             std::cout << "No configuration file found. Generating default server.toml..." << std::endl;
             std::ofstream ofs("server.toml");

@@ -59,12 +59,16 @@ cmake --build .
 `cfrp` can be started as either a server or a client node.
 
 ### Automatic Configuration Selection
-If no configuration file is specified as a positional argument, the application searches for files in the current directory in the following order:
+**Note: If `server.toml` or `client.toml` exists in the current directory, they take absolute precedence. All command-line positional arguments and flags (like `-c` or `-t`) will be ignored.**
+
+If no configuration file exists, the application follows this logic:
+1. **Positional Argument**: If a path is provided (e.g., `./cfrp my.toml`), it uses that file.
+2. **Flags**: If `-c` and `-t` are provided, it generates a `client.toml` using those values.
+3. **Default**: Otherwise, it generates a default `server.toml` and starts as a Server.
+
+The search order for existing files is:
 1. **`server.toml`**: If found, starts as a **Server**.
 2. **`client.toml`**: If found, starts as a **Client**.
-3. **None**: Automatically generates a default `server.toml` and starts as a **Server**.
-
-*Note: `server.toml` takes precedence if both files are present, unless `--ca` is used.*
 
 ### Examples
 
