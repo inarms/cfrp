@@ -1,8 +1,7 @@
-# Build stage — using Alpine 3.8 for CMake 3.11 (satisfies >= 3.10 requirement)
-FROM alpine:3.8 AS builder
+# Build stage — using Alpine 3.16 for CMake 3.23 (satisfies vcpkg >= 3.21 requirement)
+FROM alpine:3.16 AS builder
 
 # Install build dependencies
-# Note: python3 and other packages are available in 3.8
 RUN apk add --no-cache \
     build-base \
     cmake \
@@ -52,7 +51,7 @@ RUN TRIPLET=$(cat /tmp/triplet) && \
 # Copy source and build
 COPY . .
 
-# Build with static linking to ensure compatibility across Alpine versions
+# Build with static linking to ensure compatibility
 RUN TRIPLET=$(cat /tmp/triplet) && \
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
