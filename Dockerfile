@@ -38,11 +38,11 @@ COPY vcpkg.json .
 # Build-time architecture detection
 ARG TARGETPLATFORM
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-        echo "arm64-linux" > /tmp/triplet; \
+        echo "arm64-linux-musl" > /tmp/triplet; \
     elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-        echo "x64-linux" > /tmp/triplet; \
+        echo "x64-linux-musl" > /tmp/triplet; \
     else \
-        echo "x64-linux" > /tmp/triplet; \
+        echo "x64-linux-musl" > /tmp/triplet; \
     fi
 
 # Pre-install dependencies (improves caching)
@@ -58,7 +58,7 @@ RUN TRIPLET=$(cat /tmp/triplet) && \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
     -DVCPKG_TARGET_TRIPLET=$TRIPLET \
-    && cmake --build build
+    && cmake --build build --target cfrp
 
 # Runtime stage
 # Using Alpine for the smallest footprint (approx 5MB) while maintaining usability
