@@ -137,7 +137,7 @@ cmake .. -DCMAKE_TOOLCHAIN_FILE=[path/to/vcpkg]/scripts/buildsystems/vcpkg.cmake
 cmake --build .
 ```
 
-## Usage
+## Binary Usage
 
 `cfrp` can be started as either a server or a client node.
 
