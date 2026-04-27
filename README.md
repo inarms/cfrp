@@ -49,6 +49,14 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 ```
 - **Config Path:** `C:\Program Files\cfrp\server.toml`
 
+#### Server Management
+| Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
+| :--- | :--- | :--- | :--- |
+| **Start** | `sudo systemctl start cfrp-server` | `sudo launchctl load -w /Library/LaunchDaemons/com.neesonqk.cfrp-server.plist` | `Start-Service cfrp-server` |
+| **Stop** | `sudo systemctl stop cfrp-server` | `sudo launchctl unload /Library/LaunchDaemons/com.neesonqk.cfrp-server.plist` | `Stop-Service cfrp-server` |
+| **Status** | `systemctl status cfrp-server` | `sudo launchctl list \| grep cfrp-server` | `Get-Service cfrp-server` |
+| **Logs** | `journalctl -u cfrp-server -f` | `tail -f /var/log/cfrp-server.log` | Check `C:\Program Files\cfrp\cfrp.log` |
+
 ---
 
 ### 2. Client Installation
@@ -67,6 +75,15 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 ```
 - **Config Path:** `C:\Program Files\cfrp\client.toml`
 
+#### Client Management
+| Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
+| :--- | :--- | :--- | :--- |
+| **Start** | `sudo systemctl start cfrp-client` | `sudo launchctl load -w /Library/LaunchDaemons/com.neesonqk.cfrp-client.plist` | `Start-Service cfrp-client` |
+| **Stop** | `sudo systemctl stop cfrp-client` | `sudo launchctl unload /Library/LaunchDaemons/com.neesonqk.cfrp-client.plist` | `Stop-Service cfrp-client` |
+| **Reload Config** | `sudo systemctl restart cfrp-client` | `sudo launchctl unload ... && sudo launchctl load ...` | `Restart-Service cfrp-client` |
+
+> **Pro-Tip:** Use the `config.d/` directory (inside the config path) to add new proxies without restarting the service!
+
 ---
 
 ### 3. CLI Tool Only
@@ -80,6 +97,21 @@ curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh 
 **Windows (PowerShell Admin):**
 ```powershell
 iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode cli"
+```
+
+#### CLI Usage Examples
+```bash
+# Show version and help
+cfrp --help
+
+# Check status of a running background process
+cfrp status
+
+# Stop a background process started via '--daemon-worker'
+cfrp stop
+
+# Set a global configuration value
+cfrp config set working_mode background
 ```
 
 ## Architecture
