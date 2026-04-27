@@ -12,7 +12,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Find dependencies
 find_package(CLI11 CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
 

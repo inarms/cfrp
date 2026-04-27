@@ -21,7 +21,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
 - **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
 - **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `nlohmann-json`, `wolfssl`, `ngtcp2`). Uses a compact **binary protocol** (MessagePack) for minimal overhead.
+- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `wolfssl`, `ngtcp2`). Uses a compact **custom binary protocol** for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
 ## Zero-Config Security
@@ -34,7 +34,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 ## Architecture
 
 1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
-2. **Control Stream**: A virtual stream used for command exchange using **MessagePack** binary serialization.
+2. **Control Stream**: A virtual stream used for command exchange using a **custom binary** serialization protocol.
 3. **Data Streams**: Dynamic virtual streams established on-demand to bridge traffic. Supports **automatic compression detection**.
 4. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
 

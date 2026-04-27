@@ -6,7 +6,6 @@
     "cli11",
     "tomlplusplus",
     "asio",
-    "nlohmann-json",
     "zstd",
     {
       "name": "wolfssl",

@@ -507,7 +507,7 @@ void Client::ScheduleReconnect() {
     });
 }
 
-void Client::SendMessage(protocol::MessageType type, const protocol::json& body) {
+void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body) {
     auto self(shared_from_this());
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
@@ -586,30 +586,30 @@ void Client::DoReadBody(uint32_t length) {
 }
 
 void Client::DoLogin() {
-    protocol::json body;
-    body["token"] = token_;
-    body["name"] = name_;
-    SendMessage(protocol::MessageType::Login, body);
+    protocol::LoginMessage msg;
+    msg.token = token_;
+    msg.name = name_;
+    SendMessage(protocol::MessageType::Login, msg.Serialize());
 }
 
 void Client::HandleMessage(const protocol::Message& msg) {
     if (msg.type == protocol::MessageType::LoginResp) {
-        if (msg.body["status"] == "ok") {
-            std::string assigned_name = msg.body.value("name", "");
-            if (!assigned_name.empty()) {
-                name_ = assigned_name;
+        auto resp = protocol::LoginRespMessage::Deserialize(msg.body);
+        if (resp.status == "ok") {
+            if (!resp.name.empty()) {
+                name_ = resp.name;
             }
             std::cout << "Authenticated successfully as [" << name_ << "]" << std::endl;
             RegisterProxies();
         } else {
-            std::cerr << "Authentication failed: " << msg.body.value("message", "unknown error") << std::endl;
+            std::cerr << "Authentication failed: " << (resp.message.empty() ? "unknown error" : resp.message) << std::endl;
         }
     } else if (msg.type == protocol::MessageType::RegisterProxyResp) {
-        std::cout << "Proxy registration response: " << msg.body["status"] << " for " << msg.body["name"] << std::endl;
+        auto resp = protocol::RegisterProxyRespMessage::Deserialize(msg.body);
+        std::cout << "Proxy registration response: " << resp.status << " for " << resp.name << std::endl;
     } else if (msg.type == protocol::MessageType::NewUserConn) {
-        std::string proxy_name = msg.body["proxy_name"];
-        std::string ticket = msg.body["ticket"];
-        HandleNewUserConn(proxy_name, ticket);
+        auto m = protocol::NewUserConnMessage::Deserialize(msg.body);
+        HandleNewUserConn(m.proxy_name, m.ticket);
     }
 }
 
@@ -625,28 +625,27 @@ void Client::RegisterProxies() {
 }
 
 void Client::RegisterProxy(const ProxyConfig& pc) {
-    protocol::json body;
-    body["name"] = pc.name;
-    body["type"] = pc.type;
-    body["remote_port"] = pc.remote_port;
-    if (!pc.custom_domains.empty()) {
-        body["custom_domains"] = pc.custom_domains;
-    }
+    protocol::RegisterProxyMessage msg;
+    msg.name = pc.name;
+    msg.type = pc.type;
+    msg.remote_port = pc.remote_port;
+    msg.custom_domains = pc.custom_domains;
+    msg.bandwidth_limit = pc.bandwidth_limit;
+
     if (pc.bandwidth_limit > 0) {
-        body["bandwidth_limit"] = pc.bandwidth_limit;
         if (proxy_rate_limiters_.find(pc.name) == proxy_rate_limiters_.end()) {
             proxy_rate_limiters_[pc.name] = std::make_shared<common::RateLimiter>(io_context_, pc.bandwidth_limit);
         } else {
             proxy_rate_limiters_[pc.name]->set_rate(pc.bandwidth_limit);
         }
     }
-    SendMessage(protocol::MessageType::RegisterProxy, body);
+    SendMessage(protocol::MessageType::RegisterProxy, msg.Serialize());
 }
 
 void Client::UnregisterProxy(const std::string& name) {
-    protocol::json body;
-    body["name"] = name;
-    SendMessage(protocol::MessageType::UnregisterProxy, body);
+    protocol::UnregisterProxyMessage msg;
+    msg.name = name;
+    SendMessage(protocol::MessageType::UnregisterProxy, msg.Serialize());
 }
 
 void Client::StartConfMonitor() {

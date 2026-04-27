@@ -106,7 +106,7 @@ private:
     void DoQuicConnect();
     void DoUdpRead();
     void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
-    void SendMessage(protocol::MessageType type, const protocol::json& body);
+    void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
     void DoReadHeader();
     void DoReadBody(uint32_t length);
     void HandleMessage(const protocol::Message& msg);

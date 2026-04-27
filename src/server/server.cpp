@@ -323,10 +323,10 @@ void UdpProxyListener::DoReceive() {
                     server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_, proxy_name_);
 
                     if (auto session = session_.lock()) {
-                        protocol::json body;
-                        body["proxy_name"] = proxy_name_;
-                        body["ticket"] = ticket;
-                        session->SendMessage(protocol::MessageType::NewUserConn, body);
+                        protocol::NewUserConnMessage m;
+                        m.proxy_name = proxy_name_;
+                        m.ticket = ticket;
+                        session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
                     }
                 } else {
                     ticket = it->second;
@@ -378,10 +378,10 @@ void ProxyListener::DoAccept() {
         server_.RegisterUserConn(ticket, std::move(socket), proxy_name_);
 
         if (auto session = session_.lock()) {
-            protocol::json body;
-            body["proxy_name"] = proxy_name_;
-            body["ticket"] = ticket;
-            session->SendMessage(protocol::MessageType::NewUserConn, body);
+            protocol::NewUserConnMessage m;
+            m.proxy_name = proxy_name_;
+            m.ticket = ticket;
+            session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
         }
         
         DoAccept();
@@ -413,7 +413,7 @@ void ControlSession::Stop() {
     stream_->close();
 }
 
-void ControlSession::SendMessage(protocol::MessageType type, const protocol::json& body) {
+void ControlSession::SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body) {
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
     uint32_t final_len = static_cast<uint32_t>(encoded.size());
@@ -506,30 +506,24 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     }
 
     if (msg.type == protocol::MessageType::RegisterProxy) {
-        std::string name = msg.body["name"];
-        uint16_t remote_port = msg.body["remote_port"];
-        std::string type = msg.body.value("type", "tcp");
-        std::vector<std::string> custom_domains;
-        if (msg.body.contains("custom_domains")) {
-            if (msg.body["custom_domains"].is_array()) {
-                custom_domains = msg.body["custom_domains"].get<std::vector<std::string>>();
-            } else {
-                custom_domains.push_back(msg.body["custom_domains"].get<std::string>());
-            }
-        }
+        auto m = protocol::RegisterProxyMessage::Deserialize(msg.body);
+        std::string name = m.name;
+        uint16_t remote_port = m.remote_port;
+        std::string type = m.type;
+        if (type.empty()) type = "tcp";
+        std::vector<std::string> custom_domains = m.custom_domains;
 
-        int64_t bandwidth_limit = msg.body.value("bandwidth_limit", 0LL);
-        if (bandwidth_limit > 0) {
-            server_.CreateRateLimiter(name, bandwidth_limit);
+        if (m.bandwidth_limit > 0) {
+            server_.CreateRateLimiter(name, m.bandwidth_limit);
         }
 
         if (type != "http" && type != "https" && !server_.IsPortAllowed(remote_port)) {
             std::cerr << "[Server] Proxy registration rejected: port " << remote_port << " is not in allowed ranges." << std::endl;
-            protocol::json resp;
-            resp["status"] = "error";
-            resp["message"] = "port not allowed";
-            resp["name"] = name;
-            SendMessage(protocol::MessageType::RegisterProxyResp, resp);
+            protocol::RegisterProxyRespMessage resp;
+            resp.status = "error";
+            resp.message = "port not allowed";
+            resp.name = name;
+            SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
             return;
         }
         
@@ -549,19 +543,20 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
                 proxies_.push_back(listener);
             }
             
-            protocol::json resp;
-            resp["status"] = "ok";
-            resp["name"] = name;
-            SendMessage(protocol::MessageType::RegisterProxyResp, resp);
+            protocol::RegisterProxyRespMessage resp;
+            resp.status = "ok";
+            resp.name = name;
+            SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
         } catch (const std::exception& e) {
             std::cerr << "Failed to start proxy listener: " << e.what() << std::endl;
-            protocol::json resp;
-            resp["status"] = "error";
-            resp["message"] = e.what();
-            SendMessage(protocol::MessageType::RegisterProxyResp, resp);
+            protocol::RegisterProxyRespMessage resp;
+            resp.status = "error";
+            resp.message = e.what();
+            SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
         }
     } else if (msg.type == protocol::MessageType::UnregisterProxy) {
-        std::string name = msg.body["name"];
+        auto m = protocol::UnregisterProxyMessage::Deserialize(msg.body);
+        std::string name = m.name;
         std::cout << "[Server] Unregistering proxy [" << name << "]" << std::endl;
         
         auto it = std::find_if(proxies_.begin(), proxies_.end(), [&](const std::shared_ptr<ProxyListener>& p) {
@@ -584,25 +579,26 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     }
 }
 
-void ControlSession::HandleLogin(const protocol::json& body) {
-    std::string token = body.value("token", "");
-    std::string requested_name = body.value("name", "");
-    protocol::json resp;
+void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
+    auto m = protocol::LoginMessage::Deserialize(body);
+    std::string token = m.token;
+    std::string requested_name = m.name;
+    protocol::LoginRespMessage resp;
 
     if (token != server_.GetToken()) {
         std::cout << "Client authentication failed: invalid token." << std::endl;
-        resp["status"] = "error";
-        resp["message"] = "Invalid token";
-        SendMessage(protocol::MessageType::LoginResp, resp);
+        resp.status = "error";
+        resp.message = "Invalid token";
+        SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
         Stop();
         return;
     }
 
     if (!server_.IsClientAllowed(requested_name)) {
         std::cout << "[Server] Client registration rejected: name [" << requested_name << "] is not in whitelist." << std::endl;
-        resp["status"] = "error";
-        resp["message"] = "client name not allowed";
-        SendMessage(protocol::MessageType::LoginResp, resp);
+        resp.status = "error";
+        resp.message = "client name not allowed";
+        SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
         Stop();
         return;
     }
@@ -612,9 +608,9 @@ void ControlSession::HandleLogin(const protocol::json& body) {
                 << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
     std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
     authenticated_ = true;
-    resp["status"] = "ok";
-    resp["name"] = client_name_;
-    SendMessage(protocol::MessageType::LoginResp, resp);
+    resp.status = "ok";
+    resp.name = client_name_;
+    SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
 }
 
 // --- Server ---
@@ -1099,10 +1095,10 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
                     if (session) {
                         std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_vhost_" + std::to_string(rand());
                         RegisterUserConn(ticket, std::move(*socket), proxy_name, *buffer);
-                        protocol::json body;
-                        body["proxy_name"] = proxy_name;
-                        body["ticket"] = ticket;
-                        session->SendMessage(protocol::MessageType::NewUserConn, body);
+                        protocol::NewUserConnMessage m;
+                        m.proxy_name = proxy_name;
+                        m.ticket = ticket;
+                        session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
                     } else {
                         // std::cerr << "[Server] No vhost route for domain: [" << domain << "] (" << type << ")" << std::endl;
                     }

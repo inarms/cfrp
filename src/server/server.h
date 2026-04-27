@@ -143,13 +143,13 @@ public:
 
     void Start();
     void Stop();
-    void SendMessage(protocol::MessageType type, const protocol::json& body);
+    void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
 
 private:
     void DoReadHeader();
     void DoReadBody(uint32_t length);
     void HandleMessage(const protocol::Message& msg);
-    void HandleLogin(const protocol::json& body);
+    void HandleLogin(const std::vector<uint8_t>& body);
 
     Server& server_;
     std::shared_ptr<common::AsyncStream> stream_;
