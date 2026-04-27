@@ -42,6 +42,9 @@ pkg_check_modules(ngtcp2_crypto REQUIRED IMPORTED_TARGET libngtcp2_crypto_wolfss
 
 # Configure Asio to use wolfSSL as OpenSSL replacement
 add_definitions(-DASIO_USE_WOLFSSL)
+# tomlplusplus size optimizations
+add_definitions(-DTOML_HEADER_ONLY=0)
+add_definitions(-DTOML_ENABLE_FORMATTERS=0)
 # wolfSSL size optimizations
 add_definitions(-DWOLFSSL_MINSIZE)
 add_definitions(-DNO_ERROR_STRINGS)

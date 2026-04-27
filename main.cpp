@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <csignal>
+#define TOML_IMPLEMENTATION
 #include <toml++/toml.h>
 #include "server/server.h"
 #include "client/client.h"
