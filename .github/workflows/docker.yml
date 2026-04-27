@@ -1,6 +1,12 @@
 name: Build and Push Docker Image
 
 on:
+  workflow_run:
+    workflows: ["Build and Release"]
+    types:
+      - completed
+    branches:
+      - 'main'
   push:
     tags: [ 'v*' ]
   pull_request:
@@ -12,6 +18,13 @@ env:
 
 jobs:
   build-and-push:
+    # Only run on tags (which trigger the release) or PRs
+    # When triggered by workflow_run, check if the parent workflow was successful
+    if: >
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -56,5 +69,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
