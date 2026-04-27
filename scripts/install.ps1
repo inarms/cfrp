@@ -83,6 +83,7 @@ Start-Service -Name $ServiceName
 
 Write-Host "--------------------------------------------------" -ForegroundColor Green
 Write-Host "cfrp $Mode service installed and started successfully!"
-Write-Host "Binary:  $BinaryDest"
-Write-Host "Config:  $ConfigDest"
+Write-Host "Binary:      $BinaryDest"
+Write-Host "Config File: $ConfigDest"
+Write-Host "Status:      Get-Service $ServiceName"
 Write-Host "--------------------------------------------------" -ForegroundColor Green

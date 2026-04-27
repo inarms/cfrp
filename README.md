@@ -33,28 +33,53 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 
 ## Installation
 
-### One-line Installation (Linux & macOS)
-Install as a **Server** service:
+### 1. Server Installation
+Installs the binary and sets up a background service (systemd/launchd/Windows Service).
+
+**Linux & macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode server
 ```
-Install as a **Client** service:
+- **Config Path (Linux):** `/etc/cfrp/server.toml`
+- **Config Path (macOS):** `/usr/local/etc/cfrp/server.toml`
+
+**Windows (PowerShell Admin):**
+```powershell
+iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
+```
+- **Config Path:** `C:\Program Files\cfrp\server.toml`
+
+---
+
+### 2. Client Installation
+Installs the binary and sets up a background service.
+
+**Linux & macOS:**
 ```bash
 curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
 ```
-Install as a **CLI tool** only:
+- **Config Path (Linux):** `/etc/cfrp/client.toml`
+- **Config Path (macOS):** `/usr/local/etc/cfrp/client.toml`
+
+**Windows (PowerShell Admin):**
+```powershell
+iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
+```
+- **Config Path:** `C:\Program Files\cfrp\client.toml`
+
+---
+
+### 3. CLI Tool Only
+Installs the binary to system PATH without creating a service.
+
+**Linux & macOS:**
 ```bash
 curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode cli
 ```
 
-### Windows Installation (PowerShell)
-Run as **Administrator**:
+**Windows (PowerShell Admin):**
 ```powershell
-# Install as Server
-iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content
-
-# Install as Client
-iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
+iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode cli"
 ```
 
 ## Architecture

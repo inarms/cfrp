@@ -150,9 +150,12 @@ EOF
     systemctl restart "cfrp-${MODE}"
 fi
 
+CONF_FILE="$(if [[ "$OS" == "darwin" ]]; then echo "/usr/local/etc/cfrp/${MODE}.toml"; else echo "/etc/cfrp/${MODE}.toml"; fi)"
+
 rm -rf "$TMP_DIR"
-echo "--------------------------------------------------"
-echo "cfrp $MODE service installed and started successfully!"
-echo "Binary:  /usr/local/bin/cfrp"
-echo "Config:  $(if [[ "$OS" == "darwin" ]]; then echo "/usr/local/etc/cfrp/"; else echo "/etc/cfrp/"; fi)"
-echo "--------------------------------------------------"
+echo -e "${GREEN}--------------------------------------------------${NC}"
+echo -e "${GREEN}cfrp $MODE service installed and started successfully!${NC}"
+echo -e "Binary:      ${CYAN}/usr/local/bin/cfrp${NC}"
+echo -e "Config File: ${CYAN}$CONF_FILE${NC}"
+echo -e "Status:      ${CYAN}$(if [[ "$OS" == "darwin" ]]; then echo "sudo launchctl list | grep com.neesonqk.cfrp-${MODE}"; else echo "systemctl status cfrp-${MODE}"; fi)${NC}"
+echo -e "${GREEN}--------------------------------------------------${NC}"
