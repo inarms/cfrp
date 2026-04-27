@@ -58,14 +58,16 @@ jobs:
           cp $EXE release-server/
           cp server.toml release-server/
           cp scripts/setup_macos_server.sh release-server/setup.sh
-          chmod +x release-server/setup.sh
+          cp scripts/uninstall_macos_server.sh release-server/uninstall.sh
+          chmod +x release-server/setup.sh release-server/uninstall.sh
           tar -czf cfrp-server-macos-arm64.tar.gz -C release-server .
           
           # Client pack
           cp $EXE release-client/
           cp client.toml release-client/
           cp scripts/setup_macos_client.sh release-client/setup.sh
-          chmod +x release-client/setup.sh
+          cp scripts/uninstall_macos_client.sh release-client/uninstall.sh
+          chmod +x release-client/setup.sh release-client/uninstall.sh
           tar -czf cfrp-client-macos-arm64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -129,14 +131,16 @@ jobs:
           cp build/cfrp release-server/
           cp server.toml release-server/
           cp scripts/setup_linux_server.sh release-server/setup.sh
-          chmod +x release-server/setup.sh
+          cp scripts/uninstall_linux_server.sh release-server/uninstall.sh
+          chmod +x release-server/setup.sh release-server/uninstall.sh
           tar -czf cfrp-server-linux-amd64.tar.gz -C release-server .
           
           # Client pack
           cp build/cfrp release-client/
           cp client.toml release-client/
           cp scripts/setup_linux_client.sh release-client/setup.sh
-          chmod +x release-client/setup.sh
+          cp scripts/uninstall_linux_client.sh release-client/uninstall.sh
+          chmod +x release-client/setup.sh release-client/uninstall.sh
           tar -czf cfrp-client-linux-amd64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -200,14 +204,16 @@ jobs:
           cp build/cfrp release-server/
           cp server.toml release-server/
           cp scripts/setup_linux_server.sh release-server/setup.sh
-          chmod +x release-server/setup.sh
+          cp scripts/uninstall_linux_server.sh release-server/uninstall.sh
+          chmod +x release-server/setup.sh release-server/uninstall.sh
           tar -czf cfrp-server-linux-arm64.tar.gz -C release-server .
           
           # Client pack
           cp build/cfrp release-client/
           cp client.toml release-client/
           cp scripts/setup_linux_client.sh release-client/setup.sh
-          chmod +x release-client/setup.sh
+          cp scripts/uninstall_linux_client.sh release-client/uninstall.sh
+          chmod +x release-client/setup.sh release-client/uninstall.sh
           tar -czf cfrp-client-linux-arm64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -265,9 +271,11 @@ jobs:
           copy build\Release\cfrp.exe release-server\
           copy server.toml release-server\
           copy scripts\setup_windows_server.ps1 release-server\setup.ps1
+          copy scripts\uninstall_windows_server.ps1 release-server\uninstall.ps1
           copy build\Release\cfrp.exe release-client\
           copy client.toml release-client\
           copy scripts\setup_windows_client.ps1 release-client\setup.ps1
+          copy scripts\uninstall_windows_client.ps1 release-client\uninstall.ps1
 
           powershell Compress-Archive -Path release-server\* -DestinationPath cfrp-server-windows-amd64.zip
           powershell Compress-Archive -Path release-client\* -DestinationPath cfrp-client-windows-amd64.zip
@@ -327,9 +335,11 @@ jobs:
           copy build\Release\cfrp.exe release-server\
           copy server.toml release-server\
           copy scripts\setup_windows_server.ps1 release-server\setup.ps1
+          copy scripts\uninstall_windows_server.ps1 release-server\uninstall.ps1
           copy build\Release\cfrp.exe release-client\
           copy client.toml release-client\
           copy scripts\setup_windows_client.ps1 release-client\setup.ps1
+          copy scripts\uninstall_windows_client.ps1 release-client\uninstall.ps1
 
           powershell Compress-Archive -Path release-server\* -DestinationPath cfrp-server-windows-arm64.zip
           powershell Compress-Archive -Path release-client\* -DestinationPath cfrp-client-windows-arm64.zip
