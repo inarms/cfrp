@@ -47,30 +47,41 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-c" || arg == "--config") && i + 1 < argc) {
-            config_path = argv[++i];
-        } else if (arg == "--ca" && i + 1 < argc) {
+        if ((arg == "--ca" || arg == "-c") && i + 1 < argc) {
             ca_path = argv[++i];
         } else if ((arg == "-t" || arg == "--token") && i + 1 < argc) {
             cli_token = argv[++i];
         } else if (arg == "-h" || arg == "--help") {
             std::cout << "cfrp - A C++ Fast Reverse Proxy" << std::endl;
-            std::cout << "Usage: cfrp [options]" << std::endl;
+            std::cout << "Usage: cfrp [config.toml] | [options]" << std::endl;
             std::cout << "Options:" << std::endl;
-            std::cout << "  -c, --config PATH    Path to the configuration file (TOML)" << std::endl;
-            std::cout << "  --ca PATH            Path to the CA file for server verification (forces client mode)" << std::endl;
-            std::cout << "  -t, --token STRING   Authentication token" << std::endl;
+            std::cout << "  [config.toml]        Path to the configuration file (TOML). If provided, all other options are ignored." << std::endl;
+            std::cout << "  -c, --ca PATH        Path to the CA file (only used when no config file is provided)" << std::endl;
+            std::cout << "  -t, --token STRING   Authentication token (only used when no config file is provided)" << std::endl;
             std::cout << "  -h, --help           Show this help message" << std::endl;
             return 0;
+        } else if (!arg.empty() && arg[0] != '-') {
+            if (config_path.empty()) {
+                config_path = arg;
+            } else {
+                std::cerr << "Error: Multiple configuration files specified: " << config_path << " and " << arg << std::endl;
+                return 1;
+            }
         }
+    }
+
+    if (!config_path.empty()) {
+        ca_path.clear();
+        cli_token.clear();
     }
 
     bool config_provided = !config_path.empty();
     bool ca_provided = !ca_path.empty();
     bool token_provided = !cli_token.empty();
 
-    if (ca_provided && !token_provided) {
-        std::cerr << "Error: --token is required when using --ca" << std::endl;
+    if (ca_provided != token_provided) {
+        std::cerr << "Error: -c/--ca and -t/--token must be used together." << std::endl;
+        std::cerr << "Example: ./cfrp -c certs/ca.crt -t your_secret_token" << std::endl;
         return 1;
     }
 

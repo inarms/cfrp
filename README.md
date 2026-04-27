@@ -59,7 +59,7 @@ cmake --build .
 `cfrp` can be started as either a server or a client node.
 
 ### Automatic Configuration Selection
-If no configuration file is specified via `-c`, the application searches for files in the current directory in the following order:
+If no configuration file is specified as a positional argument, the application searches for files in the current directory in the following order:
 1. **`server.toml`**: If found, starts as a **Server**.
 2. **`client.toml`**: If found, starts as a **Client**.
 3. **None**: Automatically generates a default `server.toml` and starts as a **Server**.
@@ -75,7 +75,7 @@ To run a server using the default `server.toml`:
 ```
 Or specify a custom configuration:
 ```bash
-./cfrp -c my_server.toml
+./cfrp my_server.toml
 ```
 
 Example **`server.toml`**:
@@ -115,13 +115,13 @@ remote_port = 6000
 ```
 
 #### 3. Quick Client Setup (Automatic Generation)
-If you have the server's CA certificate (`ca.crt`), you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
+If you have the server's CA certificate (`ca.crt`) and the token, you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
 ```bash
-./cfrp --ca certs/ca.crt
+./cfrp -c certs/ca.crt -t your_secret_token
 ```
 - **Forces Client Mode** even if `server.toml` is present.
-- If `client.toml` is **missing**, it generates a default one using the provided CA for verification.
-- If `client.toml` **exists**, it uses the existing configuration (the `--ca` parameter is ignored for SSL settings).
+- If `client.toml` is **missing**, it generates a default one using the provided CA for verification and the provided token.
+- If `client.toml` **exists**, it uses the existing configuration (the `-c` and `-t` parameters are ignored).
 
 #### 4. Access your service
 Once the tunnel is established, access your local service via the server's public IP:
