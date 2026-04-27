@@ -1,6 +1,6 @@
 services:
   cfrp-client:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER:-inarms/cfrp}:latest
+    image: ghcr.io/inarms/cfrp:latest
     container_name: cfrp-client
     restart: always
     network_mode: "host" # Recommended for client to easily access local services (like SSH, Web)
