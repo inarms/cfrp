@@ -1,7 +1,8 @@
-# Build stage — runs natively on each target platform via QEMU
-FROM alpine:latest AS builder
+# Build stage — using Alpine 3.8 for CMake 3.11 (satisfies >= 3.10 requirement)
+FROM alpine:3.8 AS builder
 
 # Install build dependencies
+# Note: python3 and other packages are available in 3.8
 RUN apk add --no-cache \
     build-base \
     cmake \
@@ -20,7 +21,7 @@ RUN apk add --no-cache \
     automake \
     libtool
 
-# Install vcpkg — shallow clone, pinned to builtin-baseline in vcpkg.json
+# Install vcpkg — pinned to builtin-baseline
 WORKDIR /opt
 COPY vcpkg.json /tmp/vcpkg.json
 RUN VCPKG_COMMIT=$(python3 -c "import json; print(json.load(open('/tmp/vcpkg.json'))['builtin-baseline'])") && \
@@ -31,7 +32,6 @@ RUN VCPKG_COMMIT=$(python3 -c "import json; print(json.load(open('/tmp/vcpkg.jso
 
 ENV VCPKG_ROOT=/opt/vcpkg
 ENV PATH="${PATH}:${VCPKG_ROOT}"
-# Force vcpkg to use system binaries on Alpine (musl)
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 
 WORKDIR /app
@@ -52,17 +52,16 @@ RUN TRIPLET=$(cat /tmp/triplet) && \
 # Copy source and build
 COPY . .
 
-# Use -Wno-error to prevent build failure on strict GCC warnings in Alpine
+# Build with static linking to ensure compatibility across Alpine versions
 RUN TRIPLET=$(cat /tmp/triplet) && \
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_TARGET_TRIPLET=$TRIPLET \
-        -DCMAKE_C_FLAGS="-Wno-error" \
-        -DCMAKE_CXX_FLAGS="-Wno-error" \
+        -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
     && cmake --build build --target cfrp
 
-# Runtime stage — keep Alpine for the small footprint
+# Runtime stage — Latest Alpine for the smallest/most secure footprint
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
