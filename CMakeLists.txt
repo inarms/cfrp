@@ -9,6 +9,21 @@ project(cfrp LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Size optimizations
+if(NOT MSVC)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os -ffunction-sections -fdata-sections")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Os -ffunction-sections -fdata-sections")
+    if(APPLE)
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -Wl,-dead_strip")
+    else()
+        set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -Wl,--gc-sections")
+    endif()
+else()
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Os /Gy")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Os /Gy")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /OPT:REF /OPT:ICF")
+endif()
+
 # Find dependencies
 find_package(asio CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
@@ -27,6 +42,17 @@ pkg_check_modules(ngtcp2_crypto REQUIRED IMPORTED_TARGET libngtcp2_crypto_wolfss
 
 # Configure Asio to use wolfSSL as OpenSSL replacement
 add_definitions(-DASIO_USE_WOLFSSL)
+# wolfSSL size optimizations
+add_definitions(-DWOLFSSL_MINSIZE)
+add_definitions(-DNO_ERROR_STRINGS)
+add_definitions(-DNO_OLD_TLS)
+add_definitions(-DNO_PSK)
+add_definitions(-DNO_MD4)
+add_definitions(-DNO_PWDBASED)
+add_definitions(-DNO_DES3)
+add_definitions(-DNO_RC4)
+add_definitions(-DNO_DSA)
+add_definitions(-DNO_DH)
 
 add_executable(cfrp 
     main.cpp
@@ -37,6 +63,13 @@ add_executable(cfrp
     src/common/ssl_utils.cpp
     src/common/websocket_stream.cpp
 )
+
+# Enable LTO after target is defined
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT error)
+if(ipo_supported)
+    set_target_properties(cfrp PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
 
 target_include_directories(cfrp PRIVATE 
     src
