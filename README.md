@@ -38,14 +38,14 @@ Installs the binary and sets up a background service (systemd/launchd/Windows Se
 
 **Linux & macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode server
+curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode server
 ```
 - **Config Path (Linux):** `/etc/cfrp/server.toml`
 - **Config Path (macOS):** `/usr/local/etc/cfrp/server.toml`
 
 **Windows (PowerShell Admin):**
 ```powershell
-iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
+iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
 ```
 - **Config Path:** `C:\Program Files\cfrp\server.toml`
 
@@ -56,14 +56,14 @@ Installs the binary and sets up a background service.
 
 **Linux & macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
+curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
 ```
 - **Config Path (Linux):** `/etc/cfrp/client.toml`
 - **Config Path (macOS):** `/usr/local/etc/cfrp/client.toml`
 
 **Windows (PowerShell Admin):**
 ```powershell
-iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
+iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
 ```
 - **Config Path:** `C:\Program Files\cfrp\client.toml`
 
@@ -74,12 +74,12 @@ Installs the binary to system PATH without creating a service.
 
 **Linux & macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode cli
+curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode cli
 ```
 
 **Windows (PowerShell Admin):**
 ```powershell
-iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode cli"
+iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode cli"
 ```
 
 ## Architecture

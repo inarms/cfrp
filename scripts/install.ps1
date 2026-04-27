@@ -16,7 +16,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     return
 }
 
-$Repo = "neesonqk/cfrp"
+$Repo = "inarms/cfrp"
 $Arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "x86" }
 # Note: Windows ARM64 detection is more complex but usually we use amd64 for now unless specifically requested.
 if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { $Arch = "arm64" }

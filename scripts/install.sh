@@ -11,7 +11,7 @@
 set -e
 
 # --- Configuration ---
-REPO="neesonqk/cfrp"
+REPO="inarms/cfrp"
 MODE="server"
 VERSION="latest"
 
