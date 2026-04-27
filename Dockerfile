@@ -20,5 +20,5 @@ RUN addgroup -S cfrp && adduser -S cfrp -G cfrp && \
 USER cfrp
 
 # Application entry point
-ENTRYPOINT ["./cfrp"]
+ENTRYPOINT ["cfrp"]
 CMD ["--help"]
