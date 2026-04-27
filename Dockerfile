@@ -17,7 +17,10 @@ RUN apk add --no-cache \
     perl \
     linux-headers \
     python3 \
-    tar
+    tar \
+    autoconf \
+    automake \
+    libtool
 
 # Install vcpkg
 WORKDIR /opt
@@ -38,11 +41,11 @@ COPY vcpkg.json .
 # Build-time architecture detection
 ARG TARGETPLATFORM
 RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-        echo "arm64-linux-musl" > /tmp/triplet; \
+        echo "arm64-linux" > /tmp/triplet; \
     elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-        echo "x64-linux-musl" > /tmp/triplet; \
+        echo "x64-linux" > /tmp/triplet; \
     else \
-        echo "x64-linux-musl" > /tmp/triplet; \
+        echo "x64-linux" > /tmp/triplet; \
     fi
 
 # Pre-install dependencies (improves caching)
