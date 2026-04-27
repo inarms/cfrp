@@ -70,10 +70,44 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (fs::exists("server.toml")) {
-        config_path = "server.toml";
-    } else if (fs::exists("client.toml")) {
-        config_path = "client.toml";
+    std::string home = cfrp::common::GetHomeDirectory();
+    std::string home_config_dir = home.empty() ? "" : (fs::path(home) / ".cfrp").string();
+    std::string home_config_file = home_config_dir.empty() ? "" : (fs::path(home_config_dir) / "config").string();
+
+    // 1. Handle Global Tool Configuration (~/.cfrp/config)
+    std::string working_mode = "foreground";
+    if (!home_config_file.empty()) {
+        if (!fs::exists(home_config_file)) {
+            try {
+                fs::create_directories(home_config_dir);
+                std::ofstream ofs(home_config_file);
+                if (ofs) {
+                    ofs << "# cfrp global tool configuration" << std::endl;
+                    ofs << "working_mode = \"foreground\"" << std::endl;
+                    ofs.close();
+                    std::cout << "Generated global tool configuration: " << home_config_file << std::endl;
+                }
+            } catch (...) {}
+        } else {
+            try {
+                auto tool_config = toml::parse_file(home_config_file);
+                working_mode = tool_config["working_mode"].value_or("foreground");
+            } catch (...) {}
+        }
+    }
+
+    if (working_mode == "background") {
+        // TODO: Implement daemonization
+        std::cout << "Starting in background mode..." << std::endl;
+    }
+
+    // 2. Handle Functional Configuration (server.toml / client.toml)
+    if (config_path.empty()) {
+        if (fs::exists("server.toml")) {
+            config_path = "server.toml";
+        } else if (fs::exists("client.toml")) {
+            config_path = "client.toml";
+        }
     }
 
     if (!config_path.empty()) {
@@ -81,7 +115,7 @@ int main(int argc, char** argv) {
         cli_token.clear();
     }
 
-    bool config_provided = !config_path.empty();
+    bool config_found = !config_path.empty();
     bool ca_provided = !ca_path.empty();
     bool token_provided = !cli_token.empty();
 
@@ -91,10 +125,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!config_provided) {
+    if (!config_found) {
         if (ca_provided) {
             std::cout << "No client configuration found. Generating default client.toml..." << std::endl;
-            std::ofstream ofs("client.toml");
+            config_path = "client.toml";
+            std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Client Configuration
 [client]
@@ -118,14 +153,14 @@ local_port = 22
 remote_port = 6000
 )" << std::endl;
                 ofs.close();
-                config_path = "client.toml";
             } else {
                 std::cerr << "Error: Could not generate default client.toml" << std::endl;
                 return 1;
             }
         } else {
-            std::cout << "No configuration file found. Generating default server.toml..." << std::endl;
-            std::ofstream ofs("server.toml");
+            std::cout << "No functional configuration found. Generating default server.toml..." << std::endl;
+            config_path = "server.toml";
+            std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Server Configuration
 [server]
@@ -145,7 +180,6 @@ key_file = "certs/server.key"
 ca_file = "certs/ca.crt"
 )" << std::endl;
                 ofs.close();
-                config_path = "server.toml";
             } else {
                 std::cerr << "Error: Could not generate default server.toml" << std::endl;
                 return 1;

@@ -19,9 +19,20 @@
 #include <string>
 #include <cstdint>
 #include <cctype>
+#include <cstdlib>
 
 namespace cfrp {
 namespace common {
+
+inline std::string GetHomeDirectory() {
+    const char* home = nullptr;
+#ifdef _WIN32
+    home = std::getenv("USERPROFILE");
+#else
+    home = std::getenv("HOME");
+#endif
+    return home ? std::string(home) : "";
+}
 
 inline void SetTcpKeepalive(asio::ip::tcp::socket& socket) {
     std::error_code ec;
