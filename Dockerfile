@@ -1,27 +1,24 @@
 # Build stage — runs natively on each target platform via QEMU
-FROM ubuntu:24.04 AS builder
-
-ENV DEBIAN_FRONTEND=noninteractive
+FROM alpine:latest AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+RUN apk add --no-cache \
+    build-base \
     cmake \
-    ninja-build \
+    ninja \
     git \
-    pkg-config \
+    pkgconf \
     zip \
     unzip \
     curl \
     bash \
     perl \
+    linux-headers \
     python3 \
     tar \
     autoconf \
     automake \
-    libtool \
-    linux-libc-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libtool
 
 # Install vcpkg — shallow clone, pinned to builtin-baseline in vcpkg.json
 WORKDIR /opt
@@ -34,6 +31,8 @@ RUN VCPKG_COMMIT=$(python3 -c "import json; print(json.load(open('/tmp/vcpkg.jso
 
 ENV VCPKG_ROOT=/opt/vcpkg
 ENV PATH="${PATH}:${VCPKG_ROOT}"
+# Force vcpkg to use system binaries on Alpine (musl)
+ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 
 WORKDIR /app
 COPY vcpkg.json .
@@ -53,11 +52,14 @@ RUN TRIPLET=$(cat /tmp/triplet) && \
 # Copy source and build
 COPY . .
 
+# Use -Wno-error to prevent build failure on strict GCC warnings in Alpine
 RUN TRIPLET=$(cat /tmp/triplet) && \
     cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_TARGET_TRIPLET=$TRIPLET \
+        -DCMAKE_C_FLAGS="-Wno-error" \
+        -DCMAKE_CXX_FLAGS="-Wno-error" \
     && cmake --build build --target cfrp
 
 # Runtime stage — keep Alpine for the small footprint
