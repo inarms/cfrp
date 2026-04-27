@@ -200,18 +200,50 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 - **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode cli"`
 
 #### CLI Usage Examples
+
+The `cfrp` CLI behavior is governed by global settings stored in `~/.cfrp/config`.
+
+##### Global Configuration
+Manage tool-wide settings using the `config` command:
 ```bash
-# Show version and help
-cfrp --help
+# List all global settings
+cfrp config ls
 
-# Check status of a running background process
-cfrp status
-
-# Stop a background process started via '--daemon-worker'
-cfrp stop
-
-# Set a global configuration value
+# Set the working mode (foreground or background)
 cfrp config set working_mode background
+
+# Get a specific setting
+cfrp config get working_mode
+```
+
+##### Process Management
+| Command | Description |
+| :--- | :--- |
+| `cfrp status` | Displays if the background process is running, its PID, and current proxy activity. |
+| `cfrp stop` | Gracefully terminates the background daemon and cleans up the PID file. |
+
+##### Execution Behaviors by `working_mode`
+The `working_mode` setting (default: `foreground`) determines how the binary behaves when started:
+
+1. **`foreground` Mode**:
+   - The process stays attached to your terminal.
+   - Logs are printed to `stdout`.
+   - Use this for debugging or when running as a managed service (systemd/docker).
+
+2. **`background` Mode**:
+   - The process immediately "daemons" itself (forks on Linux/macOS, spawns hidden on Windows).
+   - Logs are redirected to `cfrp.log` in the executable directory.
+   - A `cfrp.pid` file is created to track the process.
+   - Use `cfrp stop` to kill the process.
+
+##### Quick Start Flags
+Override or generate configurations on the fly:
+```bash
+# Start a client with a temporary CA and token (generates client.toml if missing)
+cfrp -c certs/ca.crt -t my_secret_token
+
+# Force a specific configuration file
+cfrp /path/to/my_config.toml
 ```
 
 ## Architecture
