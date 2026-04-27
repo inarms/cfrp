@@ -20,9 +20,13 @@ RUN apk add --no-cache \
     automake \
     libtool
 
-# Install vcpkg
+# Install vcpkg — shallow clone, pinned to builtin-baseline in vcpkg.json
 WORKDIR /opt
-RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git && \
+COPY vcpkg.json /tmp/vcpkg.json
+RUN VCPKG_COMMIT=$(python3 -c "import json; print(json.load(open('/tmp/vcpkg.json'))['builtin-baseline'])") && \
+    git clone --depth 1 https://github.com/microsoft/vcpkg.git && \
+    git -C vcpkg fetch --depth 1 origin ${VCPKG_COMMIT} && \
+    git -C vcpkg checkout ${VCPKG_COMMIT} && \
     ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 ENV VCPKG_ROOT=/opt/vcpkg
@@ -32,7 +36,7 @@ ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 WORKDIR /app
 COPY vcpkg.json .
 
-# Detect architecture and set triplet from the running platform (not build platform)
+# Detect target architecture and set triplet
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" = "arm64" ]; then \
         echo "arm64-linux" > /tmp/triplet; \
