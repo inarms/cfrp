@@ -1,60 +1,158 @@
 #!/bin/bash
 
-# cfrp System Installation Script
-# This script installs the cfrp binary to /usr/local/bin and initializes directories.
+# cfrp Universal Installer (Linux & macOS)
+# This script auto-downloads and installs the latest cfrp.
+# Usage: curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- [options]
+# Options:
+#   --mode server    (default) Install as server service
+#   --mode client    Install as client service
+#   --mode cli       Install only as system tool
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# --- Configuration ---
+REPO="neesonqk/cfrp"
+MODE="server"
+VERSION="latest"
 
-echo -e "${CYAN}Installing cfrp as a system tool...${NC}"
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --mode) MODE="$2"; shift ;;
+        --version) VERSION="$2"; shift ;;
+        *) echo "Unknown parameter: $1"; exit 1 ;;
+    esac
+    shift
+done
 
+# --- Check Environment ---
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Error: This script must be run as root (use sudo)${NC}"
+   echo "Error: This script must be run as root (use sudo)"
    exit 1
 fi
 
-# 1. Locate binary
-BINARY="./cfrp"
-if [[ ! -f "$BINARY" ]]; then
-    # Check in build directory if running from source
-    if [[ -f "./build/cfrp" ]]; then
-        BINARY="./build/cfrp"
-    elif [[ -f "./build_release/cfrp" ]]; then
-        BINARY="./build_release/cfrp"
-    fi
-fi
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+case $ARCH in
+    x86_64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
 
-if [[ ! -f "$BINARY" ]]; then
-    echo -e "${RED}Error: cfrp binary not found in current directory or build folder.${NC}"
-    echo "Please build the project first or run this script from the package directory."
+if [[ "$OS" == "darwin" ]]; then
+    PLATFORM="macos"
+    SERVICE_TYPE="launchd"
+elif [[ "$OS" == "linux" ]]; then
+    PLATFORM="linux"
+    SERVICE_TYPE="systemd"
+else
+    echo "Unsupported OS: $OS"
     exit 1
 fi
 
-# 2. Install binary
-echo -e "Copying binary to /usr/local/bin/cfrp..."
-cp "$BINARY" /usr/local/bin/cfrp
-chmod +x /usr/local/bin/cfrp
-
-# 3. Initialize system-wide config directory
-echo -e "Initializing /etc/cfrp..."
-mkdir -p /etc/cfrp
-mkdir -p /etc/cfrp/config.d
-
-# 4. Initialize user-specific config directory for the current user (if sudo was used)
-if [ -n "$SUDO_USER" ]; then
-    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    echo -e "Initializing $USER_HOME/.cfrp for user $SUDO_USER..."
-    mkdir -p "$USER_HOME/.cfrp"
-    chown -R "$SUDO_USER" "$USER_HOME/.cfrp"
+# --- Fetch Latest Release ---
+echo "Fetching $VERSION version info for $PLATFORM-$ARCH..."
+if [[ "$VERSION" == "latest" ]]; then
+    URL="https://api.github.com/repos/$REPO/releases/latest"
+else
+    URL="https://api.github.com/repos/$REPO/releases/tags/$VERSION"
 fi
 
-echo -e "${GREEN}--------------------------------------------------${NC}"
-echo -e "${GREEN}cfrp has been successfully installed!${NC}"
-echo -e "You can now run '${CYAN}cfrp --help${NC}' from anywhere."
-echo -e "System Config: /etc/cfrp/"
-echo -e "${GREEN}--------------------------------------------------${NC}"
+# Detect download URL
+# Example name: cfrp-server-linux-amd64.tar.gz
+PACKAGE_MODE=$MODE
+if [[ "$MODE" == "cli" ]]; then PACKAGE_MODE="server"; fi # CLI comes in either, we use server pack
+
+ASSET_NAME="cfrp-${PACKAGE_MODE}-${PLATFORM}-${ARCH}.tar.gz"
+DOWNLOAD_URL=$(curl -s $URL | grep "browser_download_url" | grep "$ASSET_NAME" | cut -d '"' -f 4)
+
+if [[ -z "$DOWNLOAD_URL" ]]; then
+    echo "Error: Could not find download URL for $ASSET_NAME"
+    exit 1
+fi
+
+# --- Download and Extract ---
+TMP_DIR=$(mktemp -d)
+echo "Downloading from $DOWNLOAD_URL..."
+curl -L "$DOWNLOAD_URL" -o "$TMP_DIR/cfrp.tar.gz"
+tar -xzf "$TMP_DIR/cfrp.tar.gz" -C "$TMP_DIR"
+
+# --- Install Binary ---
+echo "Installing binary to /usr/local/bin..."
+cp "$TMP_DIR/cfrp" /usr/local/bin/cfrp
+chmod +x /usr/local/bin/cfrp
+
+# --- Setup Service or Tool ---
+if [[ "$MODE" == "cli" ]]; then
+    echo "CLI tool installed. Initializing config directories..."
+    mkdir -p /etc/cfrp
+    echo "Installation complete. Run 'cfrp --help' to get started."
+    exit 0
+fi
+
+# If mode is server/client, we run the internal setup logic
+cd "$TMP_DIR"
+if [[ "$OS" == "darwin" ]]; then
+    # Use the setup_service_macos.sh logic directly
+    LABEL="com.neesonqk.cfrp-${MODE}"
+    CONF_DIR="/usr/local/etc/cfrp"
+    mkdir -p "$CONF_DIR"
+    cp "${MODE}.toml" "$CONF_DIR/"
+    if [[ "$MODE" == "client" ]]; then mkdir -p "$CONF_DIR/config.d"; fi
+    
+    PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
+    cat <<EOF > "$PLIST_PATH"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/cfrp</string>
+        <string>${CONF_DIR}/${MODE}.toml</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${CONF_DIR}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    launchctl load -w "$PLIST_PATH"
+else
+    # Linux systemd logic
+    mkdir -p /etc/cfrp
+    cp "${MODE}.toml" "/etc/cfrp/"
+    if [[ "$MODE" == "client" ]]; then mkdir -p /etc/cfrp/config.d; fi
+    
+    cat <<EOF > "/etc/systemd/system/cfrp-${MODE}.service"
+[Unit]
+Description=cfrp ${MODE} service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cfrp /etc/cfrp/${MODE}.toml
+WorkingDirectory=/etc/cfrp
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "cfrp-${MODE}"
+    systemctl restart "cfrp-${MODE}"
+fi
+
+rm -rf "$TMP_DIR"
+echo "--------------------------------------------------"
+echo "cfrp $MODE service installed and started successfully!"
+echo "Binary:  /usr/local/bin/cfrp"
+echo "Config:  $(if [[ "$OS" == "darwin" ]]; then echo "/usr/local/etc/cfrp/"; else echo "/etc/cfrp/"; fi)"
+echo "--------------------------------------------------"

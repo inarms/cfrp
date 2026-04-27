@@ -31,6 +31,32 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 2. **Auto-Cleanup**: Certificates are stored in the `certs/` directory and renewed automatically when they near expiration.
 3. **Easy Distribution**: Simply copy the generated `certs/ca.crt` to your client devices to enable full peer verification.
 
+## Installation
+
+### One-line Installation (Linux & macOS)
+Install as a **Server** service:
+```bash
+curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash
+```
+Install as a **Client** service:
+```bash
+curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
+```
+Install as a **CLI tool** only:
+```bash
+curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- --mode cli
+```
+
+### Windows Installation (PowerShell)
+Run as **Administrator**:
+```powershell
+# Install as Server
+iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content
+
+# Install as Client
+iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
+```
+
 ## Architecture
 
 1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
