@@ -26,6 +26,40 @@
 2. **自动管理**: 证书存储在 `certs/` 目录中，并在临近过期时自动更新。
 3. **轻松分发**: 只需将生成的 `certs/ca.crt` 复制到您的客户端设备，即可开启完整的对端验证 (verify_peer)。
 
+## Docker 安装
+
+使用 Docker 运行 `cfrp` 是最简单的方式。我们提供支持 `amd64` 和 `arm64` 架构的镜像。
+
+#### 服务端部署
+1. 在当前目录下创建 `server.toml` 配置文件。
+2. 使用提供的 `docker-compose.server.yml`:
+```bash
+# 下载 compose 文件
+curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.server.yml
+
+# 启动服务端
+docker compose -f docker-compose.server.yml up -d
+```
+服务端将监听端口 `7001` (控制端口), `8080` (HTTP) 和 `8443` (HTTPS)。
+
+#### 客户端部署
+1. 在当前目录下创建 `client.toml` 配置文件和 `conf.d` 目录。
+2. 使用提供的 `docker-compose.client.yml`:
+```bash
+# 下载 compose 文件
+curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.client.yml
+
+# 启动客户端
+docker compose -f docker-compose.client.yml up -d
+```
+客户端使用 `network_mode: host` 模式，以便轻松访问宿主机上的本地服务。
+
+#### 本地测试 (服务端 + 客户端)
+一键启动本地测试环境：
+```bash
+docker compose up -d
+```
+
 ## 架构
 
 1. **多路复用隧道**: 客户端与服务端之间持久的连接（TCP/SSL 或 QUIC）。使用 **自定义多路复用协议** 在此物理连接上复用多个逻辑流。

@@ -246,6 +246,44 @@ cfrp -c certs/ca.crt -t my_secret_token
 cfrp /path/to/my_config.toml
 ```
 
+---
+
+### 3. Docker Installation
+
+The easiest way to run `cfrp` is using Docker. Images are available for both `amd64` and `arm64` architectures.
+
+#### Server Deployment
+1. Create a `server.toml` in your current directory.
+2. Use the provided `docker-compose.server.yml`:
+```bash
+# Download the compose file
+curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.server.yml
+
+# Start the server
+docker compose -f docker-compose.server.yml up -d
+```
+The server will be available on ports `7001` (control), `8080` (HTTP), and `8443` (HTTPS).
+
+#### Client Deployment
+1. Create a `client.toml` and a `conf.d` directory in your current directory.
+2. Use the provided `docker-compose.client.yml`:
+```bash
+# Download the compose file
+curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.client.yml
+
+# Start the client
+docker compose -f docker-compose.client.yml up -d
+```
+The client uses `network_mode: host` to easily access services running on your host machine.
+
+#### Local Testing (Server + Client)
+To test `cfrp` locally in a single command:
+```bash
+docker compose up -d
+```
+
+---
+
 ## Architecture
 
 1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
