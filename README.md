@@ -33,7 +33,93 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 
 ## Installation
 
-### 1. Script Installation (Recommended)
+### 1. Manual Installation
+
+#### Download Instructions
+1. Go to the **[GitHub Releases](https://github.com/inarms/cfrp/releases)** page.
+2. Download the compressed file corresponding to your platform and architecture.
+3. Extract the contents:
+   - **Server Package**: Contains `cfrp` binary, `server.toml`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
+   - **Client Package**: Contains `cfrp` binary, `client.toml`, `config.d/`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
+
+#### Automatic Configuration Selection
+**Note: If `server.toml` or `client.toml` exists in the current directory, they take absolute precedence. All command-line positional arguments and flags (like `-c` or `-t`) will be ignored.**
+
+If no configuration file exists, the application follows this logic:
+1. **Positional Argument**: If a path is provided (e.g., `./cfrp my.toml`), it uses that file.
+2. **Flags**: If `-c` and `-t` are provided, it generates a `client.toml` using those values.
+3. **Default**: Otherwise, it generates a default `server.toml` and starts as a Server.
+
+The search order for existing files is:
+1. **`server.toml`**: If found, starts as a **Server**.
+2. **`client.toml`**: If found, starts as a **Client**.
+
+#### Manual Usage Examples
+
+##### 1. Start as a Server
+To run a server using the default `server.toml`:
+```bash
+./cfrp
+```
+Or specify a custom configuration:
+```bash
+./cfrp my_server.toml
+```
+
+Example **`server.toml`**:
+```toml
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+token = "your_secret_token"
+protocol = "auto" # Supports TCP and QUIC simultaneously
+
+[server.ssl]
+enable = true
+auto_generate = true # Auto-generate CA and certificates
+```
+
+##### 2. Start as a Client
+To run a client using the default `client.toml`:
+```bash
+./cfrp
+```
+
+Example **`client.toml`**:
+```toml
+[client]
+server_addr = "your_server_ip"
+server_port = 7001
+token = "your_secret_token"
+name = "my-client"
+protocol = "auto" # Try QUIC first, failover to TCP
+
+[[client.proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 22
+remote_port = 6000
+```
+
+##### 3. Quick Client Setup (Automatic Generation)
+If you have the server's CA certificate (`ca.crt`) and the token, you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
+```bash
+./cfrp -c certs/ca.crt -t your_secret_token
+```
+- **Forces Client Mode** even if `server.toml` is present.
+- If `client.toml` is **missing**, it generates a default one using the provided CA for verification and the provided token.
+- If `client.toml` **exists**, it uses the existing configuration (the `-c` and `-t` parameters are ignored).
+
+##### 4. Access your service
+Once the tunnel is established, access your local service via the server's public IP:
+```bash
+ssh -p 6000 user@your_server_ip
+```
+
+---
+
+### 2. Script Installation
 
 #### Server Installation
 Installs the binary and sets up a background service (systemd/launchd/Windows Service).
@@ -126,92 +212,6 @@ cfrp stop
 
 # Set a global configuration value
 cfrp config set working_mode background
-```
-
----
-
-### 2. Manual Installation
-
-#### Download Instructions
-1. Go to the **[GitHub Releases](https://github.com/inarms/cfrp/releases)** page.
-2. Download the compressed file corresponding to your platform and architecture.
-3. Extract the contents:
-   - **Server Package**: Contains `cfrp` binary, `server.toml`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
-   - **Client Package**: Contains `cfrp` binary, `client.toml`, `config.d/`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
-
-#### Automatic Configuration Selection
-**Note: If `server.toml` or `client.toml` exists in the current directory, they take absolute precedence. All command-line positional arguments and flags (like `-c` or `-t`) will be ignored.**
-
-If no configuration file exists, the application follows this logic:
-1. **Positional Argument**: If a path is provided (e.g., `./cfrp my.toml`), it uses that file.
-2. **Flags**: If `-c` and `-t` are provided, it generates a `client.toml` using those values.
-3. **Default**: Otherwise, it generates a default `server.toml` and starts as a Server.
-
-The search order for existing files is:
-1. **`server.toml`**: If found, starts as a **Server**.
-2. **`client.toml`**: If found, starts as a **Client**.
-
-#### Manual Usage Examples
-
-##### 1. Start as a Server
-To run a server using the default `server.toml`:
-```bash
-./cfrp
-```
-Or specify a custom configuration:
-```bash
-./cfrp my_server.toml
-```
-
-Example **`server.toml`**:
-```toml
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7001
-token = "your_secret_token"
-protocol = "auto" # Supports TCP and QUIC simultaneously
-
-[server.ssl]
-enable = true
-auto_generate = true # Auto-generate CA and certificates
-```
-
-##### 2. Start as a Client
-To run a client using the default `client.toml`:
-```bash
-./cfrp
-```
-
-Example **`client.toml`**:
-```toml
-[client]
-server_addr = "your_server_ip"
-server_port = 7001
-token = "your_secret_token"
-name = "my-client"
-protocol = "auto" # Try QUIC first, failover to TCP
-
-[[client.proxies]]
-name = "ssh"
-type = "tcp"
-local_ip = "127.0.0.1"
-local_port = 22
-remote_port = 6000
-```
-
-##### 3. Quick Client Setup (Automatic Generation)
-If you have the server's CA certificate (`ca.crt`) and the token, you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
-```bash
-./cfrp -c certs/ca.crt -t your_secret_token
-```
-- **Forces Client Mode** even if `server.toml` is present.
-- If `client.toml` is **missing**, it generates a default one using the provided CA for verification and the provided token.
-- If `client.toml` **exists**, it uses the existing configuration (the `-c` and `-t` parameters are ignored).
-
-##### 4. Access your service
-Once the tunnel is established, access your local service via the server's public IP:
-```bash
-ssh -p 6000 user@your_server_ip
 ```
 
 ## Architecture
