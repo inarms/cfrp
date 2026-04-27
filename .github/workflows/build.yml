@@ -80,7 +80,7 @@ jobs:
   # =========================
   build-linux-amd64:
     name: Linux-amd64 (GCC)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
       CFLAGS: "-Wno-error"
@@ -153,7 +153,7 @@ jobs:
   # =========================
   build-linux-arm64:
     name: Linux-arm64 (GCC)
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-22.04-arm
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
       CFLAGS: "-Wno-error"
@@ -358,7 +358,7 @@ jobs:
       [build-macos, build-linux-amd64, build-linux-arm64, build-windows-amd64, build-windows-arm64]
 
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
 
     steps:
       - name: Download artifacts
@@ -384,7 +384,7 @@ jobs:
     needs: [build-linux-amd64, build-linux-arm64]
     # Run on main branch or tags, but not on PRs (to avoid pushing unauthorized images)
     if: github.event_name != 'pull_request' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       REGISTRY: ghcr.io
