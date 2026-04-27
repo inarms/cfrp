@@ -19,7 +19,6 @@
 #include <filesystem>
 #include <fstream>
 #include <csignal>
-#include <CLI/CLI.hpp>
 #include <toml++/toml.h>
 #include "server/server.h"
 #include "client/client.h"
@@ -41,17 +40,31 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-    CLI::App app{"cfrp - A C++ Fast Reverse Proxy"};
-
     std::string config_path;
     std::string ca_path;
-    auto* config_opt = app.add_option("-c,--config", config_path, "Path to the configuration file (TOML)");
-    auto* ca_opt = app.add_option("--ca", ca_path, "Path to the CA file for server verification (forces client mode)");
 
-    CLI11_PARSE(app, argc, argv);
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-c" || arg == "--config") && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (arg == "--ca" && i + 1 < argc) {
+            ca_path = argv[++i];
+        } else if (arg == "-h" || arg == "--help") {
+            std::cout << "cfrp - A C++ Fast Reverse Proxy" << std::endl;
+            std::cout << "Usage: cfrp [options]" << std::endl;
+            std::cout << "Options:" << std::endl;
+            std::cout << "  -c, --config PATH    Path to the configuration file (TOML)" << std::endl;
+            std::cout << "  --ca PATH            Path to the CA file for server verification (forces client mode)" << std::endl;
+            std::cout << "  -h, --help           Show this help message" << std::endl;
+            return 0;
+        }
+    }
 
-    if (config_opt->count() == 0) {
-        if (ca_opt->count() > 0) {
+    bool config_provided = !config_path.empty();
+    bool ca_provided = !ca_path.empty();
+
+    if (!config_provided) {
+        if (ca_provided) {
             if (fs::exists("client.toml")) {
                 config_path = "client.toml";
             } else {
@@ -140,7 +153,7 @@ ca_file = "certs/ca.crt"
             io_context.stop();
         });
 
-        if (config["server"] && ca_opt->count() == 0) {
+        if (config["server"] && !ca_provided) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = config["server"]["token"].value_or("");
@@ -183,7 +196,7 @@ ca_file = "certs/ca.crt"
             server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
-        } else if (config["client"] || (config["server"] && ca_opt->count() > 0)) {
+        } else if (config["client"] || (config["server"] && ca_provided)) {
             // Force client mode if -ca is provided, even if config has [server]
             auto client_node = config["client"];
             if (!client_node) client_node = config["server"]; // Use server node as base if client node is missing (unlikely but safe)

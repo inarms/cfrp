@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find dependencies
-find_package(CLI11 CONFIG REQUIRED)
 find_package(asio CONFIG REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
@@ -51,7 +50,6 @@ if(DEFINED ENV{VCPKG_ROOT})
 endif()
 
 target_link_libraries(cfrp PRIVATE 
-    CLI11::CLI11 
     PkgConfig::tomlplusplus
     asio::asio 
     zstd::libzstd

@@ -21,7 +21,7 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 - **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
 - **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
 - **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `cli11`, `wolfssl`, `ngtcp2`). Uses a compact **custom binary protocol** for minimal overhead.
+- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `wolfssl`, `ngtcp2`). Uses a compact **custom binary protocol** for minimal overhead.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
 ## Zero-Config Security
