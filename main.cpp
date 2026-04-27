@@ -43,6 +43,7 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 int main(int argc, char** argv) {
     std::string config_path;
     std::string ca_path;
+    std::string cli_token;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -50,12 +51,15 @@ int main(int argc, char** argv) {
             config_path = argv[++i];
         } else if (arg == "--ca" && i + 1 < argc) {
             ca_path = argv[++i];
+        } else if ((arg == "-t" || arg == "--token") && i + 1 < argc) {
+            cli_token = argv[++i];
         } else if (arg == "-h" || arg == "--help") {
             std::cout << "cfrp - A C++ Fast Reverse Proxy" << std::endl;
             std::cout << "Usage: cfrp [options]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  -c, --config PATH    Path to the configuration file (TOML)" << std::endl;
             std::cout << "  --ca PATH            Path to the CA file for server verification (forces client mode)" << std::endl;
+            std::cout << "  -t, --token STRING   Authentication token" << std::endl;
             std::cout << "  -h, --help           Show this help message" << std::endl;
             return 0;
         }
@@ -63,6 +67,12 @@ int main(int argc, char** argv) {
 
     bool config_provided = !config_path.empty();
     bool ca_provided = !ca_path.empty();
+    bool token_provided = !cli_token.empty();
+
+    if (ca_provided && !token_provided) {
+        std::cerr << "Error: --token is required when using --ca" << std::endl;
+        return 1;
+    }
 
     if (!config_provided) {
         if (ca_provided) {
@@ -76,7 +86,7 @@ int main(int argc, char** argv) {
 [client]
 server_addr = "127.0.0.1"
 server_port = 7001
-token = "secret_token"
+token = ")" << (token_provided ? cli_token : "secret_token") << R"("
 name = "my-client"
 protocol = "auto"
 compression = true
@@ -112,7 +122,7 @@ remote_port = 6000
 [server]
 bind_addr = "0.0.0.0"
 bind_port = 7001
-token = "secret_token"
+token = ")" << (token_provided ? cli_token : "secret_token") << R"("
 
 # Virtual Host ports for HTTP and HTTPS (SNI routing)
 vhost_http_port = 8080
@@ -157,7 +167,7 @@ ca_file = "certs/ca.crt"
         if (config["server"] && !ca_provided) {
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
-            std::string token = config["server"]["token"].value_or("");
+            std::string token = token_provided ? cli_token : config["server"]["token"].value_or("");
             std::string protocol = config["server"]["protocol"].value_or("auto");
             
             cfrp::server::SslConfig ssl_config;
@@ -204,7 +214,7 @@ ca_file = "certs/ca.crt"
 
             std::string server_addr = client_node["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = static_cast<uint16_t>(client_node["server_port"].value_or(7001));
-            std::string token = client_node["token"].value_or("");
+            std::string token = token_provided ? cli_token : client_node["token"].value_or("");
             std::string client_name = client_node["name"].value_or("");
             std::string conf_d = client_node["conf_d"].value_or("");
             std::string protocol = client_node["protocol"].value_or("auto");
