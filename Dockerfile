@@ -1,24 +1,27 @@
 # Build stage — runs natively on each target platform via QEMU
-FROM alpine:latest AS builder
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install build dependencies
-RUN apk add --no-cache \
-    build-base \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     cmake \
-    ninja \
+    ninja-build \
     git \
-    pkgconf \
+    pkg-config \
     zip \
     unzip \
     curl \
     bash \
     perl \
-    linux-headers \
     python3 \
     tar \
     autoconf \
     automake \
-    libtool
+    libtool \
+    linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install vcpkg — shallow clone, pinned to builtin-baseline in vcpkg.json
 WORKDIR /opt
@@ -31,7 +34,6 @@ RUN VCPKG_COMMIT=$(python3 -c "import json; print(json.load(open('/tmp/vcpkg.jso
 
 ENV VCPKG_ROOT=/opt/vcpkg
 ENV PATH="${PATH}:${VCPKG_ROOT}"
-ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 
 WORKDIR /app
 COPY vcpkg.json .
@@ -58,7 +60,7 @@ RUN TRIPLET=$(cat /tmp/triplet) && \
         -DVCPKG_TARGET_TRIPLET=$TRIPLET \
     && cmake --build build --target cfrp
 
-# Runtime stage
+# Runtime stage — keep Alpine for the small footprint
 FROM alpine:latest
 
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
