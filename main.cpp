@@ -41,6 +41,118 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
+    std::string home = cfrp::common::GetHomeDirectory();
+    std::string home_config_dir = home.empty() ? "" : (fs::path(home) / ".cfrp").string();
+    std::string home_config_file = home_config_dir.empty() ? "" : (fs::path(home_config_dir) / "config").string();
+
+    if (argc >= 2 && std::string(argv[1]) == "config") {
+        if (argc < 3) {
+            std::cerr << "Usage: cfrp config <get|set|ls> [args]" << std::endl;
+            return 1;
+        }
+        std::string subcmd = argv[2];
+        if (subcmd == "ls") {
+            if (!home_config_file.empty() && fs::exists(home_config_file)) {
+                try {
+                    auto config = toml::parse_file(home_config_file);
+                    for (auto&& [key, value] : config) {
+                        std::cout << key << " = ";
+                        if (value.is_string()) {
+                            std::cout << "\"" << value.as_string()->get() << "\"" << std::endl;
+                        } else if (value.is_integer()) {
+                            std::cout << value.as_integer()->get() << std::endl;
+                        } else if (value.is_boolean()) {
+                            std::cout << (value.as_boolean()->get() ? "true" : "false") << std::endl;
+                        } else if (value.is_floating_point()) {
+                            std::cout << value.as_floating_point()->get() << std::endl;
+                        } else {
+                            std::cout << "<complex type>" << std::endl;
+                        }
+                    }
+                } catch (...) {
+                    return 1;
+                }
+            }
+            return 0;
+        } else if (subcmd == "get") {
+            if (argc < 4) {
+                std::cerr << "Usage: cfrp config get <key>" << std::endl;
+                return 1;
+            }
+            std::string key = argv[3];
+            if (!home_config_file.empty() && fs::exists(home_config_file)) {
+                try {
+                    auto config = toml::parse_file(home_config_file);
+                    if (config.contains(key)) {
+                        auto val = config[key];
+                        if (val.is_string()) {
+                            std::cout << val.as_string()->get() << std::endl;
+                        } else if (val.is_integer()) {
+                            std::cout << val.as_integer()->get() << std::endl;
+                        } else if (val.is_boolean()) {
+                            std::cout << (val.as_boolean()->get() ? "true" : "false") << std::endl;
+                        } else if (val.is_floating_point()) {
+                            std::cout << val.as_floating_point()->get() << std::endl;
+                        }
+                    }
+                } catch (...) {
+                    return 1;
+                }
+            }
+            return 0;
+        } else if (subcmd == "set") {
+            if (argc < 5) {
+                std::cerr << "Usage: cfrp config set <key> <value>" << std::endl;
+                return 1;
+            }
+            std::string key = argv[3];
+            std::string value = argv[4];
+            if (home_config_file.empty()) return 1;
+
+            std::vector<std::string> lines;
+            bool found = false;
+            std::string formatted_value = value;
+            bool is_bool = (value == "true" || value == "false");
+            bool is_num = !value.empty();
+            if (is_num) {
+                try {
+                    size_t pos;
+                    std::stoll(value, &pos);
+                    if (pos != value.size()) is_num = false;
+                } catch (...) { is_num = false; }
+            }
+            if (!is_bool && !is_num) formatted_value = "\"" + value + "\"";
+
+            if (fs::exists(home_config_file)) {
+                std::ifstream ifs(home_config_file);
+                std::string line;
+                while (std::getline(ifs, line)) {
+                    if (!found) {
+                        size_t eq_pos = line.find('=');
+                        if (eq_pos != std::string::npos) {
+                            std::string lk = line.substr(0, eq_pos);
+                            lk.erase(0, lk.find_first_not_of(" \t"));
+                            lk.erase(lk.find_last_not_of(" \t") + 1);
+                            if (lk == key) {
+                                lines.push_back(key + " = " + formatted_value);
+                                found = true;
+                                continue;
+                            }
+                        }
+                    }
+                    lines.push_back(line);
+                }
+            } else if (!home_config_dir.empty()) {
+                fs::create_directories(home_config_dir);
+            }
+            if (!found) lines.push_back(key + " = " + formatted_value);
+            std::ofstream ofs(home_config_file);
+            for (const auto& l : lines) ofs << l << "\n";
+            std::cout << "Updated global config: " << key << " = " << formatted_value << std::endl;
+            return 0;
+        }
+    }
+
     std::string config_path;
     std::string ca_path;
     std::string cli_token;
@@ -53,12 +165,16 @@ int main(int argc, char** argv) {
             cli_token = argv[++i];
         } else if (arg == "-h" || arg == "--help") {
             std::cout << "cfrp - A C++ Fast Reverse Proxy" << std::endl;
-            std::cout << "Usage: cfrp [config.toml] | [options]" << std::endl;
+            std::cout << "Usage: cfrp [config.toml] | [options] | [command]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  [config.toml]        Path to the configuration file (TOML). If provided, all other options are ignored." << std::endl;
             std::cout << "  -c, --ca PATH        Path to the CA file (only used when no config file is provided)" << std::endl;
             std::cout << "  -t, --token STRING   Authentication token (only used when no config file is provided)" << std::endl;
             std::cout << "  -h, --help           Show this help message" << std::endl;
+            std::cout << "Commands:" << std::endl;
+            std::cout << "  config set <key> <value>  Set global configuration" << std::endl;
+            std::cout << "  config get <key>          Get global configuration" << std::endl;
+            std::cout << "  config ls                 List all global configuration" << std::endl;
             return 0;
         } else if (!arg.empty() && arg[0] != '-') {
             if (config_path.empty()) {
@@ -69,10 +185,6 @@ int main(int argc, char** argv) {
             }
         }
     }
-
-    std::string home = cfrp::common::GetHomeDirectory();
-    std::string home_config_dir = home.empty() ? "" : (fs::path(home) / ".cfrp").string();
-    std::string home_config_file = home_config_dir.empty() ? "" : (fs::path(home_config_dir) / "config").string();
 
     // 1. Handle Global Tool Configuration (~/.cfrp/config)
     std::string working_mode = "foreground";
