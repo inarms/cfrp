@@ -57,13 +57,13 @@ jobs:
           # Server pack
           cp $EXE release-server/
           cp server.toml release-server/
-          cp scripts/setup_service.sh release-server/
+          cp scripts/setup_service_macos.sh release-server/
           tar -czf cfrp-server-macos-arm64.tar.gz -C release-server .
           
           # Client pack
           cp $EXE release-client/
           cp client.toml release-client/
-          cp scripts/setup_service.sh release-client/
+          cp scripts/setup_service_macos.sh release-client/
           tar -czf cfrp-client-macos-arm64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
