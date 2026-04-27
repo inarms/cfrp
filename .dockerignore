@@ -1,0 +1,12 @@
+node_modules
+.git
+.idea
+.vscode
+build
+build_release
+cmake-build-debug
+vcpkg_installed
+$f.tmp
+*.log
+*.pid
+*.status
