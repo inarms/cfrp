@@ -18,5 +18,6 @@ services:
       - server
     volumes:
       - ./client.toml:/app/client.toml:ro
+      - ./conf.d:/app/conf.d:ro
     # Override server_addr to point to the 'server' container in the same docker network
     entrypoint: ["sh", "-c", "sed -i 's/server_addr = .*/server_addr = \"server\"/' /app/client.toml && ./cfrp client.toml"]
