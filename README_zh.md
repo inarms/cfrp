@@ -1,6 +1,6 @@
 # cfrp - C++ 快速反向代理
 
-[English](./README.md) | 简体中文
+[English](./README.md) | 简体中文 | [日本語](./README_ja.md)
 
 基于 C++17 和 Standalone Asio 实现的高性能异步反向代理。`cfrp` 旨在作为一个轻量级且高效的替代方案，用于将 NAT 或防火墙后的本地服务暴露到互联网，其灵感源自流行的 [fatedier/frp](https://github.com/fatedier/frp) 项目。
 
