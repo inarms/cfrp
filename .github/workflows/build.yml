@@ -57,11 +57,13 @@ jobs:
           # Server pack
           cp $EXE release-server/
           cp server.toml release-server/
+          cp scripts/setup_service.sh release-server/
           tar -czf cfrp-server-macos-arm64.tar.gz -C release-server .
           
           # Client pack
           cp $EXE release-client/
           cp client.toml release-client/
+          cp scripts/setup_service.sh release-client/
           tar -czf cfrp-client-macos-arm64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -124,11 +126,13 @@ jobs:
           # Server pack
           cp build/cfrp release-server/
           cp server.toml release-server/
+          cp scripts/setup_service.sh release-server/
           tar -czf cfrp-server-linux-amd64.tar.gz -C release-server .
           
           # Client pack
           cp build/cfrp release-client/
           cp client.toml release-client/
+          cp scripts/setup_service.sh release-client/
           tar -czf cfrp-client-linux-amd64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -191,11 +195,13 @@ jobs:
           # Server pack
           cp build/cfrp release-server/
           cp server.toml release-server/
+          cp scripts/setup_service.sh release-server/
           tar -czf cfrp-server-linux-arm64.tar.gz -C release-server .
           
           # Client pack
           cp build/cfrp release-client/
           cp client.toml release-client/
+          cp scripts/setup_service.sh release-client/
           tar -czf cfrp-client-linux-arm64.tar.gz -C release-client .
 
       - uses: actions/upload-artifact@v4
@@ -252,8 +258,10 @@ jobs:
           mkdir release-client\config.d
           copy build\Release\cfrp.exe release-server\
           copy server.toml release-server\
+          copy scripts\setup_service.ps1 release-server\
           copy build\Release\cfrp.exe release-client\
           copy client.toml release-client\
+          copy scripts\setup_service.ps1 release-client\
 
           powershell Compress-Archive -Path release-server\* -DestinationPath cfrp-server-windows-amd64.zip
           powershell Compress-Archive -Path release-client\* -DestinationPath cfrp-client-windows-amd64.zip
@@ -312,8 +320,10 @@ jobs:
           mkdir release-client\config.d
           copy build\Release\cfrp.exe release-server\
           copy server.toml release-server\
+          copy scripts\setup_service.ps1 release-server\
           copy build\Release\cfrp.exe release-client\
           copy client.toml release-client\
+          copy scripts\setup_service.ps1 release-client\
 
           powershell Compress-Archive -Path release-server\* -DestinationPath cfrp-server-windows-arm64.zip
           powershell Compress-Archive -Path release-client\* -DestinationPath cfrp-client-windows-arm64.zip
