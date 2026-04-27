@@ -2,7 +2,7 @@
 
 # cfrp Universal Installer (Linux & macOS)
 # This script auto-downloads and installs the latest cfrp.
-# Usage: curl -sSL https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.sh | sudo bash -s -- [options]
+# Usage: curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- [options]
 # Options:
 #   --mode server    (default) Install as server service
 #   --mode client    Install as client service
@@ -93,7 +93,7 @@ fi
 cd "$TMP_DIR"
 if [[ "$OS" == "darwin" ]]; then
     # Use the setup_service_macos.sh logic directly
-    LABEL="com.neesonqk.cfrp-${MODE}"
+    LABEL="com.inarms.cfrp-${MODE}"
     CONF_DIR="/usr/local/etc/cfrp"
     mkdir -p "$CONF_DIR"
     cp "${MODE}.toml" "$CONF_DIR/"
@@ -157,5 +157,5 @@ echo -e "${GREEN}--------------------------------------------------${NC}"
 echo -e "${GREEN}cfrp $MODE service installed and started successfully!${NC}"
 echo -e "Binary:      ${CYAN}/usr/local/bin/cfrp${NC}"
 echo -e "Config File: ${CYAN}$CONF_FILE${NC}"
-echo -e "Status:      ${CYAN}$(if [[ "$OS" == "darwin" ]]; then echo "sudo launchctl list | grep com.neesonqk.cfrp-${MODE}"; else echo "systemctl status cfrp-${MODE}"; fi)${NC}"
+echo -e "Status:      ${CYAN}$(if [[ "$OS" == "darwin" ]]; then echo "sudo launchctl list | grep com.inarms.cfrp-${MODE}"; else echo "systemctl status cfrp-${MODE}"; fi)${NC}"
 echo -e "${GREEN}--------------------------------------------------${NC}"

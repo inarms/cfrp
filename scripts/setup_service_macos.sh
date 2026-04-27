@@ -60,7 +60,7 @@ if [[ "$MODE" == "client" ]]; then
 fi
 
 # 3. Create launchd plist
-LABEL="com.neesonqk.cfrp-${MODE}"
+LABEL="com.inarms.cfrp-${MODE}"
 PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
 
 cat <<EOF > "$PLIST_PATH"

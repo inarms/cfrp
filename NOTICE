@@ -1,5 +1,5 @@
 cfrp (C++ Fast Reverse Proxy)
-Copyright 2026 neesonqk
+Copyright 2026 inarms
 
 This product is inspired by and derived from the frp (Fast Reverse Proxy) project,
 originally developed by fatedier (https://github.com/fatedier/frp).

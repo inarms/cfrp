@@ -6,7 +6,7 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-LABEL="com.neesonqk.cfrp-client"
+LABEL="com.inarms.cfrp-client"
 PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
 
 echo "Uninstalling cfrp Client..."

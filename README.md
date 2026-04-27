@@ -52,8 +52,8 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 #### Server Management
 | Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
 | :--- | :--- | :--- | :--- |
-| **Start** | `sudo systemctl start cfrp-server` | `sudo launchctl load -w /Library/LaunchDaemons/com.neesonqk.cfrp-server.plist` | `Start-Service cfrp-server` |
-| **Stop** | `sudo systemctl stop cfrp-server` | `sudo launchctl unload /Library/LaunchDaemons/com.neesonqk.cfrp-server.plist` | `Stop-Service cfrp-server` |
+| **Start** | `sudo systemctl start cfrp-server` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Start-Service cfrp-server` |
+| **Stop** | `sudo systemctl stop cfrp-server` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Stop-Service cfrp-server` |
 | **Status** | `systemctl status cfrp-server` | `sudo launchctl list \| grep cfrp-server` | `Get-Service cfrp-server` |
 | **Logs** | `journalctl -u cfrp-server -f` | `tail -f /var/log/cfrp-server.log` | Check `C:\Program Files\cfrp\cfrp.log` |
 
@@ -78,8 +78,8 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 #### Client Management
 | Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
 | :--- | :--- | :--- | :--- |
-| **Start** | `sudo systemctl start cfrp-client` | `sudo launchctl load -w /Library/LaunchDaemons/com.neesonqk.cfrp-client.plist` | `Start-Service cfrp-client` |
-| **Stop** | `sudo systemctl stop cfrp-client` | `sudo launchctl unload /Library/LaunchDaemons/com.neesonqk.cfrp-client.plist` | `Stop-Service cfrp-client` |
+| **Start** | `sudo systemctl start cfrp-client` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Start-Service cfrp-client` |
+| **Stop** | `sudo systemctl stop cfrp-client` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Stop-Service cfrp-client` |
 | **Reload Config** | `sudo systemctl restart cfrp-client` | `sudo launchctl unload ... && sudo launchctl load ...` | `Restart-Service cfrp-client` |
 
 > **Pro-Tip:** Use the `config.d/` directory (inside the config path) to add new proxies without restarting the service!

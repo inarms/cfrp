@@ -1,5 +1,5 @@
 # cfrp Windows Universal Installer
-# Usage: iex (iwr https://raw.githubusercontent.com/neesonqk/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
+# Usage: iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
 
 param (
     [Parameter(Mandatory=$false)]

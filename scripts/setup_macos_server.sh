@@ -8,7 +8,7 @@ fi
 
 CONFIG="server.toml"
 BINARY="./cfrp"
-LABEL="com.neesonqk.cfrp-server"
+LABEL="com.inarms.cfrp-server"
 INSTALL_DIR="/usr/local/bin"
 CONF_DIR="/usr/local/etc/cfrp"
 PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
