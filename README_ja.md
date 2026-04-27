@@ -39,8 +39,8 @@ Standalone Asio を使用して C++17 で実装された高性能な非同期リ
 1. **[GitHub リリース](https://github.com/inarms/cfrp/releases)** ページにアクセスします。
 2. プラットフォームとアーキテクチャに対応する圧縮ファイルをダウンロードします。
 3. 内容を解凍します：
-   - **サーバーパッケージ**: `cfrp` バイナリ、`server.toml`、および `setup.sh`/`uninstall.sh` (または `.ps1`) が含まれます。
-   - **クライアントパッケージ**: `cfrp` バイナリ、`client.toml`、`config.d/`、および `setup.sh`/`uninstall.sh` (または `.ps1`) が含まれます。
+   - **サーバーパッケージ**: `cfrp` バイナリ、`server.toml` が含まれます。
+   - **クライアントパッケージ**: `cfrp` バイナリ、`client.toml`、`config.d/` が含まれます。
 
 #### 設定ファイルの自動選択
 **注意: `server.toml` または `client.toml` が現在のディレクトリに存在する場合、それらが絶対的に優先されます。すべてのコマンドラインの位置引数やフラグ ( `-c` や `-t` など) は無視されます。**

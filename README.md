@@ -39,8 +39,8 @@ A high-performance, asynchronous reverse proxy implemented in C++17 using Standa
 1. Go to the **[GitHub Releases](https://github.com/inarms/cfrp/releases)** page.
 2. Download the compressed file corresponding to your platform and architecture.
 3. Extract the contents:
-   - **Server Package**: Contains `cfrp` binary, `server.toml`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
-   - **Client Package**: Contains `cfrp` binary, `client.toml`, `config.d/`, and `setup.sh`/`uninstall.sh` (or `.ps1`).
+   - **Server Package**: Contains `cfrp` binary and `server.toml`.
+   - **Client Package**: Contains `cfrp` binary, `client.toml`, and `config.d/`.
 
 #### Automatic Configuration Selection
 **Note: If `server.toml` or `client.toml` exists in the current directory, they take absolute precedence. All command-line positional arguments and flags (like `-c` or `-t`) will be ignored.**

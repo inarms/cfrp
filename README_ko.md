@@ -39,8 +39,8 @@ Standalone Asio를 사용하여 C++17로 구현된 고성능 비동기 리버스
 1. **[GitHub 리리스](https://github.com/inarms/cfrp/releases)** 페이지로 이동합니다.
 2. 사용 중인 플랫폼과 아키텍처에 맞는 압축 파일을 다운로드합니다.
 3. 압축을 해제합니다:
-   - **서버 패키지**: `cfrp` 바이너리, `server.toml`, `setup.sh`/`uninstall.sh` (또는 `.ps1`)가 포함되어 있습니다.
-   - **클라이언트 패키지**: `cfrp` 바이너, `client.toml`, `config.d/`, `setup.sh`/`uninstall.sh` (또는 `.ps1`)가 포함되어 있습니다.
+   - **서버 패키지**: `cfrp` 바이너리, `server.toml`가 포함되어 있습니다.
+   - **클라이언트 패키지**: `cfrp` 바이너리, `client.toml`, `config.d/`가 포함되어 있습니다.
 
 #### 설정 파일 자동 선택
 **주의: 현재 디렉토리에 `server.toml` 또는 `client.toml`이 존재하는 경우 해당 파일이 절대적으로 우선됩니다. 모든 명령줄 인자 및 플래그(예: `-c`, `-t`)는 무시됩니다.**
