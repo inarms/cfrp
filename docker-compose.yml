@@ -1,0 +1,22 @@
+# Unified compose for local testing
+services:
+  server:
+    image: ghcr.io/inarms/cfrp:latest
+    container_name: cfrp-server
+    ports:
+      - "7001:7001"
+      - "8080:8080"
+      - "8443:8443"
+      - "6000:6000"
+    volumes:
+      - ./server.toml:/app/server.toml:ro
+
+  client:
+    image: ghcr.io/inarms/cfrp:latest
+    container_name: cfrp-client
+    depends_on:
+      - server
+    volumes:
+      - ./client.toml:/app/client.toml:ro
+    # Override server_addr to point to the 'server' container in the same docker network
+    entrypoint: ["sh", "-c", "sed -i 's/server_addr = .*/server_addr = \"server\"/' /app/client.toml && ./cfrp client.toml"]

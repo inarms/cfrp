@@ -1,0 +1,11 @@
+services:
+  cfrp-client:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER:-inarms/cfrp}:latest
+    container_name: cfrp-client
+    restart: always
+    network_mode: "host" # Recommended for client to easily access local services (like SSH, Web)
+    volumes:
+      - ./client.toml:/app/client.toml:ro
+      - ./conf.d:/app/conf.d:ro
+      - ./certs:/app/certs:ro
+    command: ["client.toml"]

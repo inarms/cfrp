@@ -1,0 +1,14 @@
+services:
+  cfrp-server:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER:-inarms/cfrp}:latest
+    container_name: cfrp-server
+    restart: always
+    ports:
+      - "7001:7001"    # Main control port
+      - "8080:8080"    # VHost HTTP port
+      - "8443:8443"    # VHost HTTPS port
+      - "6000:6000"    # Example proxy port
+    volumes:
+      - ./server.toml:/app/server.toml:ro
+      - ./certs:/app/certs:ro
+    command: ["server.toml"]
