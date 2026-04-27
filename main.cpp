@@ -233,13 +233,17 @@ int main(int argc, char** argv) {
             ca_path = argv[++i];
         } else if ((arg == "-t" || arg == "--token") && i + 1 < argc) {
             cli_token = argv[++i];
+        } else if (arg == "-v" || arg == "--version") {
+            std::cout << "cfrp version " << CFRP_VERSION << std::endl;
+            return 0;
         } else if (arg == "-h" || arg == "--help") {
-            std::cout << "cfrp - A C++ Fast Reverse Proxy" << std::endl;
+            std::cout << "cfrp - A C++ Fast Reverse Proxy (version " << CFRP_VERSION << ")" << std::endl;
             std::cout << "Usage: cfrp [config.toml] | [options] | [command]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  [config.toml]        Path to the configuration file (TOML). If provided, all other options are ignored." << std::endl;
             std::cout << "  -c, --ca PATH        Path to the CA file (only used when no config file is provided)" << std::endl;
             std::cout << "  -t, --token STRING   Authentication token (only used when no config file is provided)" << std::endl;
+            std::cout << "  -v, --version        Show version information" << std::endl;
             std::cout << "  -h, --help           Show this help message" << std::endl;
             std::cout << "Commands:" << std::endl;
             std::cout << "  config set <key> <value>  Set global configuration" << std::endl;
