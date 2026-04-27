@@ -1,6 +1,6 @@
 # cfrp - C++ 高性能リバースプロキシ
 
-English | [简体中文](./README_zh.md) | 日本語
+English | [简体中文](./README_zh.md) | 日本語 | [한국어](./README_ko.md)
 
 Standalone Asio を使用して C++17 で実装された高性能な非同期リバースプロキシです。
 `cfrp` は、NAT やファイアウォールの背後にあるローカルサービスをインターネットに公開するための、軽量で効率的な代替手段として設計されており、人気のプロジェクト [fatedier/frp](https://github.com/fatedier/frp) からインスピレーションを得ています。
