@@ -41,11 +41,6 @@ ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CCACHE_DIR=/root/.cache/ccache
 
-# Increase concurrency - remove hard limits to use available CPU power
-# Or set to a reasonable default like 4 if you want to limit it
-ENV VCPKG_MAX_CONCURRENCY=
-ENV CMAKE_BUILD_PARALLEL_LEVEL=
-
 # Clone vcpkg (use partial clone to save space/time while allowing access to baseline commits)
 RUN git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /vcpkg && \
    /vcpkg/bootstrap-vcpkg.sh -disableMetrics
