@@ -391,9 +391,9 @@ void Client::DoConnect() {
                         if (current_protocol_ == "websocket") {
                             stream = std::make_shared<common::WebsocketStream>(stream, true);
                         }
-                        
-                        stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {
-                            if (conn_id != connection_id_) return;
+
+                        stream->set_host_name(server_addr_);
+                        stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {                            if (conn_id != connection_id_) return;
                             OnConnect(ec, stream);
                         });
                     } else {

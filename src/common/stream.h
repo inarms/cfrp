@@ -51,6 +51,8 @@ public:
     virtual void async_handshake(ssl::stream_base::handshake_type type,
                                  std::function<void(std::error_code)> handler) = 0;
 
+    virtual void set_host_name(const std::string& host_name) {}
+
     virtual void close() = 0;
     virtual asio::any_io_executor get_executor() = 0;
     virtual std::string remote_endpoint_string() = 0;
@@ -137,6 +139,14 @@ public:
         stream_.async_handshake(type, std::move(handler));
     }
 
+    void set_host_name(const std::string& host_name) override {
+#ifdef ASIO_USE_WOLFSSL
+        wolfSSL_set_tlsext_host_name(stream_.native_handle(), host_name.c_str());
+#else
+        SSL_set_tlsext_host_name(stream_.native_handle(), host_name.c_str());
+#endif
+    }
+
     void close() override {
         std::error_code ec;
         stream_.next_layer().close(ec);
@@ -212,6 +222,10 @@ public:
     void async_handshake(ssl::stream_base::handshake_type type,
                          std::function<void(std::error_code)> handler) override {
         underlying_->async_handshake(type, std::move(handler));
+    }
+
+    void set_host_name(const std::string& host_name) override {
+        underlying_->set_host_name(host_name);
     }
 
     void close() override { underlying_->close(); }
