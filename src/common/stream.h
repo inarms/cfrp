@@ -22,6 +22,7 @@
 
 #include <asio.hpp>
 #include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 #include <wolfssl/openssl/ssl.h>
 #include <asio/ssl.hpp>
 #include <memory>
@@ -110,7 +111,11 @@ private:
 class SslStream : public AsyncStream {
 public:
     explicit SslStream(tcp::socket socket, ssl::context& ctx) 
-        : stream_(std::move(socket), ctx) {}
+        : stream_(std::move(socket), ctx) {
+#ifdef ASIO_USE_WOLFSSL
+        wolfSSL_set_using_nonblock(stream_.native_handle(), 1);
+#endif
+    }
     
     void async_read_some(asio::mutable_buffer buffer, 
                          std::function<void(std::error_code, std::size_t)> handler) override {

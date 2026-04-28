@@ -319,6 +319,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
 
     if (ssl_config_.enable) {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
+        ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
         if (ssl_config_.verify_peer) {
             ssl_ctx_->set_verify_mode(asio::ssl::verify_peer);
             if (!ssl_config_.ca_file.empty()) {

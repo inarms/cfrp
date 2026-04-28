@@ -25,6 +25,8 @@
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
+#include <wolfssl/options.h>
+#include <wolfssl/ssl.h>
 
 namespace fs = std::filesystem;
 
@@ -41,6 +43,7 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
+    wolfSSL_Init();
     std::string exe_path = cfrp::common::GetExecutablePath();
     std::string exe_dir = exe_path.empty() ? "." : fs::path(exe_path).parent_path().string();
     std::string pid_path = (fs::path(exe_dir) / "cfrp.pid").string();
@@ -582,11 +585,14 @@ ca_file = "certs/ca.crt"
 
     } catch (const toml::parse_error& err) {
         std::cerr << "Parsing failed:\n" << err << std::endl;
+        wolfSSL_Cleanup();
         return 1;
     } catch (const std::exception& err) {
         std::cerr << "Error: " << err.what() << std::endl;
+        wolfSSL_Cleanup();
         return 1;
     }
 
+    wolfSSL_Cleanup();
     return 0;
 }
