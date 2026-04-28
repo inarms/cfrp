@@ -306,8 +306,8 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
       compression_(compression),
       conf_d_path_(conf_d_path),
       conf_timer_(io_context_),
-      endpoint_(asio::ip::make_address(server_addr), server_port),
-      udp_endpoint_(asio::ip::make_address(server_addr), server_port),
+      endpoint_(tcp::v4(), server_port),
+      udp_endpoint_(udp::v4(), server_port),
       udp_socket_(io_context_, udp::endpoint(udp::v4(), 0)),
       reconnect_timer_(io_context_),
       handshake_timer_(io_context_) {
@@ -352,39 +352,53 @@ void Client::DoConnect() {
     connection_id_++;
     int conn_id = connection_id_;
 
-    if (current_protocol_ == "quic") {
-        DoQuicConnect(conn_id);
-        return;
-    }
-
-    std::cout << "Connecting to server " << server_addr_ << ":" << server_port_ << " (TCP)..." << std::endl;
-    
-    tcp::socket socket(io_context_);
-    auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
-    
-    socket_ptr->async_connect(endpoint_,
-        [this, socket_ptr, conn_id](std::error_code ec) {
+    auto resolver = std::make_shared<tcp::resolver>(io_context_);
+    resolver->async_resolve(server_addr_, std::to_string(server_port_),
+        [this, conn_id, resolver](std::error_code ec, tcp::resolver::results_type results) {
             if (conn_id != connection_id_) return;
-            if (!ec) {
-                common::SetTcpKeepalive(*socket_ptr);
-                std::shared_ptr<common::AsyncStream> stream;
-                if (ssl_config_.enable) {
-                    stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
-                } else {
-                    stream = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
-                }
-
-                if (current_protocol_ == "websocket") {
-                    stream = std::make_shared<common::WebsocketStream>(stream, true);
-                }
-                
-                stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {
-                    if (conn_id != connection_id_) return;
-                    OnConnect(ec, stream);
-                });
-            } else {
-                HandleDisconnect("Connect failed: " + ec.message());
+            if (ec) {
+                HandleDisconnect("DNS resolution failed for " + server_addr_ + ": " + ec.message());
+                return;
             }
+
+            endpoint_ = *results.begin();
+            udp_endpoint_ = udp::endpoint(endpoint_.address(), endpoint_.port());
+
+            if (current_protocol_ == "quic") {
+                DoQuicConnect(conn_id);
+                return;
+            }
+
+            std::cout << "Connecting to server " << server_addr_ << " (" << endpoint_.address().to_string() << ":" << server_port_ << ") (TCP)..." << std::endl;
+            
+            tcp::socket socket(io_context_);
+            auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
+            
+            asio::async_connect(*socket_ptr, results,
+                [this, socket_ptr, conn_id](std::error_code ec, tcp::endpoint const& connected_endpoint) {
+                    if (conn_id != connection_id_) return;
+                    if (!ec) {
+                        endpoint_ = connected_endpoint;
+                        common::SetTcpKeepalive(*socket_ptr);
+                        std::shared_ptr<common::AsyncStream> stream;
+                        if (ssl_config_.enable) {
+                            stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                        } else {
+                            stream = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
+                        }
+
+                        if (current_protocol_ == "websocket") {
+                            stream = std::make_shared<common::WebsocketStream>(stream, true);
+                        }
+                        
+                        stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {
+                            if (conn_id != connection_id_) return;
+                            OnConnect(ec, stream);
+                        });
+                    } else {
+                        HandleDisconnect("Connect failed: " + ec.message());
+                    }
+                });
         });
 }
 
