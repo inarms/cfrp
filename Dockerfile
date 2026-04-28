@@ -1,8 +1,10 @@
+# syntax=docker/dockerfile:1
 # Runtime stage
 FROM alpine:latest AS builder
 
  # Install build dependencies required by Alpine, CMake, and vcpkg
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add --no-cache \
     build-base \
     cmake \
     ninja \
@@ -13,7 +15,8 @@ RUN apk add --no-cache \
     tar \
     pkgconf \
     linux-headers \
-    python3
+    python3 \
+    ccache
 
 # --- The Alpine Samurai Patch ---
 # Alpine's 'ninja' is actually a POSIX-strict clone called 'samurai'.
@@ -32,10 +35,17 @@ RUN rm /usr/bin/ninja && \
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 ENV VCPKG_ROOT=/vcpkg
 
-ENV VCPKG_MAX_CONCURRENCY=2
-ENV CMAKE_BUILD_PARALLEL_LEVEL=2
+# Use ccache for faster incremental builds
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 
-RUN git clone https://github.com/microsoft/vcpkg.git /vcpkg && \
+# Increase concurrency - remove hard limits to use available CPU power
+# Or set to a reasonable default like 4 if you want to limit it
+ENV VCPKG_MAX_CONCURRENCY=
+ENV CMAKE_BUILD_PARALLEL_LEVEL=
+
+# Shallow clone vcpkg to save time and space
+RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git /vcpkg && \
    /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 # Inject the flag into vcpkg's Linux configurations to prevent warnings from crashing the build
@@ -47,16 +57,25 @@ RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
 WORKDIR /src
 
-# Copy the project source code
+# NEW: Cache dependencies by copying only vcpkg.json first
+COPY vcpkg.json .
+# Use a cache mount for vcpkg downloads and artifacts
+RUN --mount=type=cache,target=/root/.cache/vcpkg \
+    /vcpkg/vcpkg install --triplet x64-linux --x-manifest-root=.
+
+# Copy the rest of the project source code
 COPY . .
 
  # Build the project using CMake and vcpkg toolchain
-RUN cmake -B build -S . \
+RUN --mount=type=cache,target=/root/.cache/vcpkg \
+    --mount=type=cache,target=/root/.cache/ccache \
+  cmake -B build -S . \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
   -G Ninja
 
-RUN cmake --build build
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    cmake --build build
 
 FROM alpine:latest
 # Install minimal runtime dependencies
