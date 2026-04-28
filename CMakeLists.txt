@@ -4,7 +4,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
-project(cfrp VERSION 0.1.5 LANGUAGES C CXX)
+project(cfrp VERSION 0.1.6 LANGUAGES C CXX)
 
 add_definitions(-DCFRP_VERSION="${PROJECT_VERSION}")
 

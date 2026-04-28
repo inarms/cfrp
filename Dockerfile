@@ -34,18 +34,20 @@ RUN rm /usr/bin/ninja && \
 
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 ENV VCPKG_ROOT=/vcpkg
+ENV VCPKG_DEFAULT_BINARY_CACHE=/root/.cache/vcpkg
 
 # Use ccache for faster incremental builds
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
+ENV CCACHE_DIR=/root/.cache/ccache
 
 # Increase concurrency - remove hard limits to use available CPU power
 # Or set to a reasonable default like 4 if you want to limit it
 ENV VCPKG_MAX_CONCURRENCY=
 ENV CMAKE_BUILD_PARALLEL_LEVEL=
 
-# Shallow clone vcpkg to save time and space
-RUN git clone --depth 1 https://github.com/microsoft/vcpkg.git /vcpkg && \
+# Clone vcpkg (use partial clone to save space/time while allowing access to baseline commits)
+RUN git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /vcpkg && \
    /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 # Inject the flag into vcpkg's Linux configurations to prevent warnings from crashing the build
@@ -59,9 +61,11 @@ WORKDIR /src
 
 # NEW: Cache dependencies by copying only vcpkg.json first
 COPY vcpkg.json .
+ARG TARGETARCH
 # Use a cache mount for vcpkg downloads and artifacts
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
-    /vcpkg/vcpkg install --triplet x64-linux --x-manifest-root=.
+    if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
+    /vcpkg/vcpkg install --triplet $TRIPLET --x-manifest-root=.
 
 # Copy the rest of the project source code
 COPY . .
@@ -69,9 +73,11 @@ COPY . .
  # Build the project using CMake and vcpkg toolchain
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     --mount=type=cache,target=/root/.cache/ccache \
+    if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
   cmake -B build -S . \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
+  -DVCPKG_TARGET_TRIPLET=$TRIPLET \
   -G Ninja
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
