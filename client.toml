@@ -11,7 +11,7 @@ conf_d = "./conf.d"
 compression = true
 
 [client.ssl]
-enable = false
+enable = true
 verify_peer = false
 # ca_file = "certs/ca.crt"
 

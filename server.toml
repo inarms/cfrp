@@ -15,10 +15,10 @@ vhost_https_port = 8443
 # allowed_clients = ["my-client", "office-pc"]
 
 [server.ssl]
-enable = false
+enable = true
 auto_generate = true
-# cert_file = "certs/server.crt"
-# key_file = "certs/server.key"
-# ca_file = "certs/ca.crt"
+cert_file = "certs/server.crt"
+key_file = "certs/server.key"
+ca_file = "certs/ca.crt"
 
 # ... other server settings

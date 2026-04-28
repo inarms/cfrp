@@ -40,7 +40,7 @@ using asio::ip::tcp;
 using asio::ip::udp;
 
 struct SslConfig {
-    bool enable = false;
+    bool enable = true;
     bool verify_peer = false;
     std::string ca_file = "certs/ca.crt";
 };

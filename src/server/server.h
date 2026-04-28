@@ -43,7 +43,7 @@ using asio::ip::tcp;
 using asio::ip::udp;
 
 struct SslConfig {
-    bool enable = false;
+    bool enable = true;
     bool auto_generate = true;
     std::string cert_file = "certs/server.crt";
     std::string key_file = "certs/server.key";

@@ -422,7 +422,7 @@ vhost_http_port = 8080
 vhost_https_port = 8443
 
 [server.ssl]
-enable = false
+enable = true
 auto_generate = true
 cert_file = "certs/server.crt"
 key_file = "certs/server.key"
@@ -481,7 +481,7 @@ ca_file = "certs/ca.crt"
             
             cfrp::server::SslConfig ssl_config;
             if (auto ssl = config["server"]["ssl"].as_table()) {
-                ssl_config.enable = (*ssl)["enable"].value_or(false);
+                ssl_config.enable = (*ssl)["enable"].value_or(true);
                 ssl_config.auto_generate = (*ssl)["auto_generate"].value_or(true);
                 ssl_config.cert_file = (*ssl)["cert_file"].value_or("certs/server.crt");
                 ssl_config.key_file = (*ssl)["key_file"].value_or("certs/server.key");
@@ -537,7 +537,7 @@ ca_file = "certs/ca.crt"
 
             cfrp::client::SslConfig ssl_config;
             if (auto ssl = client_node["ssl"].as_table()) {
-                ssl_config.enable = (*ssl)["enable"].value_or(false);
+                ssl_config.enable = (*ssl)["enable"].value_or(true);
                 ssl_config.verify_peer = (*ssl)["verify_peer"].value_or(false);
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
