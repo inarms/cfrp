@@ -4,7 +4,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
 endif()
 
-project(cfrp VERSION 0.1.4 LANGUAGES C CXX)
+project(cfrp VERSION 0.1.5 LANGUAGES C CXX)
 
 add_definitions(-DCFRP_VERSION="${PROJECT_VERSION}")
 
@@ -49,7 +49,6 @@ add_definitions(-DTOML_HEADER_ONLY=0)
 add_definitions(-DTOML_ENABLE_FORMATTERS=0)
 # wolfSSL size optimizations
 add_definitions(-DWOLFSSL_MINSIZE)
-add_definitions(-DNO_ERROR_STRINGS)
 add_definitions(-DNO_OLD_TLS)
 add_definitions(-DNO_PSK)
 add_definitions(-DNO_MD4)

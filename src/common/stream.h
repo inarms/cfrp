@@ -53,6 +53,8 @@ public:
 
     virtual void set_host_name(const std::string& host_name) {}
 
+    virtual void* get_native_handle() { return nullptr; }
+
     virtual void close() = 0;
     virtual asio::any_io_executor get_executor() = 0;
     virtual std::string remote_endpoint_string() = 0;
@@ -114,9 +116,6 @@ class SslStream : public AsyncStream {
 public:
     explicit SslStream(tcp::socket socket, ssl::context& ctx) 
         : stream_(std::move(socket), ctx) {
-#ifdef ASIO_USE_WOLFSSL
-        wolfSSL_set_using_nonblock(stream_.native_handle(), 1);
-#endif
     }
     
     void async_read_some(asio::mutable_buffer buffer, 
@@ -145,6 +144,10 @@ public:
 #else
         SSL_set_tlsext_host_name(stream_.native_handle(), host_name.c_str());
 #endif
+    }
+
+    void* get_native_handle() override {
+        return stream_.native_handle();
     }
 
     void close() override {
@@ -226,6 +229,10 @@ public:
 
     void set_host_name(const std::string& host_name) override {
         underlying_->set_host_name(host_name);
+    }
+
+    void* get_native_handle() override {
+        return underlying_->get_native_handle();
     }
 
     void close() override { underlying_->close(); }

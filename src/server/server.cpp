@@ -637,7 +637,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
             common::SslUtils::EnsureCertificates(cert_config);
         }
 
-        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv12);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 | asio::ssl::context::single_dh_use);
         
         std::string cert = ssl_config_.cert_file;

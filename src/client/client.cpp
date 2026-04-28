@@ -318,8 +318,9 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
     }
 
     if (ssl_config_.enable) {
-        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::sslv23);
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv12);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
+        
         if (ssl_config_.verify_peer) {
             ssl_ctx_->set_verify_mode(asio::ssl::verify_peer);
             if (!ssl_config_.ca_file.empty()) {
@@ -330,7 +331,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
         } else {
             ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
-        std::cout << "SSL enabled on client." << std::endl;
+        std::cout << "SSL enabled on client (TLSv1.2)." << std::endl;
     }
     
     std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
@@ -474,7 +475,15 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
         DoLogin();
         DoReadHeader(connection_id_);
     } else {
-        HandleDisconnect("Handshake/Connect failed: " + ec.message());
+        std::cerr << "SSL Handshake/Connect failed: " << ec.message() << " (Category: " << ec.category().name() << " Code: " << ec.value() << ")" << std::endl;
+#ifdef ASIO_USE_WOLFSSL
+        char errBuf[160];
+        unsigned long err;
+        while ((err = wolfSSL_ERR_get_error()) != 0) {
+            std::cerr << "WolfSSL Error: " << err << " - " << wolfSSL_ERR_error_string(err, errBuf) << std::endl;
+        }
+#endif
+        HandleDisconnect("Handshake/Connect failed");
     }
 }
 

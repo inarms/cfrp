@@ -27,6 +27,7 @@
 #include "common/utils.h"
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/logging.h>
 
 namespace fs = std::filesystem;
 
