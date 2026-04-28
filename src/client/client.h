@@ -103,12 +103,12 @@ public:
 
 private:
     void DoConnect();
-    void DoQuicConnect();
+    void DoQuicConnect(int conn_id);
     void DoUdpRead();
     void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
-    void DoReadHeader();
-    void DoReadBody(uint32_t length);
+    void DoReadHeader(int conn_id);
+    void DoReadBody(uint32_t length, int conn_id);
     void HandleMessage(const protocol::Message& msg);
     void DoLogin();
     void RegisterProxies();
@@ -150,6 +150,7 @@ private:
     asio::steady_timer reconnect_timer_;
     asio::steady_timer handshake_timer_;
     int reconnect_delay_sec_ = 0;
+    int connection_id_ = 0;
     std::string current_protocol_;
 
     // ngtcp2 state

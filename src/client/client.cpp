@@ -349,8 +349,11 @@ void Client::AddProxy(const ProxyConfig& proxy) {
 }
 
 void Client::DoConnect() {
+    connection_id_++;
+    int conn_id = connection_id_;
+
     if (current_protocol_ == "quic") {
-        DoQuicConnect();
+        DoQuicConnect(conn_id);
         return;
     }
 
@@ -360,7 +363,8 @@ void Client::DoConnect() {
     auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
     
     socket_ptr->async_connect(endpoint_,
-        [this, socket_ptr](std::error_code ec) {
+        [this, socket_ptr, conn_id](std::error_code ec) {
+            if (conn_id != connection_id_) return;
             if (!ec) {
                 common::SetTcpKeepalive(*socket_ptr);
                 std::shared_ptr<common::AsyncStream> stream;
@@ -374,7 +378,8 @@ void Client::DoConnect() {
                     stream = std::make_shared<common::WebsocketStream>(stream, true);
                 }
                 
-                stream->async_handshake(asio::ssl::stream_base::client, [this, stream](std::error_code ec) {
+                stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {
+                    if (conn_id != connection_id_) return;
                     OnConnect(ec, stream);
                 });
             } else {
@@ -383,18 +388,19 @@ void Client::DoConnect() {
         });
 }
 
-void Client::DoQuicConnect() {
+void Client::DoQuicConnect(int conn_id) {
     std::cout << "Connecting to server via QUIC " << server_addr_ << ":" << server_port_ << "..." << std::endl;
     quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
-    
+
     if (!ssl_ctx_) {
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
     }
     quic_session_->init(ssl_ctx_->native_handle());
-    
+
     if (protocol_ == "auto") {
         handshake_timer_.expires_after(std::chrono::seconds(5));
-        handshake_timer_.async_wait([this](std::error_code ec) {
+        handshake_timer_.async_wait([this, conn_id](std::error_code ec) {
+            if (conn_id != connection_id_) return;
             if (!ec && current_protocol_ == "quic") {
                 std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
                 HandleDisconnect("QUIC_TIMEOUT");
@@ -402,7 +408,8 @@ void Client::DoQuicConnect() {
         });
     }
 
-    quic_session_->set_on_connected([this](std::shared_ptr<common::quic::QuicSession> session) {
+    quic_session_->set_on_connected([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
+        if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
         std::cout << "QUIC handshake completed. Opening control stream..." << std::endl;
         auto stream = session->open_stream();
@@ -413,7 +420,8 @@ void Client::DoQuicConnect() {
         }
     });
 
-    quic_session_->set_on_closed([this](std::shared_ptr<common::quic::QuicSession> session) {
+    quic_session_->set_on_closed([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
+        if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
         HandleDisconnect("QUIC session closed by peer");
     });
@@ -421,7 +429,6 @@ void Client::DoQuicConnect() {
     quic_session_->send_packets(); // Start handshake
     DoUdpRead();
 }
-
 void Client::DoUdpRead() {
     auto endpoint = std::make_shared<udp::endpoint>();
     udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
@@ -450,13 +457,14 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
         control_stream_ = mux_session_->open_stream();
         std::cout << "Control stream opened. Sending login request..." << std::endl;
         DoLogin();
-        DoReadHeader();
+        DoReadHeader(connection_id_);
     } else {
         HandleDisconnect("Handshake/Connect failed: " + ec.message());
     }
 }
 
 void Client::HandleDisconnect(const std::string& reason) {
+    connection_id_++;
     if (reason != "QUIC_TIMEOUT") {
         std::cout << reason << std::endl;
     }
@@ -540,26 +548,28 @@ void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>&
     }
 }
 
-void Client::DoReadHeader() {
+void Client::DoReadHeader(int conn_id) {
     auto self(shared_from_this());
     control_stream_->async_read(asio::buffer(&header_, sizeof(header_)),
-        [this, self](std::error_code ec, std::size_t) {
+        [this, self, conn_id](std::error_code ec, std::size_t) {
+            if (conn_id != connection_id_) return;
             if (!ec) {
                 uint32_t h = asio::detail::socket_ops::network_to_host_long(header_.body_length);
                 header_.body_length = h; // Store host-byte order back
                 uint32_t length = h & protocol::LENGTH_MASK;
-                DoReadBody(length);
+                DoReadBody(length, conn_id);
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());
             }
         });
 }
-void Client::DoReadBody(uint32_t length) {
+void Client::DoReadBody(uint32_t length, int conn_id) {
     auto self(shared_from_this());
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
     body_data_.resize(length);
     control_stream_->async_read(asio::buffer(body_data_),
-        [this, self, is_compressed](std::error_code ec, std::size_t) {
+        [this, self, is_compressed, conn_id](std::error_code ec, std::size_t) {
+            if (conn_id != connection_id_) return;
             if (!ec) {
                 try {
                     std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
@@ -578,7 +588,7 @@ void Client::DoReadBody(uint32_t length) {
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to decode message: " << e.what() << std::endl;
                 }
-                DoReadHeader();
+                DoReadHeader(conn_id);
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());
             }
