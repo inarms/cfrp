@@ -90,37 +90,49 @@ void WebsocketStream::DoClientHandshake(std::function<void(std::error_code)> han
 
 void WebsocketStream::DoServerHandshake(std::function<void(std::error_code)> handler) {
     auto self = shared_from_this();
-    auto request_buf = std::make_shared<std::vector<char>>(2048);
+    auto request_buf = std::make_shared<std::string>();
+    auto temp_buf = std::make_shared<std::vector<char>>(1024);
     
-    underlying_->async_read_some(asio::buffer(*request_buf), [this, self, request_buf, handler](std::error_code ec, std::size_t length) {
-        if (ec) {
-            handler(ec);
-            return;
-        }
-        
-        std::string req(request_buf->data(), length);
-        size_t key_pos = req.find("Sec-WebSocket-Key: ");
-        if (key_pos == std::string::npos) {
-            handler(asio::error::invalid_argument);
-            return;
-        }
-        
-        size_t key_end = req.find("\r\n", key_pos);
-        std::string client_key = req.substr(key_pos + 19, key_end - (key_pos + 19));
-        std::string accept_key = WebSocketUtils::GenerateAcceptKey(client_key);
-        
-        std::stringstream ss;
-        ss << "HTTP/1.1 101 Switching Protocols\r\n";
-        ss << "Upgrade: websocket\r\n";
-        ss << "Connection: Upgrade\r\n";
-        ss << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
-        
-        auto response = std::make_shared<std::string>(ss.str());
-        underlying_->async_write(asio::buffer(*response), [this, self, response, handler](std::error_code ec, std::size_t) {
-            if (!ec) handshaked_ = true;
-            handler(ec);
+    auto read_op = std::make_shared<std::function<void()>>();
+    *read_op = [this, self, request_buf, temp_buf, read_op, handler]() {
+        underlying_->async_read_some(asio::buffer(*temp_buf), [this, self, request_buf, temp_buf, read_op, handler](std::error_code ec, std::size_t length) {
+            if (ec) {
+                handler(ec);
+                return;
+            }
+            
+            request_buf->append(temp_buf->data(), length);
+            if (request_buf->find("\r\n\r\n") != std::string::npos) {
+                std::string req = *request_buf;
+                size_t key_pos = req.find("Sec-WebSocket-Key: ");
+                if (key_pos == std::string::npos) {
+                    handler(asio::error::invalid_argument);
+                    return;
+                }
+                
+                size_t key_end = req.find("\r\n", key_pos);
+                std::string client_key = req.substr(key_pos + 19, key_end - (key_pos + 19));
+                std::string accept_key = WebSocketUtils::GenerateAcceptKey(client_key);
+                
+                std::stringstream ss;
+                ss << "HTTP/1.1 101 Switching Protocols\r\n";
+                ss << "Upgrade: websocket\r\n";
+                ss << "Connection: Upgrade\r\n";
+                ss << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
+                
+                auto response = std::make_shared<std::string>(ss.str());
+                underlying_->async_write(asio::buffer(*response), [this, self, response, handler](std::error_code ec, std::size_t) {
+                    if (!ec) handshaked_ = true;
+                    handler(ec);
+                });
+            } else if (request_buf->size() > 8192) {
+                handler(asio::error::message_size);
+            } else {
+                (*read_op)();
+            }
         });
-    });
+    };
+    (*read_op)();
 }
 
 void WebsocketStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -176,6 +188,7 @@ void WebsocketStream::async_read_some(asio::mutable_buffer buffer, std::function
 }
 
 void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
+    auto self = shared_from_this();
     if (buffer.size() == 0) {
         asio::post(underlying_->get_executor(), [handler]() {
             handler(std::error_code(), 0);
@@ -193,7 +206,7 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
             // Still need more data
             void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
             size_t next_size = buffer.size() - to_copy;
-            async_read(asio::mutable_buffer(next_ptr, next_size), [handler, to_copy](std::error_code ec, std::size_t length) {
+            underlying_->async_read(asio::mutable_buffer(next_ptr, next_size), [this, self, handler, to_copy](std::error_code ec, std::size_t length) {
                 handler(ec, to_copy + length);
             });
         } else {
@@ -204,7 +217,6 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
         return;
     }
 
-    auto self = shared_from_this();
     ReadWsFrame([this, self, buffer, handler](std::error_code ec, std::size_t length) {
         if (ec) {
             handler(ec, 0);
@@ -225,7 +237,7 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
         if (to_copy < buffer.size()) {
             void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
             size_t next_size = buffer.size() - to_copy;
-            async_read(asio::mutable_buffer(next_ptr, next_size), [handler, to_copy](std::error_code ec, std::size_t length) {
+            underlying_->async_read(asio::mutable_buffer(next_ptr, next_size), [this, self, handler, to_copy](std::error_code ec, std::size_t length) {
                 handler(ec, to_copy + length);
             });
         } else {

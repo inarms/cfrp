@@ -856,12 +856,7 @@ void Server::DoAccept() {
                             }
                         });
                     } else if (protocol_ == "websocket") {
-                        // Already wrapped, but we need to complete the WS handshake
-                        stream->async_handshake(asio::ssl::stream_base::server, [stream, start_mux](std::error_code ec) {
-                            if (!ec) {
-                                start_mux(stream);
-                            }
-                        });
+                        start_mux(stream);
                     } else {
                         start_mux(stream);
                     }
