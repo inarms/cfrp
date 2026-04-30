@@ -318,7 +318,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
     }
 
     if (ssl_config_.enable) {
-        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv12);
+        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
         
         if (ssl_config_.verify_peer) {
@@ -331,7 +331,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
         } else {
             ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
-        std::cout << "SSL enabled on client (TLSv1.2)." << std::endl;
+        std::cout << "SSL enabled on client (TLSv1.3)." << std::endl;
     }
     
     std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
