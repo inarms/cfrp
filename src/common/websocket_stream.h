@@ -26,7 +26,7 @@ namespace common {
 
 class WebsocketStream : public AsyncStream {
 public:
-    WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client);
+    WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake = true);
 
     void async_read_some(asio::mutable_buffer buffer, 
                          std::function<void(std::error_code, std::size_t)> handler) override;
@@ -39,6 +39,8 @@ public:
 
     void async_handshake(ssl::stream_base::handshake_type type,
                          std::function<void(std::error_code)> handler) override;
+
+    virtual void set_host_name(const std::string& host_name) override;
 
     void close() override;
     asio::any_io_executor get_executor() override;
@@ -53,6 +55,7 @@ private:
 
     std::shared_ptr<AsyncStream> underlying_;
     bool is_client_;
+    bool perform_underlying_handshake_;
     bool handshaked_ = false;
     
     // Internal buffer for reading WS frames

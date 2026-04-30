@@ -844,7 +844,7 @@ void Server::DoAccept() {
                             if (!ec) {
                                 std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
                                 if (*first_byte == 'G') { // 'G' from GET (WebSocket)
-                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false);
+                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false);
                                     ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux](std::error_code ec) {
                                         if (!ec) {
                                             start_mux(ws_stream);

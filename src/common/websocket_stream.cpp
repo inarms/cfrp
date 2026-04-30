@@ -22,17 +22,32 @@
 namespace cfrp {
 namespace common {
 
-WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client)
-    : underlying_(std::move(underlying)), is_client_(is_client) {
+WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake)
+    : underlying_(std::move(underlying)), is_client_(is_client), perform_underlying_handshake_(perform_underlying_handshake) {
     std::random_device rd;
     rng_.seed(rd());
 }
 
-void WebsocketStream::async_handshake(ssl::stream_base::handshake_type, std::function<void(std::error_code)> handler) {
-    if (is_client_) {
-        DoClientHandshake(handler);
+void WebsocketStream::async_handshake(ssl::stream_base::handshake_type type, std::function<void(std::error_code)> handler) {
+    auto self = shared_from_this();
+    if (perform_underlying_handshake_) {
+        underlying_->async_handshake(type, [this, self, handler](std::error_code ec) {
+            if (ec) {
+                handler(ec);
+                return;
+            }
+            if (is_client_) {
+                DoClientHandshake(handler);
+            } else {
+                DoServerHandshake(handler);
+            }
+        });
     } else {
-        DoServerHandshake(handler);
+        if (is_client_) {
+            DoClientHandshake(handler);
+        } else {
+            DoServerHandshake(handler);
+        }
     }
 }
 
@@ -282,6 +297,10 @@ void WebsocketStream::ReadWsFrame(std::function<void(std::error_code, std::size_
             next_step(payload_len);
         }
     });
+}
+
+void WebsocketStream::set_host_name(const std::string& host_name) {
+    underlying_->set_host_name(host_name);
 }
 
 void WebsocketStream::close() {
