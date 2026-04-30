@@ -59,7 +59,7 @@ class Client;
 
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
-    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
+    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, int compression_level = 1, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -69,6 +69,7 @@ private:
     std::shared_ptr<common::AsyncStream> s2_;
     std::shared_ptr<common::RateLimiter> rate_limiter_;
     bool use_compression_;
+    int compression_level_ = 1;
     char data1_[32768];
     char data2_[32768];
     uint32_t header1_;
@@ -77,7 +78,7 @@ private:
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, int compression_level = 1, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
     void Start();
 
 private:
@@ -89,6 +90,7 @@ private:
     udp::socket socket_;
     udp::endpoint local_endpoint_;
     bool use_compression_;
+    int compression_level_ = 1;
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
     uint8_t local_recv_buf_[65535];
@@ -96,7 +98,7 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol = "auto");
+    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, int compression_level, const std::string& conf_d_path, const std::string& protocol = "auto");
     void Run();
     void Stop();
     void AddProxy(const ProxyConfig& proxy);
@@ -133,6 +135,7 @@ private:
     std::string protocol_;
     SslConfig ssl_config_;
     bool compression_ = false;
+    int compression_level_ = 1;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     
     tcp::endpoint endpoint_;

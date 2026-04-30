@@ -9,6 +9,7 @@ name = "my-client"
 protocol = "auto"
 conf_d = "./conf.d"
 compression = true
+compression_level = 1 # Zstd compression level (1-22, 1 is fastest)
 
 [client.ssl]
 enable = true

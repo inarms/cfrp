@@ -534,6 +534,7 @@ ca_file = "certs/ca.crt"
             std::string conf_d = client_node["conf_d"].value_or("");
             std::string protocol = client_node["protocol"].value_or("auto");
             bool compression = client_node["compression"].value_or(true);
+            int compression_level = static_cast<int>(client_node["compression_level"].value_or(1));
 
             cfrp::client::SslConfig ssl_config;
             if (auto ssl = client_node["ssl"].as_table()) {
@@ -542,7 +543,7 @@ ca_file = "certs/ca.crt"
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
-            client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, conf_d, protocol));
+            client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, compression_level, conf_d, protocol));
 
             std::ofstream status_ofs(status_path);
             if (status_ofs) {

@@ -30,8 +30,8 @@ namespace cfrp {
 namespace client {
 
 // --- Bridge ---
-Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression) {}
+Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, int compression_level, std::shared_ptr<common::RateLimiter> rate_limiter)
+    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression), compression_level_(compression_level) {}
 
 void Bridge::Start() {
     DoRead(1);
@@ -82,7 +82,7 @@ void Bridge::DoRead(int direction) {
                     if (!ec) {
                         size_t const cSizeBound = ZSTD_compressBound(length);
                         std::vector<uint8_t> compressed(cSizeBound);
-                        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, 1);
+                        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, compression_level_);
                         
                         uint32_t final_header;
                         const void* write_buf;
@@ -179,8 +179,8 @@ void Bridge::DoRead(int direction) {
 }
 
 // --- UdpBridge ---
-UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(io_context, udp::endpoint(udp::v4(), 0)), local_endpoint_(local_endpoint), use_compression_(use_compression) {
+UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, int compression_level, std::shared_ptr<common::RateLimiter> rate_limiter)
+    : stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(io_context, udp::endpoint(udp::v4(), 0)), local_endpoint_(local_endpoint), use_compression_(use_compression), compression_level_(compression_level) {
     read_buf_.resize(65535);
 }
 
@@ -256,7 +256,7 @@ void UdpBridge::DoReadFromLocal() {
                 if (use_compression_) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
                     compressed.resize(cSizeBound);
-                    size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, local_recv_buf_, length, 1);
+                    size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, local_recv_buf_, length, compression_level_);
                     if (!ZSTD_isError(cSize) && cSize < length) {
                         header = static_cast<uint16_t>(cSize) | 0x8000;
                         write_data = compressed.data();
@@ -295,7 +295,7 @@ void UdpBridge::DoReadFromLocal() {
 }
 
 // --- Client ---
-Client::Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, const std::string& conf_d_path, const std::string& protocol)
+Client::Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, int compression_level, const std::string& conf_d_path, const std::string& protocol)
     : io_context_(io_context),
       server_addr_(server_addr),
       server_port_(server_port),
@@ -304,6 +304,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
       protocol_(protocol),
       ssl_config_(ssl_config),
       compression_(compression),
+      compression_level_(compression_level),
       conf_d_path_(conf_d_path),
       conf_timer_(io_context_),
       endpoint_(tcp::v4(), server_port),
@@ -549,7 +550,7 @@ void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>&
     if (compression_) {
         size_t const cSizeBound = ZSTD_compressBound(encoded.size());
         std::vector<uint8_t> compressed(cSizeBound);
-        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, encoded.data(), encoded.size(), 1);
+        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, encoded.data(), encoded.size(), compression_level_);
         if (!ZSTD_isError(cSize)) {
             compressed.resize(cSize);
             to_send_body = compressed;
@@ -820,7 +821,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                                         auto it = proxy_rate_limiters_.find(pc.name);
                                         if (it != proxy_rate_limiters_.end()) rl = it->second;
 
-                                        auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_, rl);
+                                        auto bridge = std::make_shared<Bridge>(user_stream, work_stream, compression_, compression_level_, rl);
                                         bridge->Start();
                                     } else {
                                         std::cerr << "Failed to send ticket over mux stream" << std::endl;
@@ -859,7 +860,7 @@ void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& tick
                 auto it = proxy_rate_limiters_.find(pc.name);
                 if (it != proxy_rate_limiters_.end()) rl = it->second;
 
-                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, *results.begin(), compression_, rl);
+                auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, *results.begin(), compression_, compression_level_, rl);
                 bridge->Start();
             } else {
                 std::cerr << "Failed to resolve local UDP service (" << pc.local_ip << "): " << (ec ? ec.message() : "No results") << std::endl;
