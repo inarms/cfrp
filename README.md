@@ -2,26 +2,33 @@
 
 English | [简体中文](./README_zh.md) | [日本語](./README_ja.md) | [한국어](./README_ko.md)
 
-A high-performance, asynchronous reverse proxy implemented in C++17 using Standalone Asio.
- `cfrp` is designed to be a lightweight and efficient alternative for exposing local services behind a NAT or firewall to the internet, inspired by the popular [fatedier/frp](https://github.com/fatedier/frp) project.
+`cfrp` is a high-performance, asynchronous reverse proxy built with C++17 and Standalone Asio.
+It is a lightweight way to expose services behind NAT or firewalls, inspired by [fatedier/frp](https://github.com/fatedier/frp).
+
+## Platform Support
+
+`cfrp` is a cross-platform tool and supports:
+- **Windows**
+- **Linux**
+- **macOS**
 
 ## Features
 
 - **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
-- **Zero-Config (Out-of-the-Box Security)**: Automatically generates SSL/QUIC certificates and CA chains if missing. No manual OpenSSL commands required.
-- **Multiplexing over TCP/QUIC**: Consolidates all traffic into a **single connection** using a custom-built, lightweight multiplexing protocol. Supports both traditional TCP and the modern **QUIC (via ngtcp2)** protocol.
+- **Zero-Config Security**: Generates SSL/QUIC certificates and CA chains when needed.
+- **Single Tunnel, Multiple Streams**: Multiplexes traffic over one TCP/QUIC connection.
 - **Auto Protocol Mode**:
-  - **Server**: Automatically handles both TCP and QUIC clients on the same port.
-  - **Client**: Attempts a QUIC connection first and automatically fails over to TCP if needed.
-- **Security**: Optional **SSL/TLS** encryption and **Token-based authentication**. Uses **wolfSSL** for high-performance cryptography and modern QUIC support.
-- **Bandwidth Efficiency**: Optional **Zstd compression** for both control and data channels, with automatic server-side detection.
-- **Resilient Client**: Automatic reconnection with exponential backoff if the server becomes unreachable. Supports **graceful cleanup** on exit.
-- **Dynamic Proxying**: Supports multiple **TCP**, **UDP**, **HTTP**, and **HTTPS (SNI)** proxies over a single control connection. Supports **hot-reloading** via a `conf.d` directory.
-- **Protocol Flexibility**: Supports **TCP**, **QUIC**, and **WebSocket** for the underlying tunnel. WebSocket support allows for firewall traversal and CDN (e.g. Cloudflare) integration.
+   - **Server**: Handles TCP and QUIC clients on the same port.
+   - **Client**: Tries QUIC first, then falls back to TCP.
+- **Secure by Design**: Optional SSL/TLS and token-based authentication with wolfSSL.
+- **Bandwidth Efficiency**: Optional Zstd compression for control and data channels.
+- **Resilient Client**: Automatic reconnect with exponential backoff and graceful cleanup.
+- **Dynamic Proxying**: TCP, UDP, HTTP, and HTTPS (SNI) proxies with `conf.d` hot-reload.
+- **Protocol Flexibility**: TCP, QUIC, and WebSocket tunnels (Cloudflare/CDN-friendly).
 - **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
 - **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
 - **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `wolfssl`, `ngtcp2`). Uses a compact **custom binary protocol** for minimal overhead.
+- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `wolfssl`, `ngtcp2`) and a compact binary protocol.
 - **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
 
 ## Zero-Config Security
@@ -107,7 +114,6 @@ If you have the server's CA certificate (`ca.crt`) and the token, you can quickl
 ```bash
 ./cfrp -c certs/ca.crt -t your_secret_token
 ```
-- **Forces Client Mode** even if `server.toml` is present.
 - If `client.toml` is **missing**, it generates a default one using the provided CA for verification and the provided token.
 - If `client.toml` **exists**, it uses the existing configuration (the `-c` and `-t` parameters are ignored).
 
@@ -142,12 +148,23 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 - **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode server"`
 
 #### Server Management
-| Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
-| :--- | :--- | :--- | :--- |
-| **Start** | `sudo systemctl start cfrp-server` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Start-Service cfrp-server` |
-| **Stop** | `sudo systemctl stop cfrp-server` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Stop-Service cfrp-server` |
-| **Status** | `systemctl status cfrp-server` | `sudo launchctl list \| grep cfrp-server` | `Get-Service cfrp-server` |
-| **Logs** | `journalctl -u cfrp-server -f` | `tail -f /var/log/cfrp-server.log` | Check `C:\Program Files\cfrp\cfrp.log` |
+##### Linux (systemd)
+- **Start:** `sudo systemctl start cfrp-server`
+- **Stop:** `sudo systemctl stop cfrp-server`
+- **Status:** `systemctl status cfrp-server`
+- **Logs:** `journalctl -u cfrp-server -f`
+
+##### macOS (launchd)
+- **Start:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
+- **Stop:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
+- **Status:** `sudo launchctl list | grep cfrp-server`
+- **Logs:** `tail -f /var/log/cfrp-server.log`
+
+##### Windows (PowerShell)
+- **Start:** `Start-Service cfrp-server`
+- **Stop:** `Stop-Service cfrp-server`
+- **Status:** `Get-Service cfrp-server`
+- **Logs:** Check `C:\Program Files\cfrp\cfrp.log`
 
 ---
 
@@ -172,11 +189,20 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 - **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode client"`
 
 #### Client Management
-| Action | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
-| :--- | :--- | :--- | :--- |
-| **Start** | `sudo systemctl start cfrp-client` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Start-Service cfrp-client` |
-| **Stop** | `sudo systemctl stop cfrp-client` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Stop-Service cfrp-client` |
-| **Reload Config** | `sudo systemctl restart cfrp-client` | `sudo launchctl unload ... && sudo launchctl load ...` | `Restart-Service cfrp-client` |
+##### Linux (systemd)
+- **Start:** `sudo systemctl start cfrp-client`
+- **Stop:** `sudo systemctl stop cfrp-client`
+- **Reload Config:** `sudo systemctl restart cfrp-client`
+
+##### macOS (launchd)
+- **Start:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+- **Stop:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+- **Reload Config:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist && sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+
+##### Windows (PowerShell)
+- **Start:** `Start-Service cfrp-client`
+- **Stop:** `Stop-Service cfrp-client`
+- **Reload Config:** `Restart-Service cfrp-client`
 
 > **Pro-Tip:** Use the `config.d/` directory (inside the config path) to add new proxies without restarting the service!
 

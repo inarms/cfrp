@@ -4,6 +4,13 @@
 
 基于 C++17 和 Standalone Asio 实现的高性能异步反向代理。`cfrp` 旨在作为一个轻量级且高效的替代方案，用于将 NAT 或防火墙后的本地服务暴露到互联网，其灵感源自流行的 [fatedier/frp](https://github.com/fatedier/frp) 项目。
 
+## 平台支持
+
+`cfrp` 是一个跨平台工具，支持：
+- **Windows**
+- **Linux**
+- **macOS**
+
 ## 特性
 
 - **高性能**: 基于 Standalone Asio 构建，支持非阻塞异步 I/O。

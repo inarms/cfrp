@@ -5,6 +5,13 @@ English | [简体中文](./README_zh.md) | 日本語 | [한국어](./README_ko.m
 Standalone Asio を使用して C++17 で実装された高性能な非同期リバースプロキシです。
 `cfrp` は、NAT やファイアウォールの背後にあるローカルサービスをインターネットに公開するための、軽量で効率的な代替手段として設計されており、人気のプロジェクト [fatedier/frp](https://github.com/fatedier/frp) からインスピレーションを得ています。
 
+## 対応プラットフォーム
+
+`cfrp` はクロスプラットフォームツールであり、以下に対応しています:
+- **Windows**
+- **Linux**
+- **macOS**
+
 ## 特徴
 
 - **高性能**: 非ブロッキング非同期 I/O のための Standalone Asio をベースに構築。
@@ -142,12 +149,23 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 - **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode server"`
 
 #### サーバー管理
-| アクション | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
-| :--- | :--- | :--- | :--- |
-| **起動** | `sudo systemctl start cfrp-server` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Start-Service cfrp-server` |
-| **停止** | `sudo systemctl stop cfrp-server` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist` | `Stop-Service cfrp-server` |
-| **ステータス** | `systemctl status cfrp-server` | `sudo launchctl list \| grep cfrp-server` | `Get-Service cfrp-server` |
-| **ログ** | `journalctl -u cfrp-server -f` | `tail -f /var/log/cfrp-server.log` | `C:\Program Files\cfrp\cfrp.log` を確認 |
+##### Linux (systemd)
+- **起動:** `sudo systemctl start cfrp-server`
+- **停止:** `sudo systemctl stop cfrp-server`
+- **ステータス:** `systemctl status cfrp-server`
+- **ログ:** `journalctl -u cfrp-server -f`
+
+##### macOS (launchd)
+- **起動:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
+- **停止:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
+- **ステータス:** `sudo launchctl list | grep cfrp-server`
+- **ログ:** `tail -f /var/log/cfrp-server.log`
+
+##### Windows (PowerShell)
+- **起動:** `Start-Service cfrp-server`
+- **停止:** `Stop-Service cfrp-server`
+- **ステータス:** `Get-Service cfrp-server`
+- **ログ:** `C:\Program Files\cfrp\cfrp.log` を確認
 
 ---
 
@@ -172,11 +190,20 @@ iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1)
 - **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode client"`
 
 #### クライアント管理
-| アクション | Linux (systemd) | macOS (launchd) | Windows (PowerShell) |
-| :--- | :--- | :--- | :--- |
-| **起動** | `sudo systemctl start cfrp-client` | `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Start-Service cfrp-client` |
-| **停止** | `sudo systemctl stop cfrp-client` | `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist` | `Stop-Service cfrp-client` |
-| **再読み込み** | `sudo systemctl restart cfrp-client` | `sudo launchctl unload ... && sudo launchctl load ...` | `Restart-Service cfrp-client` |
+##### Linux (systemd)
+- **起動:** `sudo systemctl start cfrp-client`
+- **停止:** `sudo systemctl stop cfrp-client`
+- **再読み込み:** `sudo systemctl restart cfrp-client`
+
+##### macOS (launchd)
+- **起動:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+- **停止:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+- **再読み込み:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist && sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
+
+##### Windows (PowerShell)
+- **起動:** `Start-Service cfrp-client`
+- **停止:** `Stop-Service cfrp-client`
+- **再読み込み:** `Restart-Service cfrp-client`
 
 > **プロのヒント:** `config.d/` ディレクトリ (設定パス内) を使用して、サービスを再起動せずに新しいプロキシを追加できます。
 
