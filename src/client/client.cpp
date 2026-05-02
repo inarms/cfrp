@@ -18,6 +18,7 @@
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
 #include "common/websocket_stream.h"
+#include <algorithm>
 #include <iostream>
 #include <zstd.h>
 #include <filesystem>
@@ -309,7 +310,7 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
       conf_timer_(io_context_),
       endpoint_(tcp::v4(), server_port),
       udp_endpoint_(udp::v4(), server_port),
-      udp_socket_(io_context_, udp::endpoint(udp::v4(), 0)),
+    udp_socket_(io_context_),
       reconnect_timer_(io_context_),
       handshake_timer_(io_context_) {
     
@@ -365,10 +366,22 @@ void Client::DoConnect() {
             }
 
             endpoint_ = *results.begin();
-            udp_endpoint_ = udp::endpoint(endpoint_.address(), endpoint_.port());
 
             if (current_protocol_ == "quic") {
-                DoQuicConnect(conn_id);
+                quic_endpoints_.clear();
+                for (const auto& result : results) {
+                    auto tcp_ep = result.endpoint();
+                    udp::endpoint candidate(tcp_ep.address(), tcp_ep.port());
+                    auto dup = std::find(quic_endpoints_.begin(), quic_endpoints_.end(), candidate);
+                    if (dup == quic_endpoints_.end()) {
+                        quic_endpoints_.push_back(candidate);
+                    }
+                }
+
+                quic_endpoint_index_ = 0;
+                if (!TryNextQuicEndpoint(conn_id, "initial resolve")) {
+                    HandleDisconnect("No usable QUIC endpoint from DNS results");
+                }
                 return;
             }
 
@@ -405,8 +418,55 @@ void Client::DoConnect() {
         });
 }
 
+bool Client::RebindUdpSocketForEndpoint(const udp::endpoint& endpoint) {
+    std::error_code ec;
+    if (udp_socket_.is_open()) {
+        udp_socket_.close(ec);
+    }
+
+    udp_socket_.open(endpoint.protocol(), ec);
+    if (ec) {
+        std::cerr << "Failed to open UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        return false;
+    }
+
+    udp::endpoint bind_ep(endpoint.protocol(), 0);
+    udp_socket_.bind(bind_ep, ec);
+    if (ec) {
+        std::cerr << "Failed to bind UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        std::error_code close_ec;
+        udp_socket_.close(close_ec);
+        return false;
+    }
+
+    return true;
+}
+
+bool Client::TryNextQuicEndpoint(int conn_id, const char* reason) {
+    if (conn_id != connection_id_) return false;
+
+    handshake_timer_.cancel();
+    if (quic_session_) {
+        quic_session_->close_session();
+        quic_session_.reset();
+    }
+
+    while (quic_endpoint_index_ < quic_endpoints_.size()) {
+        udp_endpoint_ = quic_endpoints_[quic_endpoint_index_++];
+        if (!RebindUdpSocketForEndpoint(udp_endpoint_)) {
+            continue;
+        }
+
+        std::cout << "Trying QUIC endpoint " << udp_endpoint_ << " (" << reason << ")" << std::endl;
+        DoQuicConnect(conn_id);
+        return true;
+    }
+
+    return false;
+}
+
 void Client::DoQuicConnect(int conn_id) {
-    std::cout << "Connecting to server via QUIC " << server_addr_ << ":" << server_port_ << "..." << std::endl;
+    std::cout << "Connecting to server via QUIC " << udp_endpoint_.address().to_string() << ":" << udp_endpoint_.port() << "..." << std::endl;
     quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
 
     if (!ssl_ctx_) {
@@ -419,6 +479,9 @@ void Client::DoQuicConnect(int conn_id) {
         handshake_timer_.async_wait([this, conn_id](std::error_code ec) {
             if (conn_id != connection_id_) return;
             if (!ec && current_protocol_ == "quic") {
+                if (TryNextQuicEndpoint(conn_id, "handshake timeout")) {
+                    return;
+                }
                 std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
                 HandleDisconnect("QUIC_TIMEOUT");
             }
@@ -440,6 +503,9 @@ void Client::DoQuicConnect(int conn_id) {
     quic_session_->set_on_closed([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
         if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
+        if (TryNextQuicEndpoint(conn_id, "session closed")) {
+            return;
+        }
         HandleDisconnect("QUIC session closed by peer");
     });
 
@@ -455,6 +521,14 @@ void Client::DoUdpRead() {
                     quic_session_->handle_packet(udp_recv_buf_, length);
                 }
                 DoUdpRead();
+                return;
+            }
+
+            if (ec != asio::error::operation_aborted) {
+                std::cerr << "Client UDP receive error on QUIC socket: " << ec.message() << std::endl;
+                if (udp_socket_.is_open()) {
+                    DoUdpRead();
+                }
             }
         });
 }
