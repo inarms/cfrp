@@ -91,6 +91,7 @@ private:
     size_t remote_window_size_;
     size_t consumed_since_last_update_ = 0;
     std::deque<uint8_t> read_buffer_;
+    size_t read_buffer_offset_ = 0;
     std::mutex mutex_;
     
     struct PendingRead {

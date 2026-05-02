@@ -1,0 +1,30 @@
+{
+    "C_Cpp.default.compilerPath": "/usr/bin/clang++",
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.default.intelliSenseMode": "macos-clang-arm64",
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.formatting": "clangFormat",
+    "C_Cpp.clang_format_path": "/usr/bin/clang-format",
+    "C_Cpp.useCompileCommands": true,
+    "C_Cpp.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "CMake.configureOnOpen": true,
+    "CMake.configureSettings": {
+        "CMAKE_TOOLCHAIN_FILE": "${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx",
+        "VCPKG_HOST_TRIPLET": "arm64-osx"
+    },
+    "CMake.defaultBuildPreset": "debug",
+    "CMake.generator": "Unix Makefiles",
+    "cmake.buildDirectory": "${sourceDir}/build",
+    "[cpp]": {
+        "editor.defaultFormatter": "xaver.clang-format",
+        "editor.formatOnSave": false
+    },
+    "files.exclude": {
+        "**/build": false,
+        "**/build_release": false,
+        "**/cmake-build-debug": false,
+        "**/.git": true
+    }
+}

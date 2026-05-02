@@ -18,6 +18,7 @@
 #include "common/websocket_utils.h"
 #include <iostream>
 #include <sstream>
+#include <array>
 
 namespace cfrp {
 namespace common {
@@ -53,7 +54,12 @@ void WebsocketStream::async_handshake(ssl::stream_base::handshake_type type, std
 
 void WebsocketStream::DoClientHandshake(std::function<void(std::error_code)> handler) {
     auto self = shared_from_this();
-    std::string key = "dGhlIHNhbXBsZSBub25jZQ=="; // Simplified for now, should be random
+    std::array<uint8_t, 16> nonce{};
+    std::uniform_int_distribution<int> dist(0, 255);
+    for (auto& b : nonce) {
+        b = static_cast<uint8_t>(dist(rng_));
+    }
+    std::string key = WebSocketUtils::GenerateClientKey(nonce.data(), nonce.size());
     
     std::stringstream ss;
     ss << "GET / HTTP/1.1\r\n";
@@ -64,21 +70,22 @@ void WebsocketStream::DoClientHandshake(std::function<void(std::error_code)> han
     ss << "Sec-WebSocket-Version: 13\r\n\r\n";
     
     auto request = std::make_shared<std::string>(ss.str());
-    underlying_->async_write(asio::buffer(*request), [this, self, request, handler](std::error_code ec, std::size_t) {
+    auto key_ptr = std::make_shared<std::string>(key);
+    underlying_->async_write(asio::buffer(*request), [this, self, request, key_ptr, handler](std::error_code ec, std::size_t) {
         if (ec) {
             handler(ec);
             return;
         }
-        
+
         auto response_buf = std::make_shared<std::vector<char>>(1024);
-        underlying_->async_read_some(asio::buffer(*response_buf), [this, self, response_buf, handler](std::error_code ec, std::size_t length) {
+        underlying_->async_read_some(asio::buffer(*response_buf), [this, self, response_buf, key_ptr, handler](std::error_code ec, std::size_t length) {
             if (ec) {
                 handler(ec);
                 return;
             }
             // Simple check for 101 Switching Protocols
             std::string resp(response_buf->data(), length);
-            if (resp.find("101 Switching Protocols") != std::string::npos) {
+            if (resp.find("101 Switching Protocols") != std::string::npos && WebSocketUtils::HasValidAcceptHeader(resp, *key_ptr)) {
                 handshaked_ = true;
                 handler(std::error_code());
             } else {

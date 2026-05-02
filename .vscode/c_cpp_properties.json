@@ -1,0 +1,46 @@
+{
+  "configurations": [
+    {
+      "name": "macOS",
+      "includePath": [
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/build/vcpkg_installed/arm64-osx/include",
+        "${workspaceFolder}/build/_deps",
+        "/usr/local/include",
+        "/usr/include"
+      ],
+      "defines": [
+        "DCFRP_VERSION=0.1.6",
+        "DASIO_USE_WOLFSSL",
+        "DTOML_HEADER_ONLY=0",
+        "DTOML_ENABLE_FORMATTERS=0",
+        "DWOLFSSL_MINSIZE",
+        "DNO_OLD_TLS",
+        "DNO_PSK",
+        "DNO_MD4",
+        "DNO_PWDBASED",
+        "DNO_DES3",
+        "DNO_RC4",
+        "DNO_DSA",
+        "DNO_DH",
+        "_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES"
+      ],
+      "compilerPath": "/usr/bin/clang++",
+      "cppStandard": "c++17",
+      "cStandard": "c17",
+      "intelliSenseMode": "macos-clang-arm64",
+      "macFrameworkPath": [
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
+      ],
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "browse": {
+        "path": [
+          "${workspaceFolder}/src",
+          "${workspaceFolder}/build/vcpkg_installed/arm64-osx/include"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}

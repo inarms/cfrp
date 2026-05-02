@@ -1,0 +1,39 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug cfrp (lldb)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/cfrp",
+      "args": [
+        "-c",
+        "server"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "console": "integratedTerminal",
+      "sourceLanguages": [
+        "cpp"
+      ],
+      "preLaunchTask": "Build: Debug"
+    },
+    {
+      "name": "Debug cfrp Client (lldb)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/cfrp",
+      "args": [
+        "-c",
+        "client"
+      ],
+      "cwd": "${workspaceFolder}",
+      "stopOnEntry": false,
+      "console": "integratedTerminal",
+      "sourceLanguages": [
+        "cpp"
+      ],
+      "preLaunchTask": "Build: Debug"
+    }
+  ]
+}

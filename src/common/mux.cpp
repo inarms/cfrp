@@ -15,6 +15,7 @@
  */
 
 #include "common/mux.h"
+#include "common/utils.h"
 #include <asio/read.hpp>
 #include <asio/write.hpp>
 #include <asio/post.hpp>
@@ -172,7 +173,7 @@ void MuxStream::handle_close() {
 }
 
 void MuxStream::check_cleanup() {
-    if (local_closed_ && remote_closed_ && read_buffer_.empty()) {
+    if (local_closed_ && remote_closed_ && (read_buffer_.size() == read_buffer_offset_)) {
         auto session = session_.lock();
         if (session) {
             session->remove_stream(id_);
@@ -183,7 +184,12 @@ void MuxStream::check_cleanup() {
 void MuxStream::do_read_from_buffer() {
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
-        if (read_buffer_.empty()) {
+        size_t available = read_buffer_.size() - read_buffer_offset_;
+        if (available == 0) {
+            if (read_buffer_offset_ > 0) {
+                read_buffer_.clear();
+                read_buffer_offset_ = 0;
+            }
             if (remote_closed_) {
                 auto handler = std::move(pr.handler);
                 pending_reads_.pop_front();
@@ -195,7 +201,7 @@ void MuxStream::do_read_from_buffer() {
             break;
         }
 
-        size_t to_copy = std::min(pr.buffer.size(), read_buffer_.size());
+        size_t to_copy = std::min(pr.buffer.size(), available);
         if (pr.read_all && to_copy < pr.buffer.size()) {
             if (remote_closed_) {
                 auto handler = std::move(pr.handler);
@@ -208,8 +214,15 @@ void MuxStream::do_read_from_buffer() {
             break;
         }
 
-        std::copy(read_buffer_.begin(), read_buffer_.begin() + to_copy, static_cast<uint8_t*>(pr.buffer.data()));
-        read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + to_copy);
+        std::copy(read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_),
+                  read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_ + to_copy),
+                  static_cast<uint8_t*>(pr.buffer.data()));
+        read_buffer_offset_ += to_copy;
+
+        if (read_buffer_offset_ >= 64 * 1024 || read_buffer_offset_ == read_buffer_.size()) {
+            read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_));
+            read_buffer_offset_ = 0;
+        }
         
         auto handler = std::move(pr.handler);
         pending_reads_.pop_front();
@@ -306,7 +319,7 @@ std::shared_ptr<MuxStream> Session::open_stream() {
 void Session::remove_stream(uint32_t stream_id) {
     std::lock_guard<std::mutex> lock(streams_mutex_);
     if (streams_.erase(stream_id) > 0) {
-        std::cout << "[MuxSession] Cleaned up and removed stream ID: " << stream_id << std::endl;
+        Logger::Debug("[MuxSession] Cleaned up and removed stream ID: " + std::to_string(stream_id));
     }
 }
 

@@ -18,6 +18,7 @@
 
 #include <string>
 #include <vector>
+#include <cstdint>
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/sha.h>
 #include <wolfssl/wolfcrypt/coding.h>
@@ -27,6 +28,23 @@ namespace common {
 
 class WebSocketUtils {
 public:
+    static std::string Base64Encode(const uint8_t* data, size_t len) {
+        word32 outLen = 0;
+        Base64_Encode(reinterpret_cast<const byte*>(data), static_cast<word32>(len), NULL, &outLen);
+
+        std::vector<byte> out(outLen);
+        Base64_Encode(reinterpret_cast<const byte*>(data), static_cast<word32>(len), out.data(), &outLen);
+
+        while (outLen > 0 && (out[outLen - 1] == '\0' || out[outLen - 1] == '\n' || out[outLen - 1] == '\r')) {
+            --outLen;
+        }
+        return std::string(reinterpret_cast<const char*>(out.data()), outLen);
+    }
+
+    static std::string GenerateClientKey(const uint8_t* nonce16, size_t len) {
+        return Base64Encode(nonce16, len);
+    }
+
     static std::string GenerateAcceptKey(const std::string& client_key) {
         std::string concat = client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
         
@@ -36,14 +54,12 @@ public:
         wc_ShaUpdate(&sha, (const byte*)concat.c_str(), (word32)concat.length());
         wc_ShaFinal(&sha, hash);
 
-        word32 outLen = 0;
-        // Calculate required base64 length
-        Base64_Encode(hash, SHA_DIGEST_SIZE, NULL, &outLen);
-        
-        std::vector<byte> out(outLen);
-        Base64_Encode(hash, SHA_DIGEST_SIZE, out.data(), &outLen);
-        
-        return std::string((const char*)out.data(), outLen);
+        return Base64Encode(hash, SHA_DIGEST_SIZE);
+    }
+
+    static bool HasValidAcceptHeader(const std::string& response, const std::string& client_key) {
+        const std::string expected = "Sec-WebSocket-Accept: " + GenerateAcceptKey(client_key);
+        return response.find(expected) != std::string::npos;
     }
 };
 

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -127,6 +128,35 @@ inline int64_t ParseBandwidth(const std::string& s) {
         return 0;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Logger  — simple levelled output gate
+// ---------------------------------------------------------------------------
+enum class LogLevel : int {
+    None  = 0,   // Suppress all output
+    Error = 1,   // Errors only
+    Info  = 2,   // Errors + informational messages  (default)
+    Debug = 3    // Everything
+};
+
+class Logger {
+public:
+    static void SetLevel(LogLevel level) noexcept { level_ = level; }
+    static LogLevel GetLevel() noexcept { return level_; }
+
+    static void Error(const std::string& msg) {
+        if (level_ >= LogLevel::Error) std::cerr << msg << '\n';
+    }
+    static void Info(const std::string& msg) {
+        if (level_ >= LogLevel::Info) std::cout << msg << '\n';
+    }
+    static void Debug(const std::string& msg) {
+        if (level_ >= LogLevel::Debug) std::cout << "[DEBUG] " << msg << '\n';
+    }
+
+private:
+    inline static LogLevel level_ = LogLevel::Info;
+};
 
 } // namespace common
 } // namespace cfrp

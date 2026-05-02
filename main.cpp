@@ -519,7 +519,7 @@ ca_file = "certs/ca.crt"
                 status_ofs << "Config:      " << config_path << "\n";
             }
 
-            server = std::shared_ptr<cfrp::server::Server>(new cfrp::server::Server(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients));
+            server = std::make_shared<cfrp::server::Server>(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients);
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
         } else if (config["client"] || (config["server"] && ca_provided)) {
@@ -543,7 +543,7 @@ ca_file = "certs/ca.crt"
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
-            client = std::shared_ptr<cfrp::client::Client>(new cfrp::client::Client(io_context, server_addr, server_port, token, client_name, ssl_config, compression, compression_level, conf_d, protocol));
+            client = std::make_shared<cfrp::client::Client>(io_context, server_addr, server_port, token, client_name, ssl_config, compression, compression_level, conf_d, protocol);
 
             std::ofstream status_ofs(status_path);
             if (status_ofs) {

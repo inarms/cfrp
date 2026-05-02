@@ -15,6 +15,7 @@
  */
 
 #include "common/quic_ngtcp2.h"
+#include "common/utils.h"
 #include <iostream>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
@@ -100,7 +101,12 @@ void QuicStream::handle_close() {
 void QuicStream::do_read() {
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
-        if (read_buf_.empty()) {
+        size_t available = read_buf_.size() - read_buf_offset_;
+        if (available == 0) {
+            if (read_buf_offset_ > 0) {
+                read_buf_.clear();
+                read_buf_offset_ = 0;
+            }
             if (closed_) {
                 auto h = std::move(pr.handler);
                 pending_reads_.pop_front();
@@ -110,7 +116,7 @@ void QuicStream::do_read() {
             break;
         }
 
-        size_t to_copy = std::min(pr.buffer.size(), read_buf_.size());
+        size_t to_copy = std::min(pr.buffer.size(), available);
         if (pr.read_all && to_copy < pr.buffer.size()) {
             if (closed_) {
                 auto h = std::move(pr.handler);
@@ -121,8 +127,15 @@ void QuicStream::do_read() {
             break;
         }
 
-        std::copy(read_buf_.begin(), read_buf_.begin() + to_copy, static_cast<uint8_t*>(pr.buffer.data()));
-        read_buf_.erase(read_buf_.begin(), read_buf_.begin() + to_copy);
+        std::copy(read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_),
+                  read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_ + to_copy),
+                  static_cast<uint8_t*>(pr.buffer.data()));
+        read_buf_offset_ += to_copy;
+
+        if (read_buf_offset_ >= 64 * 1024 || read_buf_offset_ == read_buf_.size()) {
+            read_buf_.erase(read_buf_.begin(), read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_));
+            read_buf_offset_ = 0;
+        }
         auto h = std::move(pr.handler);
         pending_reads_.pop_front();
         asio::post(get_executor(), [h, to_copy]() { h(std::error_code(), to_copy); });
@@ -151,7 +164,7 @@ namespace {
         return 0;
     }
     int handshake_completed(ngtcp2_conn *conn, void *user_data) {
-        std::cout << "[QUIC] Handshake completed successfully!" << std::endl;
+        Logger::Info("[QUIC] Handshake completed successfully!");
         static_cast<QuicSession*>(user_data)->trigger_connected();
         return 0;
     }
@@ -280,7 +293,7 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
     }
     
     if (res != 0) {
-        std::cerr << "[QUIC] Failed to create ngtcp2 connection: " << res << " (" << ngtcp2_strerror(res) << ")" << std::endl;
+        Logger::Error("[QUIC] Failed to create ngtcp2 connection: " + std::to_string(res) + " (" + ngtcp2_strerror(res) + ")");
         return;
     }
 
@@ -293,7 +306,7 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
     int res = ngtcp2_conn_read_pkt(conn_, &path_, nullptr, data, len, ts);
     if (res != 0) {
         if (res != NGTCP2_ERR_DRAINING) {
-            std::cerr << "[QUIC] Packet read error: " << ngtcp2_strerror(res) << " (" << res << ")" << std::endl;
+            Logger::Error("[QUIC] Packet read error: " + std::string(ngtcp2_strerror(res)) + " (" + std::to_string(res) + ")");
         }
     }
     send_packets();
@@ -316,7 +329,7 @@ void QuicSession::send_packets() {
         socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
         if (ec) {
             if (ec != asio::error::operation_aborted) {
-                std::cerr << "[QUIC] send_to error: " << ec.message() << std::endl;
+                Logger::Error("[QUIC] send_to error: " + ec.message());
             }
             break;
         }
@@ -335,7 +348,7 @@ std::shared_ptr<QuicStream> QuicSession::open_stream() {
     if (ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr) != 0) return nullptr;
     auto stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
     { std::lock_guard<std::mutex> lock(streams_mutex_); streams_[stream_id] = stream; }
-    std::cout << "[QUIC] Local stream opened: " << stream_id << std::endl;
+    Logger::Debug("[QUIC] Local stream opened: " + std::to_string(stream_id));
     return stream;
 }
 
@@ -413,7 +426,7 @@ void QuicSession::do_write() {
                     socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
                     if (ec) {
                         if (ec != asio::error::operation_aborted) {
-                            std::cerr << "[QUIC] do_write send_to error: " << ec.message() << std::endl;
+                            Logger::Error("[QUIC] do_write send_to error: " + ec.message());
                         }
                         break;
                     }
@@ -457,7 +470,7 @@ int QuicSession::on_stream_data(int64_t stream_id, const uint8_t* data, size_t l
             // New peer-initiated stream
             stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
             streams_[stream_id] = stream;
-            std::cout << "[QUIC] Peer stream started: " << stream_id << std::endl;
+            Logger::Debug("[QUIC] Peer stream started: " + std::to_string(stream_id));
             if (on_new_stream_cb_) {
                 auto cb = on_new_stream_cb_;
                 asio::post(get_executor(), [cb, stream]() { cb(stream); });

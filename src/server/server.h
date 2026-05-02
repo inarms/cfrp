@@ -35,6 +35,7 @@
 #include "common/mux.h"
 #include "common/quic_ngtcp2.h"
 #include "common/rate_limiter.h"
+#include "common/async_bridge.h"
 
 namespace cfrp {
 namespace server {
@@ -57,24 +58,6 @@ struct PortRange {
 
 class Server;
 class ControlSession;
-
-class Bridge : public std::enable_shared_from_this<Bridge> {
-public:
-    Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
-    void Start();
-
-private:
-    void DoRead(int direction);
-
-    std::shared_ptr<common::AsyncStream> s1_;
-    std::shared_ptr<common::AsyncStream> s2_;
-    std::shared_ptr<common::RateLimiter> rate_limiter_;
-    bool use_compression_;
-    char data1_[32768];
-    char data2_[32768];
-    uint32_t header1_;
-    uint32_t header2_;
-};
 
 // --- UDP Support ---
 

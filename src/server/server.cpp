@@ -27,158 +27,6 @@
 namespace cfrp {
 namespace server {
 
-// --- Bridge ---
-Bridge::Bridge(std::shared_ptr<common::AsyncStream> s1, std::shared_ptr<common::AsyncStream> s2, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
-    : s1_(std::move(s1)), s2_(std::move(s2)), rate_limiter_(std::move(rate_limiter)), use_compression_(use_compression) {}
-
-void Bridge::Start() {
-    DoRead(1);
-    DoRead(2);
-}
-
-void Bridge::DoRead(int direction) {
-    auto self(shared_from_this());
-    if (!use_compression_) {
-        auto from = (direction == 1) ? s1_ : s2_;
-        auto buf = (direction == 1) ? data1_ : data2_;
-
-        from->async_read_some(asio::buffer(buf, sizeof(data1_)),
-            [this, self, direction](std::error_code ec, std::size_t length) {
-                if (!ec) {
-                    auto to_inner = (direction == 1) ? s2_ : s1_;
-                    auto buf_inner = (direction == 1) ? data1_ : data2_;
-                    
-                    auto write_op = [this, self, direction, to_inner, buf_inner, length]() {
-                        to_inner->async_write(asio::buffer(buf_inner, length),
-                            [this, self, direction](std::error_code ec, std::size_t) {
-                                if (!ec) {
-                                    DoRead(direction);
-                                } else {
-                                    if (ec != asio::error::operation_aborted) {
-                                        std::cerr << "[Bridge] Write error (" << direction << "): " << ec.message() << std::endl;
-                                    }
-                                    s1_->close(); s2_->close();
-                                }
-                            });
-                    };
-
-                    if (rate_limiter_) {
-                        rate_limiter_->async_wait(length, std::move(write_op));
-                    } else {
-                        write_op();
-                    }
-                } else {
-                    if (ec != asio::error::operation_aborted && ec != asio::error::eof) {
-                        std::cerr << "[Bridge] Connection error (" << direction << "): " << ec.message() << std::endl;
-                    } else if (ec == asio::error::eof) {
-                        std::cout << "[Bridge] Connection closed by peer (" << direction << ")" << std::endl;
-                    }
-                    s1_->close(); s2_->close();
-                }
-            });
-    } else {
-        if (direction == 1) { // Raw -> Work (Compress & Frame)
-            s1_->async_read_some(asio::buffer(data1_, sizeof(data1_)),
-                [this, self](std::error_code ec, std::size_t length) {
-                    if (!ec) {
-                        size_t const cSizeBound = ZSTD_compressBound(length);
-                        std::vector<uint8_t> compressed(cSizeBound);
-                        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data1_, length, 1);
-                        
-                        uint32_t final_header;
-                        const void* write_buf;
-                        size_t write_len;
-
-                        if (!ZSTD_isError(cSize) && cSize < length) {
-                            final_header = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG);
-                            write_buf = compressed.data();
-                            write_len = cSize;
-                        } else {
-                            final_header = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(length));
-                            write_buf = data1_;
-                            write_len = length;
-                        }
-
-                        auto packet = std::make_shared<std::vector<uint8_t>>();
-                        packet->resize(sizeof(final_header) + write_len);
-                        std::memcpy(packet->data(), &final_header, sizeof(final_header));
-                        std::memcpy(packet->data() + sizeof(final_header), write_buf, write_len);
-
-                        auto write_op = [this, self, packet]() {
-                            s2_->async_write(asio::buffer(*packet), [this, self, packet](std::error_code ec, std::size_t) {
-                                if (!ec) {
-                                    DoRead(1);
-                                } else {
-                                    s1_->close(); s2_->close();
-                                }
-                            });
-                        };
-
-                        if (rate_limiter_) {
-                            rate_limiter_->async_wait(length, std::move(write_op));
-                        } else {
-                            write_op();
-                        }
-                    } else {
-                        s1_->close(); s2_->close();
-                    }
-                });
-        } else { // Work -> Raw (Unframe & Decompress)
-            s2_->async_read(asio::buffer(&header2_, sizeof(header2_)),
-                [this, self](std::error_code ec, std::size_t) {
-                    if (!ec) {
-                        uint32_t h2 = asio::detail::socket_ops::network_to_host_long(header2_);
-                        uint32_t len = h2 & protocol::LENGTH_MASK;
-                        bool compressed = (h2 & protocol::COMPRESSION_FLAG) != 0;
-                        if (len > 1024 * 1024) { s1_->close(); s2_->close(); return; }
-                        auto body = std::make_shared<std::vector<uint8_t>>(len);
-                        s2_->async_read(asio::buffer(*body), [this, self, body, compressed](std::error_code ec, std::size_t) {
-                            if (!ec) {
-                                if (compressed) {
-                                    unsigned long long const decodedSize = ZSTD_getFrameContentSize(body->data(), body->size());
-                                    if (decodedSize == ZSTD_CONTENTSIZE_ERROR || decodedSize == ZSTD_CONTENTSIZE_UNKNOWN) { 
-                                        s1_->close(); s2_->close(); return; 
-                                    }
-                                    auto decompressed = std::make_shared<std::vector<uint8_t>>(decodedSize);
-                                    size_t const dSize = ZSTD_decompress(decompressed->data(), decodedSize, body->data(), body->size());
-                                    if (ZSTD_isError(dSize)) { s1_->close(); s2_->close(); return; }
-                                    
-                                    auto write_op = [this, self, decompressed]() {
-                                        s1_->async_write(asio::buffer(*decompressed), [this, self, decompressed](std::error_code ec, std::size_t) {
-                                            if (!ec) DoRead(2); else { s1_->close(); s2_->close(); }
-                                        });
-                                    };
-
-                                    if (rate_limiter_) {
-                                        rate_limiter_->async_wait(decompressed->size(), std::move(write_op));
-                                    } else {
-                                        write_op();
-                                    }
-                                } else {
-                                    auto write_op = [this, self, body]() {
-                                        s1_->async_write(asio::buffer(*body), [this, self, body](std::error_code ec, std::size_t) {
-                                            if (!ec) DoRead(2); else { s1_->close(); s2_->close(); }
-                                        });
-                                    };
-
-                                    if (rate_limiter_) {
-                                        rate_limiter_->async_wait(body->size(), std::move(write_op));
-                                    } else {
-                                        write_op();
-                                    }
-                                }
-                            } else {
-                                s1_->close(); s2_->close();
-                            }
-                        });
-                    } else {
-                        s1_->close(); s2_->close();
-                    }
-                });
-        }
-    }
-}
-
 // --- UdpBridge ---
 UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter)
     : stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), socket_(socket), remote_endpoint_(remote_endpoint), use_compression_(use_compression) {
@@ -211,10 +59,21 @@ void UdpBridge::DoReadFromStream() {
 
                             if (compressed) {
                                 unsigned long long const decodedSize = ZSTD_getFrameContentSize(read_buf_.data(), len);
+                                if (decodedSize == ZSTD_CONTENTSIZE_ERROR ||
+                                    decodedSize == ZSTD_CONTENTSIZE_UNKNOWN ||
+                                    decodedSize > read_buf_.size()) {
+                                    stream_->close();
+                                    return;
+                                }
                                 decompressed.resize(decodedSize);
-                                ZSTD_decompress(decompressed.data(), decodedSize, read_buf_.data(), len);
+                                size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, read_buf_.data(), len);
+                                if (ZSTD_isError(dSize)) {
+                                    stream_->close();
+                                    return;
+                                }
+                                decompressed.resize(dSize);
                                 send_buf = decompressed.data();
-                                send_len = decodedSize;
+                                send_len = dSize;
                             }
 
                             auto send_op = [this, self, send_buf, send_len]() {
@@ -295,7 +154,7 @@ UdpProxyListener::UdpProxyListener(Server& server, asio::io_context& io_context,
       socket_(io_context, udp::endpoint(udp::v4(), port)),
       session_(session),
       proxy_name_(proxy_name) {
-    std::cout << "UDP Proxy listener started for [" << proxy_name_ << "] on port " << port << std::endl;
+    common::Logger::Info("UDP Proxy listener started for [" + proxy_name_ + "] on port " + std::to_string(port));
 }
 
 void UdpProxyListener::Start() {
@@ -305,7 +164,7 @@ void UdpProxyListener::Start() {
 void UdpProxyListener::Stop() {
     std::error_code ec;
     socket_.close(ec);
-    std::cout << "UDP Proxy listener for [" << proxy_name_ << "] stopped." << std::endl;
+    common::Logger::Info("UDP Proxy listener for [" + proxy_name_ + "] stopped.");
 }
 
 void UdpProxyListener::DoReceive() {
@@ -318,8 +177,8 @@ void UdpProxyListener::DoReceive() {
                 if (it == endpoint_to_ticket_.end()) {
                     ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_" + std::to_string(rand());
                     endpoint_to_ticket_[sender_endpoint_] = ticket;
-                    std::cout << "New UDP session for [" << proxy_name_ << "] from " << sender_endpoint_ << ", ticket: " << ticket << std::endl;
-                    
+                    common::Logger::Info("New UDP session for [" + proxy_name_ + "] from " + sender_endpoint_.address().to_string() + ":" + std::to_string(sender_endpoint_.port()) + ", ticket: " + ticket);
+
                     server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_, proxy_name_);
 
                     if (auto session = session_.lock()) {
@@ -331,7 +190,13 @@ void UdpProxyListener::DoReceive() {
                 } else {
                     ticket = it->second;
                 }
-                
+
+                DoReceive();
+                return;
+            }
+
+            if (ec != asio::error::operation_aborted && socket_.is_open()) {
+                common::Logger::Error("UDP receive error for [" + proxy_name_ + "]: " + ec.message());
                 DoReceive();
             }
         });
@@ -347,7 +212,7 @@ ProxyListener::ProxyListener(Server& server, asio::io_context& io_context, uint1
       acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
       session_(session),
       proxy_name_(proxy_name) {
-    std::cout << "Proxy listener started for [" << proxy_name_ << "] on port " << port << std::endl;
+    common::Logger::Info("Proxy listener started for [" + proxy_name_ + "] on port " + std::to_string(port));
 }
 
 void ProxyListener::Start() {
@@ -355,10 +220,10 @@ void ProxyListener::Start() {
 }
 
 void ProxyListener::Stop() {
-    std::cout << "Stopping proxy listener for [" << proxy_name_ << "]" << std::endl;
+    common::Logger::Info("Stopping proxy listener for [" + proxy_name_ + "]");
     std::error_code ec;
     acceptor_.close(ec);
-    std::cout << "Proxy listener for [" << proxy_name_ << "] stopped." << std::endl;
+    common::Logger::Info("Proxy listener for [" + proxy_name_ + "] stopped.");
 }
 
 void ProxyListener::DoAccept() {
@@ -366,15 +231,16 @@ void ProxyListener::DoAccept() {
     acceptor_.async_accept([this, self](std::error_code ec, tcp::socket socket) {
         if (ec) {
             if (ec != asio::error::operation_aborted) {
-                std::cerr << "Proxy accept error: " << ec.message() << std::endl;
+                common::Logger::Error("Proxy accept error: " + ec.message());
+                DoAccept();
             }
             return;
         }
 
         common::SetTcpKeepalive(socket);
         std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
-        std::cout << "New user connection for proxy [" << proxy_name_ << "], ticket: " << ticket << std::endl;
-        
+        common::Logger::Info("New user connection for proxy [" + proxy_name_ + "], ticket: " + ticket);
+
         server_.RegisterUserConn(ticket, std::move(socket), proxy_name_);
 
         if (auto session = session_.lock()) {
@@ -383,7 +249,7 @@ void ProxyListener::DoAccept() {
             m.ticket = ticket;
             session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
         }
-        
+
         DoAccept();
     });
 }
@@ -391,12 +257,12 @@ void ProxyListener::DoAccept() {
 // --- ControlSession ---
 void ControlSession::Start() {
     client_endpoint_ = stream_->remote_endpoint_string();
-    std::cout << "[Server] New " << stream_->protocol_name() << " client connecting from " << client_endpoint_ << "..." << std::endl;
+    common::Logger::Info("[Server] New " + stream_->protocol_name() + " client connecting from " + client_endpoint_ + "...");
     DoReadHeader();
 }
 
 void ControlSession::Stop() {
-    std::cout << "[Server] Client disconnected: " << client_endpoint_ << " [" << client_name_ << "]" << std::endl;
+    common::Logger::Info("[Server] Client disconnected: " + client_endpoint_ + " [" + client_name_ + "]");
     server_.ReleaseClientName(client_name_);
     for (auto& proxy : proxies_) {
         proxy->Stop();
@@ -439,7 +305,7 @@ void ControlSession::SendMessage(protocol::MessageType type, const std::vector<u
     auto self(shared_from_this());
     stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
         if (ec) {
-            std::cerr << "Failed to send message: " << ec.message() << std::endl;
+            common::Logger::Error("Failed to send message: " + ec.message());
         }
     });
 }
@@ -452,9 +318,14 @@ void ControlSession::DoReadHeader() {
                 uint32_t h = asio::detail::socket_ops::network_to_host_long(header_.body_length);
                 header_.body_length = h; // Store host-byte order back
                 uint32_t length = h & protocol::LENGTH_MASK;
+                if (length > protocol::MAX_CONTROL_MESSAGE_SIZE) {
+                    common::Logger::Error("Control message too large: " + std::to_string(length));
+                    Stop();
+                    return;
+                }
                 DoReadBody(length);
             } else {
-                std::cout << "Control session closed: " << ec.message() << std::endl;
+                common::Logger::Info("Control session closed: " + ec.message());
                 Stop();
             }
         });
@@ -472,22 +343,31 @@ void ControlSession::DoReadBody(uint32_t length) {
                     std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
                     if (is_compressed) {
                         unsigned long long const decodedSize = ZSTD_getFrameContentSize(data.data(), data.size());
-                        if (decodedSize != ZSTD_CONTENTSIZE_ERROR && decodedSize != ZSTD_CONTENTSIZE_UNKNOWN) {
-                            std::vector<uint8_t> decompressed(decodedSize);
-                            size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, data.data(), data.size());
-                            if (!ZSTD_isError(dSize)) {
-                                data = decompressed;
-                            }
+                        if (decodedSize == ZSTD_CONTENTSIZE_ERROR ||
+                            decodedSize == ZSTD_CONTENTSIZE_UNKNOWN ||
+                            decodedSize > protocol::MAX_DECOMPRESSED_SIZE) {
+                            common::Logger::Error("Invalid compressed control message size");
+                            Stop();
+                            return;
                         }
+                        std::vector<uint8_t> decompressed(decodedSize);
+                        size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, data.data(), data.size());
+                        if (ZSTD_isError(dSize)) {
+                            common::Logger::Error("Failed to decompress control message");
+                            Stop();
+                            return;
+                        }
+                        decompressed.resize(dSize);
+                        data = decompressed;
                     }
                     auto msg = protocol::Message::Decode(data);
                     HandleMessage(msg);
                 } catch (const std::exception& e) {
-                    std::cerr << "Failed to decode message: " << e.what() << std::endl;
+                    common::Logger::Error("Failed to decode message: " + std::string(e.what()));
                 }
                 DoReadHeader();
             } else {
-                std::cout << "Control session closed: " << ec.message() << std::endl;
+                common::Logger::Info("Control session closed: " + ec.message());
                 Stop();
             }
         });
@@ -500,7 +380,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     }
 
     if (!authenticated_) {
-        std::cerr << "Unauthenticated message received: " << static_cast<int>(msg.type) << std::endl;
+        common::Logger::Error("Unauthenticated message received: " + std::to_string(static_cast<int>(msg.type)));
         Stop();
         return;
     }
@@ -518,7 +398,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
         }
 
         if (type != "http" && type != "https" && !server_.IsPortAllowed(remote_port)) {
-            std::cerr << "[Server] Proxy registration rejected: port " << remote_port << " is not in allowed ranges." << std::endl;
+            common::Logger::Error("[Server] Proxy registration rejected: port " + std::to_string(remote_port) + " is not in allowed ranges.");
             protocol::RegisterProxyRespMessage resp;
             resp.status = "error";
             resp.message = "port not allowed";
@@ -548,7 +428,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             resp.name = name;
             SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
         } catch (const std::exception& e) {
-            std::cerr << "Failed to start proxy listener: " << e.what() << std::endl;
+            common::Logger::Error("Failed to start proxy listener: " + std::string(e.what()));
             protocol::RegisterProxyRespMessage resp;
             resp.status = "error";
             resp.message = e.what();
@@ -557,7 +437,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     } else if (msg.type == protocol::MessageType::UnregisterProxy) {
         auto m = protocol::UnregisterProxyMessage::Deserialize(msg.body);
         std::string name = m.name;
-        std::cout << "[Server] Unregistering proxy [" << name << "]" << std::endl;
+        common::Logger::Info("[Server] Unregistering proxy [" + name + "]");
         
         auto it = std::find_if(proxies_.begin(), proxies_.end(), [&](const std::shared_ptr<ProxyListener>& p) {
             return p->name() == name;
@@ -586,7 +466,7 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     protocol::LoginRespMessage resp;
 
     if (token != server_.GetToken()) {
-        std::cout << "Client authentication failed: invalid token." << std::endl;
+        common::Logger::Info("Client authentication failed: invalid token.");
         resp.status = "error";
         resp.message = "Invalid token";
         SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
@@ -595,7 +475,7 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     }
 
     if (!server_.IsClientAllowed(requested_name)) {
-        std::cout << "[Server] Client registration rejected: name [" << requested_name << "] is not in whitelist." << std::endl;
+        common::Logger::Info("[Server] Client registration rejected: name [" + requested_name + "] is not in whitelist.");
         resp.status = "error";
         resp.message = "client name not allowed";
         SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
@@ -604,9 +484,9 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     }
 
     client_name_ = server_.AllocateClientName(requested_name);
-    std::cout << "[Server] Client authenticated successfully (" << stream_->protocol_name() << "): " 
-                << client_endpoint_ << " as [" << client_name_ << "]" << std::endl;
-    std::cout << "[Server] Client [" << client_name_ << "] is READY." << std::endl;
+    common::Logger::Info("[Server] Client authenticated successfully (" + stream_->protocol_name() + "): "
+                + client_endpoint_ + " as [" + client_name_ + "]");
+    common::Logger::Info("[Server] Client [" + client_name_ + "] is READY.");
     authenticated_ = true;
     resp.status = "ok";
     resp.name = client_name_;
@@ -725,12 +605,20 @@ void Server::DoUdpRead() {
     udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
         [this, endpoint](std::error_code ec, std::size_t length) {
             if (!ec) {
-                auto it = quic_sessions_.find(*endpoint);
-                if (it == quic_sessions_.end()) {
+                std::shared_ptr<common::quic::QuicSession> session;
+                {
+                    std::lock_guard<std::mutex> lock(map_mutex_);
+                    auto it = quic_sessions_.find(*endpoint);
+                    if (it != quic_sessions_.end()) {
+                        session = it->second;
+                    }
+                }
+
+                if (!session) {
                     // Parse QUIC header to get CIDs
                     ngtcp2_version_cid vcid;
                     int res = ngtcp2_pkt_decode_version_cid(&vcid, udp_recv_buf_, length, 8);
-                    
+
                     if (res != 0) {
                         DoUdpRead();
                         return;
@@ -740,33 +628,41 @@ void Server::DoUdpRead() {
                     ngtcp2_cid_init(&n_dcid, vcid.dcid, vcid.dcidlen);
                     ngtcp2_cid_init(&n_scid, vcid.scid, vcid.scidlen);
 
-                    auto session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true);
-                    
+                    auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true);
+
                     if (!ssl_ctx_) {
                         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
                     }
-                    
-                    session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
+
+                    new_session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
                         auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true);
                         mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
                             HandleNewMuxStream(mux_session, new_stream);
                         });
                     });
 
-                    session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
+                    new_session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
                         std::cout << "[Server] QUIC session closed for " << *endpoint << std::endl;
                         std::lock_guard<std::mutex> lock(map_mutex_);
                         quic_sessions_.erase(*endpoint);
                     });
 
-                    session->init(ssl_ctx_->native_handle(), &n_dcid, &n_scid);
+                    new_session->init(ssl_ctx_->native_handle(), &n_dcid, &n_scid);
                     {
                         std::lock_guard<std::mutex> lock(map_mutex_);
-                        quic_sessions_[*endpoint] = session;
+                        auto it = quic_sessions_.find(*endpoint);
+                        if (it != quic_sessions_.end()) {
+                            session = it->second;
+                        } else {
+                            quic_sessions_[*endpoint] = new_session;
+                            session = new_session;
+                        }
                     }
-                    it = quic_sessions_.find(*endpoint);
                 }
-                it->second->handle_packet(udp_recv_buf_, length);
+
+                if (session) {
+                    session->handle_packet(udp_recv_buf_, length);
+                }
                 DoUdpRead();
                 return;
             }
@@ -879,7 +775,7 @@ void Server::DoAccept() {
 
 void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream) {
     if (stream->id() == 1) {
-        std::cout << "Control stream (ID 1) requested. Starting session..." << std::endl;
+        common::Logger::Info("Control stream (ID 1) requested. Starting session...");
         std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
     } else {
         // Work connection
@@ -896,7 +792,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                     std::lock_guard<std::mutex> lock(map_mutex_);
                     auto it_tcp = pending_user_conns_.find(ticket);
                     if (it_tcp != pending_user_conns_.end()) {
-                        std::cout << "Splicing user TCP connection and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
+                        common::Logger::Info("Splicing user TCP connection and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
                         auto initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
                         auto user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
                         auto proxy_name = it_tcp->second.proxy_name;
@@ -940,7 +836,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                                 stream->async_write(asio::buffer(*packet), [this, stream, packet, user_socket, use_compression, rl](std::error_code ec, std::size_t) {
                                     if (!ec) {
                                         auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
-                                        auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression, rl);
+                                        auto bridge = std::make_shared<common::Bridge>(user_stream, stream, use_compression, 1, rl);
                                         bridge->Start();
                                     } else {
                                         stream->close();
@@ -950,7 +846,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                                 stream->async_write(asio::buffer(*initial_data), [this, stream, initial_data, user_socket, use_compression, rl](std::error_code ec, std::size_t) {
                                     if (!ec) {
                                         auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
-                                        auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression, rl);
+                                        auto bridge = std::make_shared<common::Bridge>(user_stream, stream, use_compression, 1, rl);
                                         bridge->Start();
                                     } else {
                                         stream->close();
@@ -959,13 +855,13 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                             }
                         } else {
                             auto user_stream = std::make_shared<common::TcpStream>(std::move(*user_socket));
-                            auto bridge = std::make_shared<Bridge>(user_stream, stream, use_compression, rl);
+                            auto bridge = std::make_shared<common::Bridge>(user_stream, stream, use_compression, 1, rl);
                             bridge->Start();
                         }
                     } else {
                         auto it_udp = pending_udp_sessions_.find(ticket);
                         if (it_udp != pending_udp_sessions_.end()) {
-                            std::cout << "Splicing user UDP session and mux work stream for ticket: " << ticket << " (Compressed: " << use_compression << ")" << std::endl;
+                            common::Logger::Info("Splicing user UDP session and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
                             std::shared_ptr<common::RateLimiter> rl;
                             auto it_rl = proxy_rate_limiters_.find(it_udp->second.proxy_name);
                             if (it_rl != proxy_rate_limiters_.end()) rl = it_rl->second;
@@ -974,7 +870,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                             bridge->Start();
                             pending_udp_sessions_.erase(it_udp);
                         } else {
-                            std::cerr << "No pending connection/session for ticket: " << ticket << std::endl;
+                            common::Logger::Error("No pending connection/session for ticket: " + ticket);
                             stream->close();
                         }
                     }
@@ -986,7 +882,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
 void Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type) {
     std::lock_guard<std::mutex> lock(map_mutex_);
     vhost_routes_[domain] = {session, proxy_name, type};
-    std::cout << "[Server] Added vhost route: " << domain << " -> " << proxy_name << " (" << type << ")" << std::endl;
+    common::Logger::Info("[Server] Added vhost route: " + domain + " -> " + proxy_name + " (" + type + ")");
 }
 
 void Server::RemoveVhostRoute(const std::string& domain) {

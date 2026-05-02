@@ -42,9 +42,18 @@ struct Header {
 
 const uint32_t COMPRESSION_FLAG = 0x80000000;
 const uint32_t LENGTH_MASK = 0x7FFFFFFF;
+static constexpr uint32_t MAX_MESSAGE_SIZE = 1024 * 1024;
+static constexpr uint32_t MAX_CONTROL_MESSAGE_SIZE = 4 * 1024 * 1024;
+static constexpr unsigned long long MAX_DECOMPRESSED_SIZE = 16ULL * 1024 * 1024;
 
 class BinaryWriter {
 public:
+    explicit BinaryWriter(size_t reserve_bytes = 0) {
+        if (reserve_bytes > 0) {
+            data_.reserve(reserve_bytes);
+        }
+    }
+
     void WriteUint8(uint8_t v) { data_.push_back(v); }
     void WriteUint16(uint16_t v) {
         uint16_t net = asio::detail::socket_ops::host_to_network_short(v);
@@ -55,8 +64,7 @@ public:
         AppendBytes(&net, 4);
     }
     void WriteInt64(int64_t v) {
-        uint64_t net = asio::detail::socket_ops::host_to_network_long(static_cast<uint64_t>(v >> 32));
-        uint32_t net_high = static_cast<uint32_t>(net);
+        uint32_t net_high = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>((static_cast<uint64_t>(v) >> 32) & 0xFFFFFFFFULL));
         uint32_t net_low = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(v & 0xFFFFFFFF));
         AppendBytes(&net_high, 4);
         AppendBytes(&net_low, 4);
@@ -70,10 +78,16 @@ public:
         for (const auto& s : v) WriteString(s);
     }
     const std::vector<uint8_t>& GetData() const { return data_; }
+    std::vector<uint8_t> MoveData() { return std::move(data_); }
 private:
     void AppendBytes(const void* src, size_t len) {
         const uint8_t* p = static_cast<const uint8_t*>(src);
-        data_.insert(data_.end(), p, p + len);
+        if (len == 0) {
+            return;
+        }
+        size_t old_size = data_.size();
+        data_.resize(old_size + len);
+        std::memcpy(data_.data() + old_size, p, len);
     }
     std::vector<uint8_t> data_;
 };
@@ -146,7 +160,7 @@ struct LoginMessage {
         BinaryWriter w;
         w.WriteString(token);
         w.WriteString(name);
-        return w.GetData();
+        return w.MoveData();
     }
     static LoginMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
@@ -163,7 +177,7 @@ struct LoginRespMessage {
         w.WriteString(status);
         w.WriteString(name);
         w.WriteString(message);
-        return w.GetData();
+        return w.MoveData();
     }
     static LoginRespMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
@@ -184,7 +198,7 @@ struct RegisterProxyMessage {
         w.WriteUint16(remote_port);
         w.WriteStringVector(custom_domains);
         w.WriteInt64(bandwidth_limit);
-        return w.GetData();
+        return w.MoveData();
     }
     static RegisterProxyMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
@@ -201,7 +215,7 @@ struct RegisterProxyRespMessage {
         w.WriteString(status);
         w.WriteString(name);
         w.WriteString(message);
-        return w.GetData();
+        return w.MoveData();
     }
     static RegisterProxyRespMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
@@ -216,7 +230,7 @@ struct NewUserConnMessage {
         BinaryWriter w;
         w.WriteString(proxy_name);
         w.WriteString(ticket);
-        return w.GetData();
+        return w.MoveData();
     }
     static NewUserConnMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
@@ -229,7 +243,7 @@ struct UnregisterProxyMessage {
     std::vector<uint8_t> Serialize() const {
         BinaryWriter w;
         w.WriteString(name);
-        return w.GetData();
+        return w.MoveData();
     }
     static UnregisterProxyMessage Deserialize(const std::vector<uint8_t>& data) {
         BinaryReader r(data);
