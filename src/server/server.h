@@ -167,6 +167,8 @@ public:
 
     std::shared_ptr<common::RateLimiter> GetRateLimiter(const std::string& proxy_name);
     void CreateRateLimiter(const std::string& proxy_name, int64_t bytes_per_sec);
+    void RemoveRateLimiter(const std::string& proxy_name);
+    void ClearPendingForProxy(const std::string& proxy_name);
 
     std::string AllocateClientName(const std::string& requested_name);
     void ReleaseClientName(const std::string& name);

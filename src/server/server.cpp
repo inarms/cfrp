@@ -265,10 +265,14 @@ void ControlSession::Stop() {
     common::Logger::Info("[Server] Client disconnected: " + client_endpoint_ + " [" + client_name_ + "]");
     server_.ReleaseClientName(client_name_);
     for (auto& proxy : proxies_) {
+        server_.ClearPendingForProxy(proxy->name());
+        server_.RemoveRateLimiter(proxy->name());
         proxy->Stop();
     }
     proxies_.clear();
     for (auto& proxy : udp_proxies_) {
+        server_.ClearPendingForProxy(proxy->name());
+        server_.RemoveRateLimiter(proxy->name());
         proxy->Stop();
     }
     udp_proxies_.clear();
@@ -502,7 +506,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
       protocol_(protocol),
       ssl_config_(ssl_config),
       allowed_ports_(allowed_ports),
-      allowed_clients_(allowed_clients) {
+    allowed_clients_(allowed_clients) {
     
     if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
         if (ssl_config_.auto_generate) {
@@ -571,7 +575,6 @@ void Server::Run() {
 void Server::Stop() {
     std::cout << "Stopping server..." << std::endl;
     std::error_code ec;
-
     // 1. Stop accepting new connections
     acceptor_.close(ec);
     if (vhost_http_acceptor_) vhost_http_acceptor_->close(ec);
@@ -707,6 +710,29 @@ void Server::ReleaseClientName(const std::string& name) {
     auto it = std::find(active_client_names_.begin(), active_client_names_.end(), name);
     if (it != active_client_names_.end()) {
         active_client_names_.erase(it);
+    }
+}
+
+void Server::RemoveRateLimiter(const std::string& proxy_name) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    proxy_rate_limiters_.erase(proxy_name);
+}
+
+void Server::ClearPendingForProxy(const std::string& proxy_name) {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    for (auto it = pending_user_conns_.begin(); it != pending_user_conns_.end(); ) {
+        if (it->second.proxy_name == proxy_name) {
+            it = pending_user_conns_.erase(it); // tcp::socket dtor closes the fd
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = pending_udp_sessions_.begin(); it != pending_udp_sessions_.end(); ) {
+        if (it->second.proxy_name == proxy_name) {
+            it = pending_udp_sessions_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 

@@ -265,6 +265,10 @@ void Session::start(std::function<void(std::shared_ptr<MuxStream>)> on_new_strea
 }
 
 void Session::stop() {
+    // Clear the callback first to break any shared_ptr cycle where a caller
+    // captures 'mux_session' (shared_ptr<Session>) inside the on_new_stream_ lambda.
+    on_new_stream_ = nullptr;
+
     heartbeat_timer_.cancel();
     underlying_stream_->close();
     std::lock_guard<std::mutex> lock(streams_mutex_);

@@ -169,7 +169,8 @@ namespace {
         return 0;
     }
     int get_new_connection_id(ngtcp2_conn *conn, ngtcp2_cid *cid, uint8_t *token, size_t cidlen, void *user_data) {
-        WC_RNG rng; wc_InitRng(&rng);
+        WC_RNG rng;
+        if (wc_InitRng(&rng) != 0) return NGTCP2_ERR_CALLBACK_FAILURE;
         wc_RNG_GenerateBlock(&rng, cid->data, (word32)cidlen);
         cid->datalen = cidlen;
         wc_RNG_GenerateBlock(&rng, token, NGTCP2_STATELESS_RESET_TOKENLEN);
@@ -177,7 +178,8 @@ namespace {
         return 0;
     }
     void rand_cb(uint8_t *dest, size_t destlen, const ngtcp2_rand_ctx *rctx) {
-        WC_RNG rng; wc_InitRng(&rng);
+        WC_RNG rng;
+        if (wc_InitRng(&rng) != 0) return;
         wc_RNG_GenerateBlock(&rng, dest, (word32)destlen);
         wc_FreeRng(&rng);
     }
