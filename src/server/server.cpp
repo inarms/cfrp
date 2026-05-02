@@ -768,6 +768,14 @@ void Server::DoUdpRead() {
                 }
                 it->second->handle_packet(udp_recv_buf_, length);
                 DoUdpRead();
+                return;
+            }
+
+            if (ec != asio::error::operation_aborted) {
+                std::cerr << "[Server] UDP receive error on QUIC socket: " << ec.message() << std::endl;
+                if (udp_socket_.is_open()) {
+                    DoUdpRead();
+                }
             }
         });
 }

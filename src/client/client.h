@@ -104,6 +104,8 @@ public:
 private:
     void DoConnect();
     void DoQuicConnect(int conn_id);
+    bool TryNextQuicEndpoint(int conn_id, const char* reason);
+    bool RebindUdpSocketForEndpoint(const udp::endpoint& endpoint);
     void DoUdpRead();
     void OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream);
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
@@ -152,6 +154,8 @@ private:
     int reconnect_delay_sec_ = 0;
     int connection_id_ = 0;
     std::string current_protocol_;
+    std::vector<udp::endpoint> quic_endpoints_;
+    size_t quic_endpoint_index_ = 0;
 
     // ngtcp2 state
     std::shared_ptr<common::quic::QuicSession> quic_session_;
