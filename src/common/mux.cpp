@@ -19,7 +19,6 @@
 #include <asio/read.hpp>
 #include <asio/write.hpp>
 #include <asio/post.hpp>
-#include <iostream>
 
 namespace cfrp {
 namespace common {

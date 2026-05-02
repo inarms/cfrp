@@ -68,8 +68,6 @@ public:
 
 private:
     void DoReadFromStream();
-    void DoWriteToStream(const std::vector<uint8_t>& data);
-    void HandleUdpPacket(const std::vector<uint8_t>& data);
 
     std::shared_ptr<common::AsyncStream> stream_;
     std::shared_ptr<common::RateLimiter> rate_limiter_;

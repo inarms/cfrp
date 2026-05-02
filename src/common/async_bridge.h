@@ -51,7 +51,6 @@ private:
     int compression_level_;
     char data1_[32768];
     char data2_[32768];
-    uint32_t header1_{};
     uint32_t header2_{};
 };
 

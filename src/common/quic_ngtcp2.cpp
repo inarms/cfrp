@@ -16,7 +16,6 @@
 
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
-#include <iostream>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/quic.h>

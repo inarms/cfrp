@@ -100,54 +100,6 @@ void UdpBridge::DoReadFromStream() {
         });
 }
 
-void UdpBridge::DoWriteToStream(const std::vector<uint8_t>& data) {
-    auto self(shared_from_this());
-    auto buf = std::make_shared<std::vector<uint8_t>>();
-    
-    uint16_t header;
-    const void* write_data = data.data();
-    size_t write_len = data.size();
-    std::vector<uint8_t> compressed;
-
-    if (use_compression_) {
-        size_t const cSizeBound = ZSTD_compressBound(data.size());
-        compressed.resize(cSizeBound);
-        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, data.data(), data.size(), 1);
-        if (!ZSTD_isError(cSize) && cSize < data.size()) {
-            header = static_cast<uint16_t>(cSize) | 0x8000;
-            write_data = compressed.data();
-            write_len = cSize;
-        } else {
-            header = static_cast<uint16_t>(data.size());
-        }
-    } else {
-        header = static_cast<uint16_t>(data.size());
-    }
-
-    uint16_t n_header = asio::detail::socket_ops::host_to_network_short(header);
-    buf->resize(sizeof(n_header) + write_len);
-    std::memcpy(buf->data(), &n_header, sizeof(n_header));
-    std::memcpy(buf->data() + sizeof(n_header), write_data, write_len);
-
-    auto write_op = [this, self, buf]() {
-        stream_->async_write(asio::buffer(*buf), [this, self, buf](std::error_code ec, std::size_t) {
-            if (ec) {
-                stream_->close();
-            }
-        });
-    };
-
-    if (rate_limiter_) {
-        rate_limiter_->async_wait(data.size(), std::move(write_op));
-    } else {
-        write_op();
-    }
-}
-
-void UdpBridge::HandleUdpPacket(const std::vector<uint8_t>& data) {
-    DoWriteToStream(data);
-}
-
 // --- UdpProxyListener ---
 UdpProxyListener::UdpProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name)
     : server_(server),
