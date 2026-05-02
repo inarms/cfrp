@@ -331,24 +331,40 @@ void Client::DoQuicConnect(int conn_id) {
     std::cout << "Connecting to server via QUIC " << udp_endpoint_.address().to_string() << ":" << udp_endpoint_.port() << "..." << std::endl;
     quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
 
-    if (!ssl_ctx_) {
-        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
-    }
-    quic_session_->init(ssl_ctx_->native_handle());
+    if (!quic_ssl_ctx_) {
+        quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+        quic_ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
 
-    if (protocol_ == "auto") {
-        handshake_timer_.expires_after(std::chrono::seconds(5));
-        handshake_timer_.async_wait([this, conn_id](std::error_code ec) {
-            if (conn_id != connection_id_) return;
-            if (!ec && current_protocol_ == "quic") {
-                if (TryNextQuicEndpoint(conn_id, "handshake timeout")) {
-                    return;
-                }
-                std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
-                HandleDisconnect("QUIC_TIMEOUT");
+        if (ssl_config_.verify_peer) {
+            quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_peer);
+            if (!ssl_config_.ca_file.empty()) {
+                quic_ssl_ctx_->load_verify_file(ssl_config_.ca_file);
+            } else {
+                quic_ssl_ctx_->set_default_verify_paths();
             }
-        });
+        } else {
+            quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
+        }
     }
+    quic_session_->init(quic_ssl_ctx_->native_handle());
+
+    handshake_timer_.expires_after(std::chrono::seconds(5));
+    handshake_timer_.async_wait([this, conn_id](std::error_code ec) {
+        if (conn_id != connection_id_) return;
+        if (ec || current_protocol_ != "quic") return;
+
+        if (protocol_ == "auto") {
+            if (TryNextQuicEndpoint(conn_id, "handshake timeout")) {
+                return;
+            }
+            std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
+            HandleDisconnect("QUIC_TIMEOUT");
+            return;
+        }
+
+        common::Logger::Error("QUIC handshake timed out");
+        HandleDisconnect("QUIC handshake timed out");
+    });
 
     quic_session_->set_on_connected([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
         if (conn_id != connection_id_) return;
@@ -441,19 +457,29 @@ void Client::HandleDisconnect(const std::string& reason) {
 
     if (stopping_) return;
 
+    bool immediate_failover = false;
     if (protocol_ == "auto") {
         if (current_protocol_ == "quic") {
             common::Logger::Info("Switching to TCP failover...");
             current_protocol_ = "tcp";
-            reconnect_delay_sec_ = 0; // Immediate failover
+            immediate_failover = true;
         } else if (current_protocol_ == "tcp") {
             common::Logger::Info("Switching to WebSocket failover...");
             current_protocol_ = "websocket";
-            reconnect_delay_sec_ = 0; // Immediate failover
+            immediate_failover = true;
         } else {
             // Already on WebSocket, try QUIC again for the next reconnection cycle
             current_protocol_ = "quic";
         }
+    }
+
+    if (immediate_failover) {
+        asio::post(io_context_, [this]() {
+            if (!stopping_) {
+                DoConnect();
+            }
+        });
+        return;
     }
 
     ScheduleReconnect();

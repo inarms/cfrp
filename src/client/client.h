@@ -121,6 +121,7 @@ private:
     bool compression_ = false;
     int compression_level_ = 1;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
+    std::unique_ptr<asio::ssl::context> quic_ssl_ctx_;
     
     tcp::endpoint endpoint_;
     udp::endpoint udp_endpoint_;
