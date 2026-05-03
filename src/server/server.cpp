@@ -701,6 +701,13 @@ void Server::DoAccept() {
 
             common::SetTcpKeepalive(socket);
 
+            std::string peer_addr;
+            {
+                std::error_code peer_ec;
+                auto ep = socket.remote_endpoint(peer_ec);
+                if (!peer_ec) peer_addr = ep.address().to_string() + ":" + std::to_string(ep.port());
+            }
+
             std::shared_ptr<common::AsyncStream> stream;            if (ssl_config_.enable) {
                 stream = std::make_shared<common::SslStream>(std::move(socket), *ssl_ctx_);
             } else {
@@ -711,7 +718,7 @@ void Server::DoAccept() {
                 stream = std::make_shared<common::WebsocketStream>(stream, false);
             }
 
-            stream->async_handshake(asio::ssl::stream_base::server, [this, stream](std::error_code ec) {
+            stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr](std::error_code ec) {
                 if (!ec) {
                     auto start_mux = [this](std::shared_ptr<common::AsyncStream> s) {
                         auto mux_session = std::make_shared<common::mux::Session>(s, true);
@@ -743,7 +750,7 @@ void Server::DoAccept() {
                         start_mux(stream);
                     }
                 } else {
-                    std::cerr << "SSL handshake failed: " << ec.message() << std::endl;
+                    std::cerr << "[Server] TLS handshake failed from " << peer_addr << ": " << ec.message() << " (likely a non-TLS probe)" << std::endl;
                 }
             });
             

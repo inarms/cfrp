@@ -148,10 +148,10 @@ public:
         if (level_ >= LogLevel::Error) std::cerr << msg << '\n';
     }
     static void Info(const std::string& msg) {
-        if (level_ >= LogLevel::Info) std::cout << msg << '\n';
+        if (level_ >= LogLevel::Info) std::cout << msg << std::endl;
     }
     static void Debug(const std::string& msg) {
-        if (level_ >= LogLevel::Debug) std::cout << "[DEBUG] " << msg << '\n';
+        if (level_ >= LogLevel::Debug) std::cout << "[DEBUG] " << msg << std::endl;
     }
 
 private:

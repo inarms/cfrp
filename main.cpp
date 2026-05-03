@@ -44,6 +44,7 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
+    std::cout << std::unitbuf;  // Disable stdout buffering (important when stdout is a pipe, e.g. Docker/Podman)
     wolfSSL_Init();
     std::string exe_path = cfrp::common::GetExecutablePath();
     std::string exe_dir = exe_path.empty() ? "." : fs::path(exe_path).parent_path().string();
