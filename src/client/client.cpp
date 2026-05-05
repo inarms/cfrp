@@ -257,6 +257,12 @@ void Client::DoConnect() {
                     if (conn_id != connection_id_) return;
                     if (!ec) {
                         endpoint_ = connected_endpoint;
+                        std::error_code local_ec;
+                        auto local_endpoint = socket_ptr->local_endpoint(local_ec);
+                        if (!local_ec) {
+                            common::Logger::Info("Client TCP local endpoint: " + local_endpoint.address().to_string() + ":" + std::to_string(local_endpoint.port()) +
+                                                " -> " + connected_endpoint.address().to_string() + ":" + std::to_string(connected_endpoint.port()));
+                        }
                         common::SetTcpKeepalive(*socket_ptr);
                         std::shared_ptr<common::AsyncStream> stream;
                         if (ssl_config_.enable) {
