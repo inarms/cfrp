@@ -91,8 +91,10 @@ private:
     size_t local_window_size_;
     size_t remote_window_size_;
     size_t consumed_since_last_update_ = 0;
-    std::deque<uint8_t> read_buffer_;
-    size_t read_buffer_offset_ = 0;
+    
+    // Improved read buffer: queue of frame bodies instead of byte deque
+    std::deque<std::vector<uint8_t>> read_queue_;
+    size_t read_queue_offset_ = 0;
     
     struct PendingRead {
         asio::mutable_buffer buffer;
@@ -112,7 +114,9 @@ public:
 
     std::shared_ptr<MuxStream> open_stream();
     void remove_stream(uint32_t stream_id);
-    void async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler = nullptr);
+
+    // Optimized write: supports scatter-gather and optional body ownership
+    void async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler = nullptr, std::vector<uint8_t>&& body_storage = {});
 
     asio::any_io_executor get_executor() { return strand_; }
     asio::strand<asio::any_io_executor>& strand() { return strand_; }
@@ -136,7 +140,9 @@ private:
     std::map<uint32_t, std::shared_ptr<MuxStream>> streams_;
     
     struct PendingWrite {
-        std::vector<uint8_t> data;
+        uint8_t header_data[Header::size];
+        asio::const_buffer body;
+        std::vector<uint8_t> body_storage; // Used when we need to own the data
         std::function<void(std::error_code)> handler;
     };
     std::deque<std::shared_ptr<PendingWrite>> write_queue_;

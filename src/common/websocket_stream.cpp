@@ -188,6 +188,21 @@ void WebsocketStream::async_write(asio::const_buffer buffer, std::function<void(
     });
 }
 
+void WebsocketStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
+    // Fallback: merge buffers
+    size_t total_size = 0;
+    for (const auto& b : buffers) total_size += b.size();
+    auto temp = std::make_shared<std::vector<uint8_t>>(total_size);
+    size_t offset = 0;
+    for (const auto& b : buffers) {
+        std::memcpy(temp->data() + offset, b.data(), b.size());
+        offset += b.size();
+    }
+    async_write(asio::buffer(*temp), [temp, handler](std::error_code ec, std::size_t n) {
+        handler(ec, n);
+    });
+}
+
 void WebsocketStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
     // For simplicity, each async_read_some will read one full WS frame.
     // In a production-grade implementation, we'd need to handle fragmentation and multi-frame reads.

@@ -69,6 +69,21 @@ void QuicStream::async_write(asio::const_buffer buffer, std::function<void(std::
     session->write_stream(stream_id_, static_cast<const uint8_t*>(buffer.data()), buffer.size(), std::move(handler));
 }
 
+void QuicStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
+    // Fallback: merge buffers
+    size_t total_size = 0;
+    for (const auto& b : buffers) total_size += b.size();
+    auto temp = std::make_shared<std::vector<uint8_t>>(total_size);
+    size_t offset = 0;
+    for (const auto& b : buffers) {
+        std::memcpy(temp->data() + offset, b.data(), b.size());
+        offset += b.size();
+    }
+    async_write(asio::buffer(*temp), [temp, handler](std::error_code ec, std::size_t n) {
+        handler(ec, n);
+    });
+}
+
 void QuicStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
     auto session = session_.lock();
     if (!session) {

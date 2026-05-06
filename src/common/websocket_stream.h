@@ -34,6 +34,9 @@ public:
     void async_write(asio::const_buffer buffer, 
                      std::function<void(std::error_code, std::size_t)> handler) override;
 
+    void async_write(const std::vector<asio::const_buffer>& buffers, 
+                     std::function<void(std::error_code, std::size_t)> handler) override;
+
     void async_read(asio::mutable_buffer buffer,
                     std::function<void(std::error_code, std::size_t)> handler) override;
 

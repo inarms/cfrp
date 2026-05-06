@@ -90,8 +90,6 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     }
 
     size_t length = buffer.size();
-    // std::cout << "[MuxStream " << id_ << "] async_write: " << length << " bytes" << std::endl;
-    std::vector<uint8_t> body(static_cast<const uint8_t*>(buffer.data()), static_cast<const uint8_t*>(buffer.data()) + length);
     
     Header h;
     h.version = 0;
@@ -100,7 +98,9 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     h.stream_id = id_;
     h.length = static_cast<uint32_t>(length);
     
-    session->async_send_frame(h, std::move(body), [self, handler, length](std::error_code ec) {
+    // Zero-copy write: pass the user's buffer directly to the session.
+    // The AsyncStream contract guarantees buffer validity until handler is called.
+    session->async_send_frame(h, buffer, [self, handler, length](std::error_code ec) {
         if (!ec) {
             handler(ec, length);
         } else {
@@ -181,7 +181,8 @@ void MuxStream::handle_data(std::vector<uint8_t> data) {
         });
         return;
     }
-    read_buffer_.insert(read_buffer_.end(), data.begin(), data.end());
+    // Reduced churn: push the whole vector into the queue instead of copying bytes to deque
+    read_queue_.push_back(std::move(data));
     do_read_from_buffer();
 }
 
@@ -208,7 +209,7 @@ void MuxStream::handle_close() {
 }
 
 void MuxStream::check_cleanup() {
-    if (local_closed_ && remote_closed_ && (read_buffer_.size() == read_buffer_offset_)) {
+    if (local_closed_ && remote_closed_ && read_queue_.empty()) {
         auto session = session_.lock();
         if (session) {
             session->remove_stream(id_);
@@ -219,55 +220,60 @@ void MuxStream::check_cleanup() {
 void MuxStream::do_read_from_buffer() {
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
-        size_t available = read_buffer_.size() - read_buffer_offset_;
-        if (available == 0) {
-            if (read_buffer_offset_ > 0) {
-                read_buffer_.clear();
-                read_buffer_offset_ = 0;
-            }
-            if (remote_closed_) {
-                auto handler = std::move(pr.handler);
-                pending_reads_.pop_front();
-                asio::post(strand_, [handler]() {
-                    handler(asio::error::eof, 0);
-                });
-                continue;
-            }
-            break;
-        }
-
-        size_t to_copy = std::min(pr.buffer.size(), available);
-        if (pr.read_all && to_copy < pr.buffer.size()) {
-            if (remote_closed_) {
-                auto handler = std::move(pr.handler);
-                pending_reads_.pop_front();
-                asio::post(strand_, [handler]() {
-                    handler(asio::error::eof, 0);
-                });
-                continue;
-            }
-            break;
-        }
-
-        std::copy(read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_),
-                  read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_ + to_copy),
-                  static_cast<uint8_t*>(pr.buffer.data()));
-        read_buffer_offset_ += to_copy;
-
-        if (read_buffer_offset_ >= 64 * 1024 || read_buffer_offset_ == read_buffer_.size()) {
-            read_buffer_.erase(read_buffer_.begin(), read_buffer_.begin() + static_cast<std::ptrdiff_t>(read_buffer_offset_));
-            read_buffer_offset_ = 0;
-        }
         
+        if (read_queue_.empty()) {
+            if (remote_closed_) {
+                auto handler = std::move(pr.handler);
+                pending_reads_.pop_front();
+                asio::post(strand_, [handler]() {
+                    handler(asio::error::eof, 0);
+                });
+                continue;
+            }
+            break;
+        }
+
+        size_t total_copied = 0;
+        size_t buffer_remaining = pr.buffer.size();
+
+        // Check if we can fulfill read_all
+        if (pr.read_all) {
+            size_t available = 0;
+            for (const auto& vec : read_queue_) available += vec.size();
+            available -= read_queue_offset_;
+            
+            if (available < buffer_remaining && !remote_closed_) {
+                break; // Wait for more data
+            }
+        }
+
+        while (buffer_remaining > 0 && !read_queue_.empty()) {
+            auto& front_vec = read_queue_.front();
+            size_t vec_available = front_vec.size() - read_queue_offset_;
+            size_t to_copy = std::min(buffer_remaining, vec_available);
+
+            std::memcpy(static_cast<uint8_t*>(pr.buffer.data()) + total_copied,
+                        front_vec.data() + read_queue_offset_, to_copy);
+
+            total_copied += to_copy;
+            buffer_remaining -= to_copy;
+            read_queue_offset_ += to_copy;
+
+            if (read_queue_offset_ == front_vec.size()) {
+                read_queue_.pop_front();
+                read_queue_offset_ = 0;
+            }
+        }
+
         auto handler = std::move(pr.handler);
         pending_reads_.pop_front();
         
-        asio::post(strand_, [handler, to_copy]() {
-            handler(std::error_code(), to_copy);
+        asio::post(strand_, [handler, total_copied]() {
+            handler(std::error_code(), total_copied);
         });
 
-        // Send window update to peer when a significant amount of data is consumed from our local buffer
-        consumed_since_last_update_ += to_copy;
+        // Send window update to peer
+        consumed_since_last_update_ += total_copied;
         if (consumed_since_last_update_ >= 128 * 1024) {
             auto session = session_.lock();
             if (session) {
@@ -373,20 +379,24 @@ void Session::remove_stream(uint32_t stream_id) {
     }
 }
 
-void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler) {
+void Session::async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler, std::vector<uint8_t>&& body_storage) {
     if (!strand_.running_in_this_thread()) {
-        asio::post(strand_, [this, self = shared_from_this(), h, body = std::move(body), handler]() mutable {
-            async_send_frame(h, std::move(body), handler);
+        asio::post(strand_, [this, self = shared_from_this(), h, body, handler, bs = std::move(body_storage)]() mutable {
+            async_send_frame(h, body, handler, std::move(bs));
         });
         return;
     }
 
     auto pw = std::make_shared<PendingWrite>();
-    pw->data.resize(Header::size + body.size());
-    h.encode(pw->data.data());
-    if (!body.empty()) {
-        std::memcpy(pw->data.data() + Header::size, body.data(), body.size());
+    h.encode(pw->header_data);
+    pw->body = body;
+    pw->body_storage = std::move(body_storage);
+    
+    // If we have body_storage and body is empty, it might mean the caller wants us to use body_storage as body
+    if (pw->body.size() == 0 && !pw->body_storage.empty()) {
+        pw->body = asio::buffer(pw->body_storage);
     }
+    
     pw->handler = std::move(handler);
 
     write_queue_.push_back(pw);
@@ -494,7 +504,16 @@ void Session::do_write() {
     auto pw = write_queue_.front();
 
     auto self = shared_from_this();
-    underlying_stream_->async_write(asio::buffer(pw->data),
+    
+    // Scatter-gather write: header and body sent together without merging into a single buffer.
+    std::vector<asio::const_buffer> write_buffers;
+    write_buffers.reserve(2);
+    write_buffers.push_back(asio::buffer(pw->header_data, Header::size));
+    if (pw->body.size() > 0) {
+        write_buffers.push_back(pw->body);
+    }
+
+    underlying_stream_->async_write(write_buffers,
         asio::bind_executor(strand_, [this, self, pw](std::error_code ec, std::size_t) {
             if (!write_queue_.empty() && write_queue_.front() == pw) {
                 write_queue_.pop_front();
