@@ -382,16 +382,16 @@ int main(int argc, char** argv) {
             std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Client Configuration
-                [client]
-                server_addr = "127.0.0.1"
-                server_port = 7001
-                token = ")" << (token_provided ? cli_token : "secret_token") << R"("
-                name = "my-client"
-                protocol = "auto"
-                compression = true
-                threads = 2
+[client]
+server_addr = "127.0.0.1"
+server_port = 7001
+token = ")" << (token_provided ? cli_token : "secret_token") << R"("
+name = "my-client"
+protocol = "auto"
+compression = true
+threads = 2
 
-                [client.ssl])" << std::endl;
+[client.ssl]
 enable = true
 verify_peer = true
 ca_file = ")" << ca_path << R"("
@@ -414,13 +414,13 @@ remote_port = 6000
             std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Server Configuration
-            [server]
-            bind_addr = "0.0.0.0"
-            bind_port = 7001
-            token = ")" << (token_provided ? cli_token : "secret_token") << R"("
-            threads = 2
+[server]
+bind_addr = "0.0.0.0"
+bind_port = 7001
+token = ")" << (token_provided ? cli_token : "secret_token") << R"("
+threads = 2
 
-            # Virtual Host ports for HTTP and HTTPS (SNI routing))" << std::endl;
+# Virtual Host ports for HTTP and HTTPS (SNI routing)
 vhost_http_port = 8080
 vhost_https_port = 8443
 
