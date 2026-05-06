@@ -36,6 +36,7 @@
 #include "common/quic_ngtcp2.h"
 #include "common/rate_limiter.h"
 #include "common/async_bridge.h"
+#include "common/zstd_utils.h"
 
 namespace cfrp {
 namespace server {
@@ -76,6 +77,9 @@ private:
     bool use_compression_;
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
+
+    common::ZstdContext cctx_;
+    common::ZstdContext dctx_;
 };
 
 class UdpProxyListener : public std::enable_shared_from_this<UdpProxyListener> {
@@ -145,6 +149,9 @@ private:
     std::vector<std::string> registered_domains_;
     bool authenticated_ = false;
     bool compression_enabled_ = false;
+
+    common::ZstdContext cctx_;
+    common::ZstdContext dctx_;
 };
 
 class Server {

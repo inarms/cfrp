@@ -30,6 +30,7 @@
 #include "common/stream.h"
 #include "common/mux.h"
 #include "common/quic_ngtcp2.h"
+#include "common/zstd_utils.h"
 
 #include "common/rate_limiter.h"
 #include "common/async_bridge.h"
@@ -75,6 +76,9 @@ private:
     int compression_level_ = 1;
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
+
+    common::ZstdContext cctx_;
+    common::ZstdContext dctx_;
 };
 
 class Client : public std::enable_shared_from_this<Client> {
@@ -146,6 +150,9 @@ private:
     // ngtcp2 state
     std::shared_ptr<common::quic::QuicSession> quic_session_;
     bool stopping_ = false;
+
+    common::ZstdContext cctx_;
+    common::ZstdContext dctx_;
 };
 
 } // namespace client

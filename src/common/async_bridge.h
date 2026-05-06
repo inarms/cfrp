@@ -18,6 +18,7 @@
 
 #include "common/stream.h"
 #include "common/rate_limiter.h"
+#include "common/zstd_utils.h"
 #include <asio.hpp>
 #include <memory>
 
@@ -52,6 +53,9 @@ private:
     char data1_[32768];
     char data2_[32768];
     uint32_t header2_{};
+
+    ZstdContext cctx_;
+    ZstdContext dctx_;
 };
 
 } // namespace common

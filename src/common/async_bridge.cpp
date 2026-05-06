@@ -90,9 +90,9 @@ void Bridge::DoRead(int direction) {
             [this, self](std::error_code ec, std::size_t length) {
                 if (!ec) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
-                    std::vector<uint8_t> compressed(cSizeBound);
-                    size_t const cSize = ZSTD_compress(
-                        compressed.data(), cSizeBound, data1_, length, compression_level_);
+                    auto& compressed_buf = cctx_.get_compress_buf(cSizeBound);
+                    size_t const cSize = cctx_.compress(
+                        compressed_buf.data(), cSizeBound, data1_, length, compression_level_);
 
                     uint32_t final_header;
                     const void* write_buf;
@@ -101,7 +101,7 @@ void Bridge::DoRead(int direction) {
                     if (!ZSTD_isError(cSize) && cSize < length) {
                         final_header = asio::detail::socket_ops::host_to_network_long(
                             static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG);
-                        write_buf = compressed.data();
+                        write_buf = compressed_buf.data();
                         write_len = cSize;
                     } else {
                         final_header = asio::detail::socket_ops::host_to_network_long(
@@ -161,26 +161,28 @@ void Bridge::DoRead(int direction) {
                                         decodedSize > protocol::MAX_DECOMPRESSED_SIZE) {
                                         s1_->close(); s2_->close(); return;
                                     }
-                                    auto decompressed =
-                                        std::make_shared<std::vector<uint8_t>>(decodedSize);
-                                    size_t const dSize = ZSTD_decompress(
-                                        decompressed->data(), decodedSize,
+                                    
+                                    auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
+                                    size_t const dSize = dctx_.decompress(
+                                        decompressed_buf.data(), decodedSize,
                                         body->data(), body->size());
                                     if (ZSTD_isError(dSize)) {
                                         s1_->close(); s2_->close(); return;
                                     }
-                                    decompressed->resize(dSize);
 
-                                    auto write_op = [this, self, decompressed]() {
-                                        s1_->async_write(asio::buffer(*decompressed),
-                                            [this, self, decompressed](std::error_code ec3, std::size_t) {
+                                    auto final_decompressed = std::make_shared<std::vector<uint8_t>>(
+                                        decompressed_buf.begin(), decompressed_buf.begin() + dSize);
+
+                                    auto write_op = [this, self, final_decompressed]() {
+                                        s1_->async_write(asio::buffer(*final_decompressed),
+                                            [this, self, final_decompressed](std::error_code ec3, std::size_t) {
                                                 if (!ec3) DoRead(2);
                                                 else { s1_->close(); s2_->close(); }
                                             });
                                     };
 
                                     if (rate_limiter_) {
-                                        rate_limiter_->async_wait(decompressed->size(),
+                                        rate_limiter_->async_wait(final_decompressed->size(),
                                                                    std::move(write_op));
                                     } else {
                                         write_op();

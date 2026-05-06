@@ -63,13 +63,14 @@ void UdpBridge::DoReadFromStream() {
                                     stream_->close();
                                     return;
                                 }
-                                final_buf->resize(decodedSize);
-                                size_t const dSize = ZSTD_decompress(final_buf->data(), decodedSize, read_buf_.data(), len);
+                                
+                                auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
+                                size_t const dSize = dctx_.decompress(decompressed_buf.data(), decodedSize, read_buf_.data(), len);
                                 if (ZSTD_isError(dSize)) {
                                     stream_->close();
                                     return;
                                 }
-                                final_buf->resize(dSize);
+                                final_buf->assign(decompressed_buf.begin(), decompressed_buf.begin() + dSize);
                             } else {
                                 final_buf->assign(read_buf_.data(), read_buf_.data() + len);
                             }
@@ -252,11 +253,10 @@ void ControlSession::SendMessage(protocol::MessageType type, const std::vector<u
 
     if (compression_enabled_) {
         size_t const cSizeBound = ZSTD_compressBound(encoded.size());
-        std::vector<uint8_t> compressed(cSizeBound);
-        size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, encoded.data(), encoded.size(), 1);
+        auto& compressed_buf = cctx_.get_compress_buf(cSizeBound);
+        size_t const cSize = cctx_.compress(compressed_buf.data(), cSizeBound, encoded.data(), encoded.size(), 1);
         if (!ZSTD_isError(cSize)) {
-            compressed.resize(cSize);
-            to_send_body = compressed;
+            to_send_body.assign(compressed_buf.begin(), compressed_buf.begin() + cSize);
             final_len = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
         }
     }
@@ -316,15 +316,15 @@ void ControlSession::DoReadBody(uint32_t length) {
                             Stop();
                             return;
                         }
-                        std::vector<uint8_t> decompressed(decodedSize);
-                        size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, data.data(), data.size());
+                        
+                        auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
+                        size_t const dSize = dctx_.decompress(decompressed_buf.data(), decodedSize, data.data(), data.size());
                         if (ZSTD_isError(dSize)) {
                             common::Logger::Error("Failed to decompress control message");
                             Stop();
                             return;
                         }
-                        decompressed.resize(dSize);
-                        data = decompressed;
+                        data.assign(decompressed_buf.begin(), decompressed_buf.begin() + dSize);
                     }
                     auto msg = protocol::Message::Decode(data);
                     HandleMessage(msg);
