@@ -24,7 +24,7 @@
 #include <memory>
 #include <vector>
 #include <deque>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #ifdef _WIN32
   #include <winsock2.h>
@@ -125,7 +125,7 @@ private:
     struct sockaddr_storage local_addr_;
     struct sockaddr_storage remote_addr_;
 
-    std::map<int64_t, std::shared_ptr<QuicStream>> streams_;
+    std::unordered_map<int64_t, std::shared_ptr<QuicStream>> streams_;
     
     asio::steady_timer timer_;
     struct PendingWrite {

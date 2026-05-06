@@ -24,8 +24,9 @@
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/ssl.h>
 #include <asio/ssl.hpp>
-#include <string>
 #include <vector>
+#include <unordered_map>
+#include <string>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
@@ -136,8 +137,8 @@ private:
     
     std::string conf_d_path_;
     asio::steady_timer conf_timer_;
-    std::map<std::string, ProxyConfig> dynamic_proxies_;
-    std::map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
+    std::unordered_map<std::string, ProxyConfig> dynamic_proxies_;
+    std::unordered_map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
     
     asio::steady_timer reconnect_timer_;
     asio::steady_timer handshake_timer_;

@@ -19,7 +19,7 @@
 #include <asio.hpp>
 #include <memory>
 #include <vector>
-#include <map>
+#include <unordered_map>
 #include <deque>
 #include <mutex>
 #include <functional>
@@ -137,7 +137,7 @@ private:
     uint32_t next_stream_id_;
     std::function<void(std::shared_ptr<MuxStream>)> on_new_stream_;
     
-    std::map<uint32_t, std::shared_ptr<MuxStream>> streams_;
+    std::unordered_map<uint32_t, std::shared_ptr<MuxStream>> streams_;
     
     struct PendingWrite {
         uint8_t header_data[Header::size];

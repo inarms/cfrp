@@ -693,7 +693,7 @@ void Client::StartConfMonitor() {
 
 void Client::PollConfDirectory() {
     auto self(shared_from_this());
-    std::map<std::string, ProxyConfig> new_proxies;
+    std::unordered_map<std::string, ProxyConfig> new_proxies;
     
     try {
         if (fs::exists(conf_d_path_)) {

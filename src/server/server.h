@@ -27,7 +27,7 @@
 #include <memory>
 #include <vector>
 #include <string>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #include <deque>
 #include "common/protocol.h"
@@ -37,6 +37,7 @@
 #include "common/rate_limiter.h"
 #include "common/async_bridge.h"
 #include "common/zstd_utils.h"
+#include "common/hash_utils.h"
 
 namespace cfrp {
 namespace server {
@@ -99,7 +100,7 @@ private:
     udp::endpoint sender_endpoint_;
     std::weak_ptr<ControlSession> session_;
     std::string proxy_name_;
-    std::map<udp::endpoint, std::string> endpoint_to_ticket_;
+    std::unordered_map<udp::endpoint, std::string, common::UdpEndpointHash> endpoint_to_ticket_;
 };
 
 // --- Listeners & Sessions ---
@@ -212,8 +213,8 @@ private:
         std::string proxy_name;
         std::string type; // "http" or "https"
     };
-    std::map<std::string, VhostRoute> vhost_routes_;
-    std::map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
+    std::unordered_map<std::string, VhostRoute> vhost_routes_;
+    std::unordered_map<std::string, std::shared_ptr<common::RateLimiter>> proxy_rate_limiters_;
     
     struct TcpSessionInfo {
         tcp::socket socket;
@@ -227,13 +228,13 @@ private:
         std::string proxy_name;
     };
 
-    std::map<std::string, TcpSessionInfo> pending_user_conns_;
-    std::map<std::string, UdpSessionInfo> pending_udp_sessions_;
+    std::unordered_map<std::string, TcpSessionInfo> pending_user_conns_;
+    std::unordered_map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::vector<std::string> active_client_names_;
     std::mutex map_mutex_;
 
     // ngtcp2 state
-    std::map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>> quic_sessions_;
+    std::unordered_map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>, common::UdpEndpointHash> quic_sessions_;
 };
 
 } // namespace server
