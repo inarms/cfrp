@@ -584,7 +584,21 @@ ca_file = "certs/ca.crt"
             return 1;
         }
 
-        io_context.run();
+        unsigned int thread_count = std::thread::hardware_concurrency();
+        if (thread_count == 0) thread_count = 1;
+        
+        std::cout << "Running with " << thread_count << " event loop threads." << std::endl;
+        
+        std::vector<std::thread> threads;
+        for (unsigned int i = 0; i < thread_count; ++i) {
+            threads.emplace_back([&io_context]() {
+                io_context.run();
+            });
+        }
+        
+        for (auto& t : threads) {
+            if (t.joinable()) t.join();
+        }
 
     } catch (const toml::parse_error& err) {
         std::cerr << "Parsing failed:\n" << err << std::endl;

@@ -56,14 +56,25 @@ Header Header::decode(const uint8_t* buf) {
 // --- MuxStream ---
 
 MuxStream::MuxStream(uint32_t id, std::shared_ptr<Session> session)
-    : id_(id), session_(session), local_window_size_(256 * 1024), remote_window_size_(256 * 1024) {}
+    : id_(id), session_(session), strand_(asio::make_strand(session->get_executor())), local_window_size_(256 * 1024), remote_window_size_(256 * 1024) {}
 
 MuxStream::~MuxStream() {
-    close();
+    // Synchronous cleanup only in destructor
+    local_closed_ = true;
+    for (auto& pr : pending_reads_) {
+        auto h = std::move(pr.handler);
+        asio::post(strand_, [h]() { h(asio::error::operation_aborted, 0); });
+    }
+    pending_reads_.clear();
 }
 
 void MuxStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {
+            async_read_some(buffer, handler);
+        });
+        return;
+    }
     pending_reads_.push_back({buffer, std::move(handler), false});
     do_read_from_buffer();
 }
@@ -99,7 +110,12 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
 }
 
 void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {
+            async_read(buffer, handler);
+        });
+        return;
+    }
     pending_reads_.push_back({buffer, std::move(handler), true});
     do_read_from_buffer();
 }
@@ -111,7 +127,13 @@ void MuxStream::async_handshake(asio::ssl::stream_base::handshake_type, std::fun
 }
 
 void MuxStream::close() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            close();
+        });
+        return;
+    }
+
     if (local_closed_) return;
     local_closed_ = true;
     
@@ -127,8 +149,9 @@ void MuxStream::close() {
     }
 
     for (auto& pr : pending_reads_) {
-        asio::post(get_executor(), [handler = std::move(pr.handler)]() {
-            handler(asio::error::operation_aborted, 0);
+        auto h = std::move(pr.handler);
+        asio::post(strand_, [h]() {
+            h(asio::error::operation_aborted, 0);
         });
     }
     pending_reads_.clear();
@@ -136,9 +159,7 @@ void MuxStream::close() {
 }
 
 asio::any_io_executor MuxStream::get_executor() {
-    auto session = session_.lock();
-    if (session) return session->get_executor();
-    return asio::system_executor();
+    return strand_;
 }
 
 std::string MuxStream::remote_endpoint_string() {
@@ -154,18 +175,33 @@ std::string MuxStream::protocol_name() {
 }
 
 void MuxStream::handle_data(std::vector<uint8_t> data) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), data = std::move(data)]() mutable {
+            handle_data(std::move(data));
+        });
+        return;
+    }
     read_buffer_.insert(read_buffer_.end(), data.begin(), data.end());
     do_read_from_buffer();
 }
 
 void MuxStream::handle_window_update(uint32_t delta) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), delta]() {
+            handle_window_update(delta);
+        });
+        return;
+    }
     remote_window_size_ += delta;
 }
 
 void MuxStream::handle_close() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            handle_close();
+        });
+        return;
+    }
     remote_closed_ = true;
     do_read_from_buffer();
     check_cleanup();
@@ -192,7 +228,7 @@ void MuxStream::do_read_from_buffer() {
             if (remote_closed_) {
                 auto handler = std::move(pr.handler);
                 pending_reads_.pop_front();
-                asio::post(get_executor(), [handler]() {
+                asio::post(strand_, [handler]() {
                     handler(asio::error::eof, 0);
                 });
                 continue;
@@ -205,7 +241,7 @@ void MuxStream::do_read_from_buffer() {
             if (remote_closed_) {
                 auto handler = std::move(pr.handler);
                 pending_reads_.pop_front();
-                asio::post(get_executor(), [handler]() {
+                asio::post(strand_, [handler]() {
                     handler(asio::error::eof, 0);
                 });
                 continue;
@@ -226,7 +262,7 @@ void MuxStream::do_read_from_buffer() {
         auto handler = std::move(pr.handler);
         pending_reads_.pop_front();
         
-        asio::post(get_executor(), [handler, to_copy]() {
+        asio::post(strand_, [handler, to_copy]() {
             handler(std::error_code(), to_copy);
         });
 
@@ -253,24 +289,33 @@ void MuxStream::do_read_from_buffer() {
 
 Session::Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server)
     : underlying_stream_(std::move(underlying_stream)), 
+      strand_(asio::make_strand(underlying_stream_->get_executor())),
       is_server_(is_server), 
       next_stream_id_(is_server ? 2 : 1),
-      heartbeat_timer_(underlying_stream_->get_executor()) {}
+      heartbeat_timer_(strand_) {}
 
 void Session::start(std::function<void(std::shared_ptr<MuxStream>)> on_new_stream) {
     on_new_stream_ = std::move(on_new_stream);
-    do_read_header();
-    schedule_heartbeat();
+    asio::post(strand_, [this, self = shared_from_this()]() {
+        do_read_header();
+        schedule_heartbeat();
+    });
 }
 
 void Session::stop() {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            stop();
+        });
+        return;
+    }
+
     // Clear the callback first to break any shared_ptr cycle where a caller
     // captures 'mux_session' (shared_ptr<Session>) inside the on_new_stream_ lambda.
     on_new_stream_ = nullptr;
 
     heartbeat_timer_.cancel();
     underlying_stream_->close();
-    std::lock_guard<std::mutex> lock(streams_mutex_);
     for (auto& [id, stream] : streams_) {
         stream->handle_close();
     }
@@ -279,9 +324,11 @@ void Session::stop() {
 
 void Session::schedule_heartbeat() {
     heartbeat_timer_.expires_after(std::chrono::seconds(30));
-    auto self = shared_from_this();
-    heartbeat_timer_.async_wait([this, self](std::error_code ec) {
+    std::weak_ptr<Session> weak_self = shared_from_this();
+    heartbeat_timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
         if (!ec) {
+            auto self = weak_self.lock();
+            if (!self) return;
             Header h;
             h.version = 0;
             h.type = (uint8_t)Type::Ping;
@@ -291,20 +338,20 @@ void Session::schedule_heartbeat() {
             async_send_frame(h, {});
             schedule_heartbeat();
         }
-    });
+    }));
 }
 
 std::shared_ptr<MuxStream> Session::open_stream() {
     uint32_t id;
     {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
+        std::lock_guard<std::mutex> lock(mux_mutex_);
         id = next_stream_id_;
         next_stream_id_ += 2;
     }
     
     auto stream = std::make_shared<MuxStream>(id, shared_from_this());
     {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
+        std::lock_guard<std::mutex> lock(mux_mutex_);
         streams_[id] = stream;
     }
     
@@ -320,13 +367,20 @@ std::shared_ptr<MuxStream> Session::open_stream() {
 }
 
 void Session::remove_stream(uint32_t stream_id) {
-    std::lock_guard<std::mutex> lock(streams_mutex_);
+    std::lock_guard<std::mutex> lock(mux_mutex_);
     if (streams_.erase(stream_id) > 0) {
         Logger::Debug("[MuxSession] Cleaned up and removed stream ID: " + std::to_string(stream_id));
     }
 }
 
 void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler) {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), h, body = std::move(body), handler]() mutable {
+            async_send_frame(h, std::move(body), handler);
+        });
+        return;
+    }
+
     auto pw = std::make_shared<PendingWrite>();
     pw->data.resize(Header::size + body.size());
     h.encode(pw->data.data());
@@ -335,17 +389,9 @@ void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::functio
     }
     pw->handler = std::move(handler);
 
-    bool kick_write = false;
-    {
-        std::lock_guard<std::mutex> lock(write_mutex_);
-        write_queue_.push_back(pw);
-        if (!is_writing_) {
-            is_writing_ = true;
-            kick_write = true;
-        }
-    }
-    
-    if (kick_write) {
+    write_queue_.push_back(pw);
+    if (!is_writing_) {
+        is_writing_ = true;
         do_write();
     }
 }
@@ -353,7 +399,7 @@ void Session::async_send_frame(Header h, std::vector<uint8_t> body, std::functio
 void Session::do_read_header() {
     auto self = shared_from_this();
     underlying_stream_->async_read(asio::buffer(header_buf_, Header::size),
-        [this, self](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 auto header = Header::decode(header_buf_);
                 if (header.type == (uint8_t)Type::Data && header.length > 0) {
@@ -365,27 +411,27 @@ void Session::do_read_header() {
             } else {
                 stop();
             }
-        });
+        }));
 }
 
 void Session::do_read_body(Header h) {
     auto self = shared_from_this();
     auto body = std::make_shared<std::vector<uint8_t>>(h.length);
     underlying_stream_->async_read(asio::buffer(*body),
-        [this, self, h, body](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self, h, body](std::error_code ec, std::size_t) {
             if (!ec) {
                 handle_frame(h, std::move(*body));
                 do_read_header();
             } else {
                 stop();
             }
-        });
+        }));
 }
 
 void Session::handle_frame(Header h, std::vector<uint8_t> body) {
     std::shared_ptr<MuxStream> stream;
     {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
+        std::lock_guard<std::mutex> lock(mux_mutex_);
         auto it = streams_.find(h.stream_id);
         if (it != streams_.end()) {
             stream = it->second;
@@ -397,7 +443,7 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
             if (!stream) {
                 stream = std::make_shared<MuxStream>(h.stream_id, shared_from_this());
                 {
-                    std::lock_guard<std::mutex> lock(streams_mutex_);
+                    std::lock_guard<std::mutex> lock(mux_mutex_);
                     streams_[h.stream_id] = stream;
                 }
                 
@@ -441,24 +487,17 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
 }
 
 void Session::do_write() {
-    std::shared_ptr<PendingWrite> pw;
-    {
-        std::lock_guard<std::mutex> lock(write_mutex_);
-        if (write_queue_.empty()) {
-            is_writing_ = false;
-            return;
-        }
-        pw = write_queue_.front();
+    if (write_queue_.empty()) {
+        is_writing_ = false;
+        return;
     }
+    auto pw = write_queue_.front();
 
     auto self = shared_from_this();
     underlying_stream_->async_write(asio::buffer(pw->data),
-        [this, self, pw](std::error_code ec, std::size_t) {
-            {
-                std::lock_guard<std::mutex> lock(write_mutex_);
-                if (!write_queue_.empty() && write_queue_.front() == pw) {
-                    write_queue_.pop_front();
-                }
+        asio::bind_executor(strand_, [this, self, pw](std::error_code ec, std::size_t) {
+            if (!write_queue_.empty() && write_queue_.front() == pw) {
+                write_queue_.pop_front();
             }
             
             if (pw->handler) pw->handler(ec);
@@ -468,7 +507,7 @@ void Session::do_write() {
             } else {
                 stop();
             }
-        });
+        }));
 }
 
 } // namespace mux

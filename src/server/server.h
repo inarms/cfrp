@@ -96,7 +96,6 @@ private:
     std::weak_ptr<ControlSession> session_;
     std::string proxy_name_;
     std::map<udp::endpoint, std::string> endpoint_to_ticket_;
-    uint8_t recv_buf_[65535];
 };
 
 // --- Listeners & Sessions ---
@@ -113,6 +112,7 @@ private:
 
     Server& server_;
     tcp::acceptor acceptor_;
+    asio::strand<asio::io_context::executor_type> strand_;
     std::weak_ptr<ControlSession> session_;
     std::string proxy_name_;
 };
@@ -120,7 +120,7 @@ private:
 class ControlSession : public std::enable_shared_from_this<ControlSession> {
 public:
     explicit ControlSession(Server& server, std::shared_ptr<common::AsyncStream> stream, asio::io_context& io_context)
-        : server_(server), stream_(std::move(stream)), io_context_(io_context) {}
+        : server_(server), stream_(std::move(stream)), io_context_(io_context), strand_(asio::make_strand(io_context)) {}
 
     void Start();
     void Stop();
@@ -135,6 +135,7 @@ private:
     Server& server_;
     std::shared_ptr<common::AsyncStream> stream_;
     asio::io_context& io_context_;
+    asio::strand<asio::io_context::executor_type> strand_;
     std::string client_endpoint_;
     std::string client_name_;
     protocol::Header header_;
@@ -192,6 +193,7 @@ private:
     std::vector<PortRange> allowed_ports_;
     std::vector<std::string> allowed_clients_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
+    std::unique_ptr<asio::ssl::context> quic_ssl_ctx_;
 
     uint16_t vhost_http_port_ = 0;
     uint16_t vhost_https_port_ = 0;
@@ -225,7 +227,6 @@ private:
 
     // ngtcp2 state
     std::map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>> quic_sessions_;
-    uint8_t udp_recv_buf_[65535];
 };
 
 } // namespace server

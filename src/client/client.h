@@ -75,7 +75,6 @@ private:
     int compression_level_ = 1;
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
-    uint8_t local_recv_buf_[65535];
 };
 
 class Client : public std::enable_shared_from_this<Client> {
@@ -109,6 +108,7 @@ private:
     void UnregisterProxy(const std::string& name);
 
     asio::io_context& io_context_;
+    asio::strand<asio::io_context::executor_type> strand_;
     std::shared_ptr<common::mux::Session> mux_session_;
     std::shared_ptr<common::mux::MuxStream> control_stream_;
     
@@ -145,7 +145,6 @@ private:
 
     // ngtcp2 state
     std::shared_ptr<common::quic::QuicSession> quic_session_;
-    uint8_t udp_recv_buf_[65535];
     bool stopping_ = false;
 };
 

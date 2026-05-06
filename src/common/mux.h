@@ -87,12 +87,12 @@ private:
 
     uint32_t id_;
     std::weak_ptr<Session> session_;
+    asio::strand<asio::any_io_executor> strand_;
     size_t local_window_size_;
     size_t remote_window_size_;
     size_t consumed_since_last_update_ = 0;
     std::deque<uint8_t> read_buffer_;
     size_t read_buffer_offset_ = 0;
-    std::mutex mutex_;
     
     struct PendingRead {
         asio::mutable_buffer buffer;
@@ -114,7 +114,8 @@ public:
     void remove_stream(uint32_t stream_id);
     void async_send_frame(Header h, std::vector<uint8_t> body, std::function<void(std::error_code)> handler = nullptr);
 
-    asio::any_io_executor get_executor() { return underlying_stream_->get_executor(); }
+    asio::any_io_executor get_executor() { return strand_; }
+    asio::strand<asio::any_io_executor>& strand() { return strand_; }
     std::string remote_endpoint_string() { return underlying_stream_->remote_endpoint_string(); }
     std::string protocol_name() { return underlying_stream_->protocol_name(); }
 
@@ -126,19 +127,19 @@ private:
     void schedule_heartbeat();
 
     std::shared_ptr<AsyncStream> underlying_stream_;
+    asio::strand<asio::any_io_executor> strand_;
+    std::mutex mux_mutex_; // Protect streams_ and next_stream_id_
     bool is_server_;
     uint32_t next_stream_id_;
     std::function<void(std::shared_ptr<MuxStream>)> on_new_stream_;
     
     std::map<uint32_t, std::shared_ptr<MuxStream>> streams_;
-    std::mutex streams_mutex_;
     
     struct PendingWrite {
         std::vector<uint8_t> data;
         std::function<void(std::error_code)> handler;
     };
     std::deque<std::shared_ptr<PendingWrite>> write_queue_;
-    std::mutex write_mutex_;
     bool is_writing_ = false;
     
     uint8_t header_buf_[Header::size];

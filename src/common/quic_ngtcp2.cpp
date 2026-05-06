@@ -34,11 +34,27 @@ QuicStream::QuicStream(int64_t stream_id, std::shared_ptr<QuicSession> session)
     : stream_id_(stream_id), session_(session) {}
 
 QuicStream::~QuicStream() {
-    close();
+    // Synchronous cleanup only in destructor to avoid bad_weak_ptr
+    closed_ = true;
+    for (auto& pr : pending_reads_) {
+        auto h = std::move(pr.handler);
+        asio::post(get_executor(), [h]() { h(asio::error::operation_aborted, 0); });
+    }
+    pending_reads_.clear();
 }
 
 void QuicStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto session = session_.lock();
+    if (!session) {
+        asio::post(get_executor(), [handler]() { handler(asio::error::connection_reset, 0); });
+        return;
+    }
+    if (!session->strand().running_in_this_thread()) {
+        asio::post(session->strand(), [this, self = shared_from_this(), buffer, handler]() {
+            async_read_some(buffer, handler);
+        });
+        return;
+    }
     pending_reads_.push_back({buffer, std::move(handler), false});
     do_read();
 }
@@ -54,7 +70,17 @@ void QuicStream::async_write(asio::const_buffer buffer, std::function<void(std::
 }
 
 void QuicStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto session = session_.lock();
+    if (!session) {
+        asio::post(get_executor(), [handler]() { handler(asio::error::connection_reset, 0); });
+        return;
+    }
+    if (!session->strand().running_in_this_thread()) {
+        asio::post(session->strand(), [this, self = shared_from_this(), buffer, handler]() {
+            async_read(buffer, handler);
+        });
+        return;
+    }
     pending_reads_.push_back({buffer, std::move(handler), true});
     do_read();
 }
@@ -64,11 +90,17 @@ void QuicStream::async_handshake(ssl::stream_base::handshake_type, std::function
 }
 
 void QuicStream::close() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    auto session = session_.lock();
+    if (!session) return;
+    if (!session->strand().running_in_this_thread()) {
+        asio::post(session->strand(), [this, self = shared_from_this()]() {
+            close();
+        });
+        return;
+    }
     if (closed_) return;
     closed_ = true;
-    auto session = session_.lock();
-    if (session) session->close_stream(stream_id_);
+    session->close_stream(stream_id_);
 }
 
 asio::any_io_executor QuicStream::get_executor() {
@@ -86,18 +118,19 @@ std::string QuicStream::remote_endpoint_string() {
 std::string QuicStream::protocol_name() { return "QUIC"; }
 
 void QuicStream::handle_data(const uint8_t* data, size_t len) {
-    std::lock_guard<std::mutex> lock(mutex_);
     read_buf_.insert(read_buf_.end(), data, data + len);
     do_read();
 }
 
 void QuicStream::handle_close() {
-    std::lock_guard<std::mutex> lock(mutex_);
     closed_ = true;
     do_read();
 }
 
 void QuicStream::do_read() {
+    auto session = session_.lock();
+    if (!session) return;
+
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
         size_t available = read_buf_.size() - read_buf_offset_;
@@ -109,7 +142,7 @@ void QuicStream::do_read() {
             if (closed_) {
                 auto h = std::move(pr.handler);
                 pending_reads_.pop_front();
-                asio::post(get_executor(), [h]() { h(asio::error::eof, 0); });
+                asio::post(session->strand(), [h]() { h(asio::error::eof, 0); });
                 continue;
             }
             break;
@@ -120,7 +153,7 @@ void QuicStream::do_read() {
             if (closed_) {
                 auto h = std::move(pr.handler);
                 pending_reads_.pop_front();
-                asio::post(get_executor(), [h]() { h(asio::error::eof, 0); });
+                asio::post(session->strand(), [h]() { h(asio::error::eof, 0); });
                 continue;
             }
             break;
@@ -137,11 +170,10 @@ void QuicStream::do_read() {
         }
         auto h = std::move(pr.handler);
         pending_reads_.pop_front();
-        asio::post(get_executor(), [h, to_copy]() { h(std::error_code(), to_copy); });
+        asio::post(session->strand(), [h, to_copy]() { h(std::error_code(), to_copy); });
 
         // Update QUIC flow control
-        auto session = session_.lock();
-        if (session && session->conn()) {
+        if (session->conn()) {
             ngtcp2_conn_extend_max_stream_offset(session->conn(), stream_id_, to_copy);
         }
     }
@@ -185,7 +217,7 @@ namespace {
 }
 
 QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server)
-    : socket_(socket), remote_endpoint_(remote_endpoint), is_server_(is_server), timer_(socket.get_executor()) {
+    : socket_(socket), strand_(asio::make_strand(socket.get_executor())), remote_endpoint_(remote_endpoint), is_server_(is_server), timer_(strand_) {
     
     auto local_ep = socket_.local_endpoint();
     std::memcpy(&local_addr_, local_ep.data(), local_ep.size());
@@ -198,11 +230,8 @@ QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint 
 }
 
 QuicSession::~QuicSession() {
-    {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
-        for (auto& pair : streams_) {
-            pair.second->handle_close();
-        }
+    for (auto& pair : streams_) {
+        pair.second->handle_close();
     }
     if (conn_) ngtcp2_conn_del(conn_);
     if (ssl_) {
@@ -302,6 +331,14 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
 }
 
 void QuicSession::handle_packet(const uint8_t* data, size_t len) {
+    if (!strand_.running_in_this_thread()) {
+        auto buf = std::make_shared<std::vector<uint8_t>>(data, data + len);
+        asio::post(strand_, [this, self = shared_from_this(), buf]() {
+            handle_packet(buf->data(), buf->size());
+        });
+        return;
+    }
+
     if (!conn_) return;
     ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
     int res = ngtcp2_conn_read_pkt(conn_, &path_, nullptr, data, len, ts);
@@ -315,6 +352,13 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
 }
 
 void QuicSession::send_packets() {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            send_packets();
+        });
+        return;
+    }
+
     if (!conn_) return;
     uint8_t buf[1500];
     ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -344,16 +388,25 @@ void QuicSession::send_packets() {
 }
 
 std::shared_ptr<QuicStream> QuicSession::open_stream() {
+    std::lock_guard<std::mutex> lock(ngtcp2_mutex_);
     if (!conn_) return nullptr;
     int64_t stream_id;
     if (ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr) != 0) return nullptr;
     auto stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
-    { std::lock_guard<std::mutex> lock(streams_mutex_); streams_[stream_id] = stream; }
+    streams_[stream_id] = stream;
     Logger::Debug("[QUIC] Local stream opened: " + std::to_string(stream_id));
     return stream;
 }
 
 void QuicSession::close_session() {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            close_session();
+        });
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(ngtcp2_mutex_);
     if (!conn_ || closed_notified_) return;
     uint8_t buf[1500];
     ngtcp2_pkt_info pi;
@@ -366,18 +419,33 @@ void QuicSession::close_session() {
         std::error_code ec;
         socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
     }
-    check_closed();
+    // check_closed called outside this lock in send_packets if needed, or we can call it here
 }
 
 void QuicSession::close_stream(int64_t stream_id) {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), stream_id]() {
+            close_stream(stream_id);
+        });
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ngtcp2_mutex_);
     if (!conn_) return;
     ngtcp2_conn_shutdown_stream(conn_, 0, stream_id, 0);
-    send_packets();
+    // Don't call send_packets inside lock if it might re-lock or post
 }
 
 void QuicSession::write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler) {
+    if (!strand_.running_in_this_thread()) {
+        auto buf = std::make_shared<std::vector<uint8_t>>(data, data + len);
+        asio::post(strand_, [this, self = shared_from_this(), stream_id, buf, handler]() {
+            write_stream(stream_id, buf->data(), buf->size(), handler);
+        });
+        return;
+    }
+
     if (!conn_) {
-        asio::post(get_executor(), [handler]() { handler(asio::error::connection_reset, 0); });
+        asio::post(strand_, [handler]() { handler(asio::error::connection_reset, 0); });
         return;
     }
 
@@ -386,106 +454,90 @@ void QuicSession::write_stream(int64_t stream_id, const uint8_t* data, size_t le
     pw->data.assign(data, data + len);
     pw->handler = std::move(handler);
 
-    {
-        std::lock_guard<std::mutex> lock(write_mutex_);
-        write_queue_.push_back(pw);
-    }
+    write_queue_.push_back(pw);
     
     do_write();
 }
 
 void QuicSession::do_write() {
-    if (!conn_ || closed_notified_) return;
-
-    {
-        std::lock_guard<std::mutex> lock(write_mutex_);
-        if (is_writing_) return;
-        is_writing_ = true;
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() {
+            do_write();
+        });
+        return;
     }
 
-    auto self = shared_from_this();
-    asio::post(get_executor(), [this, self]() {
-        bool progress = false;
-        bool queue_not_empty = false;
-        {
-            std::lock_guard<std::mutex> write_lock(write_mutex_);
-            // Limit to 16 packets per turn to yield to other tasks
-            int packets_sent = 0;
-            while (!write_queue_.empty() && packets_sent < 16) {
-                auto pw = write_queue_.front();
-                ngtcp2_vec v{pw->data.data() + pw->consumed, pw->data.size() - pw->consumed};
-                ngtcp2_ssize consumed_datalen = 0;
-                ngtcp2_pkt_info pi;
-                uint8_t buf[1500];
-                
-                ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
-                ngtcp2_ssize res = ngtcp2_conn_writev_stream(conn_, &path_, &pi, buf, sizeof(buf), &consumed_datalen, 0, pw->stream_id, &v, 1, ts);
-                
-                if (res > 0) {
-                    packets_sent++;
-                    std::error_code ec;
-                    socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
-                    if (ec) {
-                        if (ec != asio::error::operation_aborted) {
-                            Logger::Error("[QUIC] do_write send_to error: " + ec.message());
-                        }
-                        break;
-                    }
-                    if (consumed_datalen > 0) {
-                        pw->consumed += consumed_datalen;
-                        progress = true;
-                        if (pw->consumed >= pw->data.size()) {
-                            if (pw->handler) {
-                                auto h = std::move(pw->handler);
-                                size_t total = pw->data.size();
-                                asio::post(get_executor(), [h, total]() { h(std::error_code(), total); });
-                            }
-                            write_queue_.pop_front();
-                        }
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-            is_writing_ = false;
-            queue_not_empty = !write_queue_.empty();
-        }
-        
-        // Ensure control frames (ACKs, etc) are also sent
-        send_packets();
+    if (!conn_ || closed_notified_) return;
+    if (is_writing_) return;
+    is_writing_ = true;
 
-        if (progress && queue_not_empty) {
-            do_write(); // Re-queue for next event loop cycle
+    auto self = shared_from_this();
+    // Limit to 16 packets per turn to yield to other tasks
+    int packets_sent = 0;
+    while (!write_queue_.empty() && packets_sent < 16) {
+        auto pw = write_queue_.front();
+        ngtcp2_vec v{pw->data.data() + pw->consumed, pw->data.size() - pw->consumed};
+        ngtcp2_ssize consumed_datalen = 0;
+        ngtcp2_pkt_info pi;
+        uint8_t buf[1500];
+        
+        ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+        ngtcp2_ssize res = ngtcp2_conn_writev_stream(conn_, &path_, &pi, buf, sizeof(buf), &consumed_datalen, 0, pw->stream_id, &v, 1, ts);
+        
+        if (res > 0) {
+            packets_sent++;
+            std::error_code ec;
+            socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
+            if (ec) {
+                if (ec != asio::error::operation_aborted) {
+                    Logger::Error("[QUIC] do_write send_to error: " + ec.message());
+                }
+                break;
+            }
+            if (consumed_datalen > 0) {
+                pw->consumed += consumed_datalen;
+                if (pw->consumed >= pw->data.size()) {
+                    if (pw->handler) {
+                        auto h = std::move(pw->handler);
+                        size_t total = pw->data.size();
+                        asio::post(strand_, [h, total]() { h(std::error_code(), total); });
+                    }
+                    write_queue_.pop_front();
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
         }
-    });
+    }
+    is_writing_ = false;
+
+    if (!write_queue_.empty()) {
+        asio::post(strand_, [this, self]() { do_write(); });
+    }
 }
 
 int QuicSession::on_stream_data(int64_t stream_id, const uint8_t* data, size_t len) {
+    auto it = streams_.find(stream_id);
     std::shared_ptr<QuicStream> stream;
-    {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
-        auto it = streams_.find(stream_id);
-        if (it == streams_.end()) {
-            // New peer-initiated stream
-            stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
-            streams_[stream_id] = stream;
-            Logger::Debug("[QUIC] Peer stream started: " + std::to_string(stream_id));
-            if (on_new_stream_cb_) {
-                auto cb = on_new_stream_cb_;
-                asio::post(get_executor(), [cb, stream]() { cb(stream); });
-            }
-        } else {
-            stream = it->second;
+    if (it == streams_.end()) {
+        // New peer-initiated stream
+        stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
+        streams_[stream_id] = stream;
+        Logger::Debug("[QUIC] Peer stream started: " + std::to_string(stream_id));
+        if (on_new_stream_cb_) {
+            auto cb = on_new_stream_cb_;
+            asio::post(strand_, [cb, stream]() { cb(stream); });
         }
+    } else {
+        stream = it->second;
     }
     if (stream) stream->handle_data(data, len);
     return 0;
 }
 
 int QuicSession::on_stream_close(int64_t stream_id) {
-    std::lock_guard<std::mutex> lock(streams_mutex_);
     auto it = streams_.find(stream_id);
     if (it != streams_.end()) { it->second->handle_close(); streams_.erase(it); }
     return 0;
@@ -495,22 +547,25 @@ void QuicSession::schedule_timer() {
     if (!conn_) return;
     ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(conn_);
     ngtcp2_tstamp now = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    std::weak_ptr<QuicSession> weak_self = shared_from_this();
     if (expiry <= now) {
-        asio::post(get_executor(), [this, self = shared_from_this()]() {
-            if (!conn_) return;
+        asio::post(strand_, [this, weak_self]() {
+            auto self = weak_self.lock();
+            if (!self || !conn_) return;
             ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
             send_packets();
             check_closed();
         });
     } else if (expiry != UINT64_MAX) {
         timer_.expires_after(std::chrono::nanoseconds(expiry - now));
-        timer_.async_wait([this, self = shared_from_this()](std::error_code ec) {
-            if (!ec && conn_) {
+        timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
+            auto self = weak_self.lock();
+            if (self && !ec && conn_) {
                 ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
                 send_packets();
                 check_closed();
             }
-        });
+        }));
     }
 }
 
@@ -520,18 +575,13 @@ void QuicSession::check_closed() {
         closed_notified_ = true;
 
         // Notify all streams that the session is closed
-        {
-            std::lock_guard<std::mutex> lock(streams_mutex_);
-            for (auto& pair : streams_) {
-                pair.second->handle_close();
-            }
-            // We don't clear streams_ here yet as they might still need to 
-            // complete their pending reads (EOF).
+        for (auto& pair : streams_) {
+            pair.second->handle_close();
         }
 
         if (on_closed_cb_) {
             auto cb = on_closed_cb_;
-            asio::post(get_executor(), [this, cb, self = shared_from_this()]() {
+            asio::post(strand_, [this, cb, self = shared_from_this()]() {
                 cb(self);
             });
         }

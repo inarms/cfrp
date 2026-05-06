@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -145,17 +146,27 @@ public:
     static LogLevel GetLevel() noexcept { return level_; }
 
     static void Error(const std::string& msg) {
-        if (level_ >= LogLevel::Error) std::cerr << msg << '\n';
+        if (level_ >= LogLevel::Error) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::cerr << msg << '\n';
+        }
     }
     static void Info(const std::string& msg) {
-        if (level_ >= LogLevel::Info) std::cout << msg << std::endl;
+        if (level_ >= LogLevel::Info) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::cout << msg << std::endl;
+        }
     }
     static void Debug(const std::string& msg) {
-        if (level_ >= LogLevel::Debug) std::cout << "[DEBUG] " << msg << std::endl;
+        if (level_ >= LogLevel::Debug) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::cout << "[DEBUG] " << msg << std::endl;
+        }
     }
 
 private:
     inline static LogLevel level_ = LogLevel::Info;
+    inline static std::mutex mutex_;
 };
 
 } // namespace common

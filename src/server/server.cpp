@@ -53,9 +53,7 @@ void UdpBridge::DoReadFromStream() {
                 stream_->async_read(asio::buffer(read_buf_.data(), len),
                     [this, self, len, compressed](std::error_code ec, std::size_t) {
                         if (!ec) {
-                            const void* send_buf = read_buf_.data();
-                            size_t send_len = len;
-                            std::vector<uint8_t> decompressed;
+                            auto final_buf = std::make_shared<std::vector<uint8_t>>();
 
                             if (compressed) {
                                 unsigned long long const decodedSize = ZSTD_getFrameContentSize(read_buf_.data(), len);
@@ -65,20 +63,20 @@ void UdpBridge::DoReadFromStream() {
                                     stream_->close();
                                     return;
                                 }
-                                decompressed.resize(decodedSize);
-                                size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, read_buf_.data(), len);
+                                final_buf->resize(decodedSize);
+                                size_t const dSize = ZSTD_decompress(final_buf->data(), decodedSize, read_buf_.data(), len);
                                 if (ZSTD_isError(dSize)) {
                                     stream_->close();
                                     return;
                                 }
-                                decompressed.resize(dSize);
-                                send_buf = decompressed.data();
-                                send_len = dSize;
+                                final_buf->resize(dSize);
+                            } else {
+                                final_buf->assign(read_buf_.data(), read_buf_.data() + len);
                             }
 
-                            auto send_op = [this, self, send_buf, send_len]() {
-                                socket_.async_send_to(asio::buffer(send_buf, send_len), remote_endpoint_,
-                                    [this, self](std::error_code ec, std::size_t) {
+                            auto send_op = [this, self, final_buf]() {
+                                socket_.async_send_to(asio::buffer(*final_buf), remote_endpoint_,
+                                    [this, self, final_buf](std::error_code ec, std::size_t) {
                                         if (!ec) {
                                             DoReadFromStream();
                                         }
@@ -86,7 +84,7 @@ void UdpBridge::DoReadFromStream() {
                             };
 
                             if (rate_limiter_) {
-                                rate_limiter_->async_wait(send_len, std::move(send_op));
+                                rate_limiter_->async_wait(final_buf->size(), std::move(send_op));
                             } else {
                                 send_op();
                             }
@@ -121,8 +119,9 @@ void UdpProxyListener::Stop() {
 
 void UdpProxyListener::DoReceive() {
     auto self(shared_from_this());
-    socket_.async_receive_from(asio::buffer(recv_buf_, sizeof(recv_buf_)), sender_endpoint_,
-        [this, self](std::error_code ec, std::size_t length) {
+    auto buffer = std::make_shared<std::array<uint8_t, 65535>>();
+    socket_.async_receive_from(asio::buffer(buffer->data(), buffer->size()), sender_endpoint_,
+        [this, self, buffer](std::error_code ec, std::size_t length) {
             if (!ec) {
                 std::string ticket;
                 auto it = endpoint_to_ticket_.find(sender_endpoint_);
@@ -162,6 +161,7 @@ void UdpProxyListener::SendTo(const std::vector<uint8_t>& data, const udp::endpo
 ProxyListener::ProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name)
     : server_(server),
       acceptor_(io_context, tcp::endpoint(tcp::v4(), port)),
+      strand_(asio::make_strand(io_context)),
       session_(session),
       proxy_name_(proxy_name) {
     common::Logger::Info("Proxy listener started for [" + proxy_name_ + "] on port " + std::to_string(port));
@@ -180,7 +180,7 @@ void ProxyListener::Stop() {
 
 void ProxyListener::DoAccept() {
     auto self(shared_from_this());
-    acceptor_.async_accept([this, self](std::error_code ec, tcp::socket socket) {
+    acceptor_.async_accept(asio::bind_executor(strand_, [this, self](std::error_code ec, tcp::socket socket) {
         if (ec) {
             if (ec != asio::error::operation_aborted) {
                 common::Logger::Error("Proxy accept error: " + ec.message());
@@ -203,7 +203,7 @@ void ProxyListener::DoAccept() {
         }
 
         DoAccept();
-    });
+    }));
 }
 
 // --- ControlSession ---
@@ -214,6 +214,11 @@ void ControlSession::Start() {
 }
 
 void ControlSession::Stop() {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() { Stop(); });
+        return;
+    }
+
     common::Logger::Info("[Server] Client disconnected: " + client_endpoint_ + " [" + client_name_ + "]");
     server_.ReleaseClientName(client_name_);
     for (auto& proxy : proxies_) {
@@ -236,6 +241,10 @@ void ControlSession::Stop() {
 }
 
 void ControlSession::SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body) {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), type, body]() { SendMessage(type, body); });
+        return;
+    }
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
     uint32_t final_len = static_cast<uint32_t>(encoded.size());
@@ -259,17 +268,18 @@ void ControlSession::SendMessage(protocol::MessageType type, const std::vector<u
     std::memcpy(data->data() + sizeof(net_len), to_send_body.data(), to_send_body.size());
 
     auto self(shared_from_this());
-    stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
+    stream_->async_write(asio::buffer(*data), asio::bind_executor(strand_, [this, self, data](std::error_code ec, std::size_t) {
         if (ec) {
             common::Logger::Error("Failed to send message: " + ec.message());
+            Stop();
         }
-    });
+    }));
 }
 
 void ControlSession::DoReadHeader() {
     auto self(shared_from_this());
     stream_->async_read(asio::buffer(&header_, sizeof(header_)),
-        [this, self](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self](std::error_code ec, std::size_t) {
             if (!ec) {
                 uint32_t h = asio::detail::socket_ops::network_to_host_long(header_.body_length);
                 header_.body_length = h; // Store host-byte order back
@@ -284,7 +294,7 @@ void ControlSession::DoReadHeader() {
                 common::Logger::Info("Control session closed: " + ec.message());
                 Stop();
             }
-        });
+        }));
 }
 void ControlSession::DoReadBody(uint32_t length) {
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
@@ -293,7 +303,7 @@ void ControlSession::DoReadBody(uint32_t length) {
     body_data_.resize(length);
     auto self(shared_from_this());
     stream_->async_read(asio::buffer(body_data_),
-        [this, self, is_compressed](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self, is_compressed](std::error_code ec, std::size_t) {
             if (!ec) {
                 try {
                     std::vector<uint8_t> data(body_data_.begin(), body_data_.end());
@@ -326,7 +336,7 @@ void ControlSession::DoReadBody(uint32_t length) {
                 common::Logger::Info("Control session closed: " + ec.message());
                 Stop();
             }
-        });
+        }));
 }
 
 void ControlSession::HandleMessage(const protocol::Message& msg) {
@@ -476,12 +486,19 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
         ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
         ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 | asio::ssl::context::single_dh_use);
         
+        quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+        quic_ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 | asio::ssl::context::single_dh_use);
+
         std::string cert = ssl_config_.cert_file;
         std::string key = ssl_config_.key_file;
 
         try {
             ssl_ctx_->use_certificate_chain_file(cert);
             ssl_ctx_->use_private_key_file(key, asio::ssl::context::pem);
+            
+            quic_ssl_ctx_->use_certificate_chain_file(cert);
+            quic_ssl_ctx_->use_private_key_file(key, asio::ssl::context::pem);
+            
             std::cout << "SSL/QUIC certificate loaded: " << cert << std::endl;
         } catch (const std::exception& e) {
             if (protocol_ == "quic" || protocol_ == "auto") {
@@ -557,8 +574,9 @@ void Server::Stop() {
 }
 void Server::DoUdpRead() {
     auto endpoint = std::make_shared<udp::endpoint>();
-    udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
-        [this, endpoint](std::error_code ec, std::size_t length) {
+    auto buffer = std::make_shared<std::array<uint8_t, 65535>>();
+    udp_socket_.async_receive_from(asio::buffer(buffer->data(), buffer->size()), *endpoint,
+        [this, endpoint, buffer](std::error_code ec, std::size_t length) {
             if (!ec) {
                 std::shared_ptr<common::quic::QuicSession> session;
                 {
@@ -572,7 +590,7 @@ void Server::DoUdpRead() {
                 if (!session) {
                     // Parse QUIC header to get CIDs
                     ngtcp2_version_cid vcid;
-                    int res = ngtcp2_pkt_decode_version_cid(&vcid, udp_recv_buf_, length, 8);
+                    int res = ngtcp2_pkt_decode_version_cid(&vcid, buffer->data(), length, 8);
 
                     if (res != 0) {
                         DoUdpRead();
@@ -585,8 +603,8 @@ void Server::DoUdpRead() {
 
                     auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true);
 
-                    if (!ssl_ctx_) {
-                        ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+                    if (!quic_ssl_ctx_) {
+                        quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
                     }
 
                     new_session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
@@ -602,7 +620,7 @@ void Server::DoUdpRead() {
                         quic_sessions_.erase(*endpoint);
                     });
 
-                    new_session->init(ssl_ctx_->native_handle(), &n_dcid, &n_scid);
+                    new_session->init(quic_ssl_ctx_->native_handle(), &n_dcid, &n_scid);
                     {
                         std::lock_guard<std::mutex> lock(map_mutex_);
                         auto it = quic_sessions_.find(*endpoint);
@@ -616,7 +634,10 @@ void Server::DoUdpRead() {
                 }
 
                 if (session) {
-                    session->handle_packet(udp_recv_buf_, length);
+                    auto s = session;
+                    asio::post(s->strand(), [s, buffer, length]() {
+                        s->handle_packet(buffer->data(), length);
+                    });
                 }
                 DoUdpRead();
                 return;

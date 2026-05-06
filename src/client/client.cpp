@@ -57,9 +57,7 @@ void UdpBridge::DoReadFromStream() {
                 stream_->async_read(asio::buffer(read_buf_.data(), len),
                     [this, self, len, compressed](std::error_code ec, std::size_t) {
                         if (!ec) {
-                            const void* send_buf = read_buf_.data();
-                            size_t send_len = len;
-                            std::vector<uint8_t> decompressed;
+                            auto final_buf = std::make_shared<std::vector<uint8_t>>();
 
                             if (compressed) {
                                 unsigned long long const decodedSize = ZSTD_getFrameContentSize(read_buf_.data(), len);
@@ -69,20 +67,20 @@ void UdpBridge::DoReadFromStream() {
                                     stream_->close();
                                     return;
                                 }
-                                decompressed.resize(decodedSize);
-                                size_t const dSize = ZSTD_decompress(decompressed.data(), decodedSize, read_buf_.data(), len);
+                                final_buf->resize(decodedSize);
+                                size_t const dSize = ZSTD_decompress(final_buf->data(), decodedSize, read_buf_.data(), len);
                                 if (ZSTD_isError(dSize)) {
                                     stream_->close();
                                     return;
                                 }
-                                decompressed.resize(dSize);
-                                send_buf = decompressed.data();
-                                send_len = dSize;
+                                final_buf->resize(dSize);
+                            } else {
+                                final_buf->assign(read_buf_.data(), read_buf_.data() + len);
                             }
 
-                            auto send_op = [this, self, send_buf, send_len]() {
-                                socket_.async_send_to(asio::buffer(send_buf, send_len), local_endpoint_,
-                                    [this, self](std::error_code ec, std::size_t) {
+                            auto send_op = [this, self, final_buf]() {
+                                socket_.async_send_to(asio::buffer(*final_buf), local_endpoint_,
+                                    [this, self, final_buf](std::error_code ec, std::size_t) {
                                         if (!ec) {
                                             DoReadFromStream();
                                         }
@@ -90,7 +88,7 @@ void UdpBridge::DoReadFromStream() {
                             };
 
                             if (rate_limiter_) {
-                                rate_limiter_->async_wait(send_len, std::move(send_op));
+                                rate_limiter_->async_wait(final_buf->size(), std::move(send_op));
                             } else {
                                 send_op();
                             }
@@ -106,20 +104,21 @@ void UdpBridge::DoReadFromStream() {
 
 void UdpBridge::DoReadFromLocal() {
     auto self(shared_from_this());
-    socket_.async_receive_from(asio::buffer(local_recv_buf_, sizeof(local_recv_buf_)), local_endpoint_,
-        [this, self](std::error_code ec, std::size_t length) {
+    auto buffer = std::make_shared<std::array<uint8_t, 65535>>();
+    socket_.async_receive_from(asio::buffer(buffer->data(), buffer->size()), local_endpoint_,
+        [this, self, buffer](std::error_code ec, std::size_t length) {
             if (!ec) {
                 auto buf = std::make_shared<std::vector<uint8_t>>();
                 
                 uint16_t header;
-                const void* write_data = local_recv_buf_;
+                const void* write_data = buffer->data();
                 size_t write_len = length;
                 std::vector<uint8_t> compressed;
 
                 if (use_compression_) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
                     compressed.resize(cSizeBound);
-                    size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, local_recv_buf_, length, compression_level_);
+                    size_t const cSize = ZSTD_compress(compressed.data(), cSizeBound, buffer->data(), length, compression_level_);
                     if (!ZSTD_isError(cSize) && cSize < length) {
                         header = static_cast<uint16_t>(cSize) | 0x8000;
                         write_data = compressed.data();
@@ -160,6 +159,7 @@ void UdpBridge::DoReadFromLocal() {
 // --- Client ---
 Client::Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, int compression_level, const std::string& conf_d_path, const std::string& protocol)
     : io_context_(io_context),
+      strand_(asio::make_strand(io_context)),
       server_addr_(server_addr),
       server_port_(server_port),
       token_(token),
@@ -206,11 +206,19 @@ void Client::Run() {
 }
 
 void Client::Stop() {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this()]() { Stop(); });
+        return;
+    }
     stopping_ = true;
     HandleDisconnect("Client stopping...");
 }
 
 void Client::AddProxy(const ProxyConfig& proxy) {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), proxy]() { AddProxy(proxy); });
+        return;
+    }
     proxies_.push_back(proxy);
 }
 
@@ -220,7 +228,7 @@ void Client::DoConnect() {
 
     auto resolver = std::make_shared<tcp::resolver>(io_context_);
     resolver->async_resolve(server_addr_, std::to_string(server_port_),
-        [this, conn_id, resolver](std::error_code ec, tcp::resolver::results_type results) {
+        asio::bind_executor(strand_, [this, conn_id, resolver](std::error_code ec, tcp::resolver::results_type results) {
             if (conn_id != connection_id_) return;
             if (ec) {
                 HandleDisconnect("DNS resolution failed for " + server_addr_ + ": " + ec.message());
@@ -253,7 +261,7 @@ void Client::DoConnect() {
             auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
             
             asio::async_connect(*socket_ptr, results,
-                [this, socket_ptr, conn_id](std::error_code ec, tcp::endpoint const& connected_endpoint) {
+                asio::bind_executor(strand_, [this, socket_ptr, conn_id](std::error_code ec, tcp::endpoint const& connected_endpoint) {
                     if (conn_id != connection_id_) return;
                     if (!ec) {
                         endpoint_ = connected_endpoint;
@@ -276,14 +284,15 @@ void Client::DoConnect() {
                         }
 
                         stream->set_host_name(server_addr_);
-                        stream->async_handshake(asio::ssl::stream_base::client, [this, stream, conn_id](std::error_code ec) {                            if (conn_id != connection_id_) return;
+                        stream->async_handshake(asio::ssl::stream_base::client, asio::bind_executor(strand_, [this, stream, conn_id](std::error_code ec) {
+                            if (conn_id != connection_id_) return;
                             OnConnect(ec, stream);
-                        });
+                        }));
                     } else {
                         HandleDisconnect("Connect failed: " + ec.message());
                     }
-                });
-        });
+                }));
+        }));
 }
 
 bool Client::RebindUdpSocketForEndpoint(const udp::endpoint& endpoint) {
@@ -398,11 +407,15 @@ void Client::DoQuicConnect(int conn_id) {
 }
 void Client::DoUdpRead() {
     auto endpoint = std::make_shared<udp::endpoint>();
-    udp_socket_.async_receive_from(asio::buffer(udp_recv_buf_, sizeof(udp_recv_buf_)), *endpoint,
-        [this, endpoint](std::error_code ec, std::size_t length) {
+    auto buffer = std::make_shared<std::array<uint8_t, 65535>>();
+    udp_socket_.async_receive_from(asio::buffer(buffer->data(), buffer->size()), *endpoint,
+        [this, endpoint, buffer](std::error_code ec, std::size_t length) {
             if (!ec) {
                 if (quic_session_) {
-                    quic_session_->handle_packet(udp_recv_buf_, length);
+                    auto s = quic_session_;
+                    asio::post(s->strand(), [s, buffer, length]() {
+                        s->handle_packet(buffer->data(), length);
+                    });
                 }
                 DoUdpRead();
                 return;
@@ -447,6 +460,10 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
 }
 
 void Client::HandleDisconnect(const std::string& reason) {
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), reason]() { HandleDisconnect(reason); });
+        return;
+    }
     connection_id_++;
     if (reason != "QUIC_TIMEOUT") {
         common::Logger::Info(reason);
@@ -480,7 +497,7 @@ void Client::HandleDisconnect(const std::string& reason) {
     }
 
     if (immediate_failover) {
-        asio::post(io_context_, [this]() {
+        asio::post(strand_, [this]() {
             if (!stopping_) {
                 DoConnect();
             }
@@ -497,19 +514,28 @@ void Client::ScheduleReconnect() {
     if (reconnect_delay_sec_ < 600) {
         reconnect_delay_sec_ += 10;
     }
-    
+
     common::Logger::Info("Reconnecting in " + std::to_string(reconnect_delay_sec_) + " seconds...");
-    
+
     reconnect_timer_.expires_after(std::chrono::seconds(reconnect_delay_sec_));
-    reconnect_timer_.async_wait([this](std::error_code ec) {
+    std::weak_ptr<Client> weak_self = shared_from_this();
+    reconnect_timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
         if (!ec) {
-            DoConnect();
+            auto self = weak_self.lock();
+            if (self) {
+                DoConnect();
+            }
         }
-    });
+    }));
 }
 
 void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body) {
-    auto self(shared_from_this());
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), type, body]() { SendMessage(type, body); });
+        return;
+    }
+    if (!control_stream_) return;
+
     protocol::Message msg{type, body};
     std::vector<uint8_t> encoded = msg.Encode();
     uint32_t final_len = static_cast<uint32_t>(encoded.size());
@@ -532,19 +558,19 @@ void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>&
     std::memcpy(data->data(), &net_len, sizeof(net_len));
     std::memcpy(data->data() + sizeof(net_len), to_send_body.data(), to_send_body.size());
 
-    if (control_stream_) {
-        control_stream_->async_write(asio::buffer(*data), [this, self, data](std::error_code ec, std::size_t) {
-            if (ec) {
-                common::Logger::Error("Failed to send message: " + ec.message());
-            }
-        });
-    }
+    auto self(shared_from_this());
+    control_stream_->async_write(asio::buffer(*data), asio::bind_executor(strand_, [this, self, data](std::error_code ec, std::size_t) {
+        if (ec) {
+            common::Logger::Error("Failed to send message: " + ec.message());
+            HandleDisconnect("Failed to send control message");
+        }
+    }));
 }
 
 void Client::DoReadHeader(int conn_id) {
     auto self(shared_from_this());
     control_stream_->async_read(asio::buffer(&header_, sizeof(header_)),
-        [this, self, conn_id](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self, conn_id](std::error_code ec, std::size_t) {
             if (conn_id != connection_id_) return;
             if (!ec) {
                 uint32_t h = asio::detail::socket_ops::network_to_host_long(header_.body_length);
@@ -558,14 +584,14 @@ void Client::DoReadHeader(int conn_id) {
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());
             }
-        });
+        }));
 }
 void Client::DoReadBody(uint32_t length, int conn_id) {
     auto self(shared_from_this());
     bool is_compressed = (header_.body_length & protocol::COMPRESSION_FLAG) != 0;
     body_data_.resize(length);
     control_stream_->async_read(asio::buffer(body_data_),
-        [this, self, is_compressed, conn_id](std::error_code ec, std::size_t) {
+        asio::bind_executor(strand_, [this, self, is_compressed, conn_id](std::error_code ec, std::size_t) {
             if (conn_id != connection_id_) return;
             if (!ec) {
                 try {
@@ -596,7 +622,7 @@ void Client::DoReadBody(uint32_t length, int conn_id) {
             } else {
                 HandleDisconnect("Control stream closed: " + ec.message());
             }
-        });
+        }));
 }
 
 void Client::DoLogin() {
