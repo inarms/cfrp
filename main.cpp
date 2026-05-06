@@ -382,15 +382,16 @@ int main(int argc, char** argv) {
             std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Client Configuration
-[client]
-server_addr = "127.0.0.1"
-server_port = 7001
-token = ")" << (token_provided ? cli_token : "secret_token") << R"("
-name = "my-client"
-protocol = "auto"
-compression = true
+                [client]
+                server_addr = "127.0.0.1"
+                server_port = 7001
+                token = ")" << (token_provided ? cli_token : "secret_token") << R"("
+                name = "my-client"
+                protocol = "auto"
+                compression = true
+                threads = 2
 
-[client.ssl]
+                [client.ssl])" << std::endl;
 enable = true
 verify_peer = true
 ca_file = ")" << ca_path << R"("
@@ -413,12 +414,13 @@ remote_port = 6000
             std::ofstream ofs(config_path);
             if (ofs) {
                 ofs << R"(# Default Server Configuration
-[server]
-bind_addr = "0.0.0.0"
-bind_port = 7001
-token = ")" << (token_provided ? cli_token : "secret_token") << R"("
+            [server]
+            bind_addr = "0.0.0.0"
+            bind_port = 7001
+            token = ")" << (token_provided ? cli_token : "secret_token") << R"("
+            threads = 2
 
-# Virtual Host ports for HTTP and HTTPS (SNI routing)
+            # Virtual Host ports for HTTP and HTTPS (SNI routing))" << std::endl;
 vhost_http_port = 8080
 vhost_https_port = 8443
 
@@ -584,8 +586,19 @@ ca_file = "certs/ca.crt"
             return 1;
         }
 
-        unsigned int thread_count = std::thread::hardware_concurrency();
-        if (thread_count == 0) thread_count = 1;
+        // Read thread count from config, default to 2.
+        // 0 means auto (hardware concurrency)
+        unsigned int thread_count = 2;
+        if (config["server"]) {
+            thread_count = static_cast<unsigned int>(config["server"]["threads"].value_or(2));
+        } else if (config["client"]) {
+            thread_count = static_cast<unsigned int>(config["client"]["threads"].value_or(2));
+        }
+
+        if (thread_count == 0) {
+            thread_count = std::thread::hardware_concurrency();
+            if (thread_count == 0) thread_count = 2;
+        }
         
         std::cout << "Running with " << thread_count << " event loop threads." << std::endl;
         
