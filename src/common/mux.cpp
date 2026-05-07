@@ -110,6 +110,42 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
     });
 }
 
+void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
+    auto self(shared_from_this());
+    auto session = session_.lock();
+    if (!session) {
+        asio::post(get_executor(), [handler]() {
+            handler(asio::error::connection_reset, 0);
+        });
+        return;
+    }
+
+    size_t total_length = 0;
+    for (const auto& b : buffers) total_length += b.size();
+
+    auto combined = std::make_shared<std::vector<uint8_t>>(total_length);
+    size_t offset = 0;
+    for (const auto& b : buffers) {
+        std::memcpy(combined->data() + offset, b.data(), b.size());
+        offset += b.size();
+    }
+    
+    Header h;
+    h.version = 0;
+    h.type = (uint8_t)Type::Data;
+    h.flags = 0;
+    h.stream_id = id_;
+    h.length = static_cast<uint32_t>(total_length);
+    
+    session->async_send_frame(h, asio::buffer(*combined), [self, handler, total_length, combined](std::error_code ec) {
+        if (!ec) {
+            handler(ec, total_length);
+        } else {
+            handler(ec, 0);
+        }
+    }, std::move(*combined));
+}
+
 void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
     if (!strand_.running_in_this_thread()) {
         asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {

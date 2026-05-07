@@ -65,8 +65,8 @@ private:
 
     int64_t stream_id_;
     std::weak_ptr<QuicSession> session_;
-    std::deque<uint8_t> read_buf_;
-    size_t read_buf_offset_ = 0;
+    std::deque<std::vector<uint8_t>> read_queue_;
+    size_t read_queue_offset_ = 0;
     struct PendingRead {
         asio::mutable_buffer buffer;
         std::function<void(std::error_code, std::size_t)> handler;

@@ -134,7 +134,7 @@ std::string QuicStream::remote_endpoint_string() {
 std::string QuicStream::protocol_name() { return "QUIC"; }
 
 void QuicStream::handle_data(const uint8_t* data, size_t len) {
-    read_buf_.insert(read_buf_.end(), data, data + len);
+    read_queue_.push_back(std::vector<uint8_t>(data, data + len));
     do_read();
 }
 
@@ -149,12 +149,8 @@ void QuicStream::do_read() {
 
     while (!pending_reads_.empty()) {
         auto& pr = pending_reads_.front();
-        size_t available = read_buf_.size() - read_buf_offset_;
-        if (available == 0) {
-            if (read_buf_offset_ > 0) {
-                read_buf_.clear();
-                read_buf_offset_ = 0;
-            }
+        
+        if (read_queue_.empty()) {
             if (closed_) {
                 auto h = std::move(pr.handler);
                 pending_reads_.pop_front();
@@ -164,33 +160,48 @@ void QuicStream::do_read() {
             break;
         }
 
-        size_t to_copy = std::min(pr.buffer.size(), available);
-        if (pr.read_all && to_copy < pr.buffer.size()) {
-            if (closed_) {
-                auto h = std::move(pr.handler);
-                pending_reads_.pop_front();
-                asio::post(session->strand(), [h]() { h(asio::error::eof, 0); });
-                continue;
+        size_t total_copied = 0;
+        size_t buffer_remaining = pr.buffer.size();
+
+        // Check if we can fulfill read_all
+        if (pr.read_all) {
+            size_t available = 0;
+            for (const auto& vec : read_queue_) available += vec.size();
+            available -= read_queue_offset_;
+            
+            if (available < buffer_remaining && !closed_) {
+                break; // Wait for more data
             }
-            break;
         }
 
-        std::copy(read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_),
-                  read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_ + to_copy),
-                  static_cast<uint8_t*>(pr.buffer.data()));
-        read_buf_offset_ += to_copy;
+        while (buffer_remaining > 0 && !read_queue_.empty()) {
+            auto& front_vec = read_queue_.front();
+            size_t vec_available = front_vec.size() - read_queue_offset_;
+            size_t to_copy = std::min(buffer_remaining, vec_available);
 
-        if (read_buf_offset_ >= 64 * 1024 || read_buf_offset_ == read_buf_.size()) {
-            read_buf_.erase(read_buf_.begin(), read_buf_.begin() + static_cast<std::ptrdiff_t>(read_buf_offset_));
-            read_buf_offset_ = 0;
+            std::memcpy(static_cast<uint8_t*>(pr.buffer.data()) + total_copied,
+                        front_vec.data() + read_queue_offset_, to_copy);
+
+            total_copied += to_copy;
+            buffer_remaining -= to_copy;
+            read_queue_offset_ += to_copy;
+
+            if (read_queue_offset_ == front_vec.size()) {
+                read_queue_.pop_front();
+                read_queue_offset_ = 0;
+            }
         }
+
         auto h = std::move(pr.handler);
         pending_reads_.pop_front();
-        asio::post(session->strand(), [h, to_copy]() { h(std::error_code(), to_copy); });
+        
+        asio::post(session->strand(), [h, total_copied]() {
+            h(std::error_code(), total_copied);
+        });
 
         // Update QUIC flow control
-        if (session->conn()) {
-            ngtcp2_conn_extend_max_stream_offset(session->conn(), stream_id_, to_copy);
+        if (session->conn() && total_copied > 0) {
+            ngtcp2_conn_extend_max_stream_offset(session->conn(), stream_id_, total_copied);
         }
     }
 }

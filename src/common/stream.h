@@ -16,62 +16,30 @@
 
 #pragma once
 
-#ifndef ASIO_USE_WOLFSSL
-#define ASIO_USE_WOLFSSL
-#endif
-
 #include <asio.hpp>
-#include <wolfssl/options.h>
-#include <wolfssl/ssl.h>
-#include <wolfssl/openssl/ssl.h>
 #include <asio/ssl.hpp>
 #include <memory>
-#include <variant>
+#include <string>
+#include <vector>
 #include <functional>
 
 namespace cfrp {
 namespace common {
 
-using asio::ip::tcp;
+using namespace asio::ip;
 namespace ssl = asio::ssl;
 
 class AsyncStream : public std::enable_shared_from_this<AsyncStream> {
 public:
     virtual ~AsyncStream() = default;
-    
-    virtual void async_read_some(asio::mutable_buffer buffer, 
-                                 std::function<void(std::error_code, std::size_t)> handler) = 0;
-                                 
-    virtual void async_write(asio::const_buffer buffer, 
-                             std::function<void(std::error_code, std::size_t)> handler) = 0;
 
-    // New: Scatter-gather write support
-    virtual void async_write(const std::vector<asio::const_buffer>& buffers, 
-                             std::function<void(std::error_code, std::size_t)> handler) {
-        // Default implementation: fallback to copying if not overridden
-        size_t total_size = 0;
-        for (const auto& b : buffers) total_size += b.size();
-        auto temp = std::make_shared<std::vector<uint8_t>>(total_size);
-        size_t offset = 0;
-        for (const auto& b : buffers) {
-            std::memcpy(temp->data() + offset, b.data(), b.size());
-            offset += b.size();
-        }
-        async_write(asio::buffer(*temp), [temp, handler](std::error_code ec, std::size_t n) {
-            handler(ec, n);
-        });
-    }
-
-    virtual void async_read(asio::mutable_buffer buffer,
-                            std::function<void(std::error_code, std::size_t)> handler) = 0;
-
-    virtual void async_handshake(ssl::stream_base::handshake_type type,
-                                 std::function<void(std::error_code)> handler) = 0;
-
+    virtual void async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) = 0;
+    virtual void async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) = 0;
+    virtual void async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) = 0;
+    virtual void async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) = 0;
+    virtual void async_handshake(ssl::stream_base::handshake_type type, std::function<void(std::error_code)> handler) = 0;
     virtual void set_host_name(const std::string& host_name) {}
-
     virtual void* get_native_handle() { return nullptr; }
-
     virtual void close() = 0;
     virtual asio::any_io_executor get_executor() = 0;
     virtual std::string remote_endpoint_string() = 0;
@@ -80,34 +48,26 @@ public:
 
 class TcpStream : public AsyncStream {
 public:
-    explicit TcpStream(tcp::socket socket) : socket_(std::move(socket)) {}
-    
-    void async_read_some(asio::mutable_buffer buffer, 
-                         std::function<void(std::error_code, std::size_t)> handler) override {
-        socket_.async_read_some(buffer, std::move(handler));
-    }
-    
-    void async_write(asio::const_buffer buffer, 
-                     std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_write(socket_, buffer, std::move(handler));
+    TcpStream(tcp::socket socket) : socket_(std::move(socket)) {}
+
+    void async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        socket_.async_read_some(buffer, handler);
     }
 
-    void async_write(const std::vector<asio::const_buffer>& buffers, 
-                     std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_write(socket_, buffers, std::move(handler));
+    void async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_write(socket_, buffer, handler);
     }
 
-    void async_read(asio::mutable_buffer buffer,
-                    std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_read(socket_, buffer, std::move(handler));
+    void async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_write(socket_, buffers, handler);
     }
 
-    void async_handshake(ssl::stream_base::handshake_type,
-                         std::function<void(std::error_code)> handler) override {
-        // No-op for TCP
-        asio::post(socket_.get_executor(), [handler]() {
-            handler(std::error_code());
-        });
+    void async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_read(socket_, buffer, handler);
+    }
+
+    void async_handshake(ssl::stream_base::handshake_type, std::function<void(std::error_code)> handler) override {
+        asio::post(socket_.get_executor(), [handler]() { handler(std::error_code()); });
     }
 
     void close() override {
@@ -136,41 +96,30 @@ private:
 
 class SslStream : public AsyncStream {
 public:
-    explicit SslStream(tcp::socket socket, ssl::context& ctx) 
-        : stream_(std::move(socket), ctx) {
-    }
-    
-    void async_read_some(asio::mutable_buffer buffer, 
-                         std::function<void(std::error_code, std::size_t)> handler) override {
-        stream_.async_read_some(buffer, std::move(handler));
-    }
-    
-    void async_write(asio::const_buffer buffer, 
-                     std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_write(stream_, buffer, std::move(handler));
+    SslStream(tcp::socket socket, ssl::context& ctx) : stream_(std::move(socket), ctx) {}
+
+    void async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        stream_.async_read_some(buffer, handler);
     }
 
-    void async_write(const std::vector<asio::const_buffer>& buffers, 
-                     std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_write(stream_, buffers, std::move(handler));
+    void async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_write(stream_, buffer, handler);
     }
 
-    void async_read(asio::mutable_buffer buffer,
-                    std::function<void(std::error_code, std::size_t)> handler) override {
-        asio::async_read(stream_, buffer, std::move(handler));
+    void async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_write(stream_, buffers, handler);
     }
 
-    void async_handshake(ssl::stream_base::handshake_type type,
-                         std::function<void(std::error_code)> handler) override {
-        stream_.async_handshake(type, std::move(handler));
+    void async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) override {
+        asio::async_read(stream_, buffer, handler);
+    }
+
+    void async_handshake(ssl::stream_base::handshake_type type, std::function<void(std::error_code)> handler) override {
+        stream_.async_handshake(type, handler);
     }
 
     void set_host_name(const std::string& host_name) override {
-#ifdef ASIO_USE_WOLFSSL
-        wolfSSL_set_tlsext_host_name(stream_.native_handle(), host_name.c_str());
-#else
         SSL_set_tlsext_host_name(stream_.native_handle(), host_name.c_str());
-#endif
     }
 
     void* get_native_handle() override {
@@ -204,14 +153,21 @@ private:
 class BufferedStream : public AsyncStream {
 public:
     BufferedStream(std::shared_ptr<AsyncStream> underlying, std::vector<uint8_t> initial_data)
-        : underlying_(std::move(underlying)), buffer_(std::move(initial_data)) {}
+        : underlying_(std::move(underlying)), buffer_(std::move(initial_data)), buffer_offset_(0) {}
 
     void async_read_some(asio::mutable_buffer buffer, 
                          std::function<void(std::error_code, std::size_t)> handler) override {
-        if (!buffer_.empty()) {
-            size_t to_copy = std::min(buffer_.size(), buffer.size());
-            std::memcpy(buffer.data(), buffer_.data(), to_copy);
-            buffer_.erase(buffer_.begin(), buffer_.begin() + to_copy);
+        if (buffer_offset_ < buffer_.size()) {
+            size_t available = buffer_.size() - buffer_offset_;
+            size_t to_copy = std::min(available, buffer.size());
+            std::memcpy(buffer.data(), buffer_.data() + buffer_offset_, to_copy);
+            buffer_offset_ += to_copy;
+            
+            if (buffer_offset_ == buffer_.size()) {
+                buffer_.clear();
+                buffer_offset_ = 0;
+            }
+            
             asio::post(underlying_->get_executor(), [handler, to_copy]() {
                 handler(std::error_code(), to_copy);
             });
@@ -222,10 +178,16 @@ public:
 
     void async_read(asio::mutable_buffer buffer,
                     std::function<void(std::error_code, std::size_t)> handler) override {
-        if (!buffer_.empty()) {
-            size_t to_copy = std::min(buffer_.size(), buffer.size());
-            std::memcpy(buffer.data(), buffer_.data(), to_copy);
-            buffer_.erase(buffer_.begin(), buffer_.begin() + to_copy);
+        if (buffer_offset_ < buffer_.size()) {
+            size_t available = buffer_.size() - buffer_offset_;
+            size_t to_copy = std::min(available, buffer.size());
+            std::memcpy(buffer.data(), buffer_.data() + buffer_offset_, to_copy);
+            buffer_offset_ += to_copy;
+
+            if (buffer_offset_ == buffer_.size()) {
+                buffer_.clear();
+                buffer_offset_ = 0;
+            }
             
             if (to_copy < buffer.size()) {
                 void* next_ptr = static_cast<uint8_t*>(buffer.data()) + to_copy;
@@ -275,6 +237,7 @@ public:
 private:
     std::shared_ptr<AsyncStream> underlying_;
     std::vector<uint8_t> buffer_;
+    size_t buffer_offset_;
 };
 
 } // namespace common
