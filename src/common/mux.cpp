@@ -123,10 +123,11 @@ void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std:
     size_t total_length = 0;
     for (const auto& b : buffers) total_length += b.size();
 
-    auto combined = std::make_shared<std::vector<uint8_t>>(total_length);
+    auto pool = session->buffer_pool();
+    auto combined = pool->Get(total_length);
     size_t offset = 0;
     for (const auto& b : buffers) {
-        std::memcpy(combined->data() + offset, b.data(), b.size());
+        std::memcpy(combined.get() + offset, b.data(), b.size());
         offset += b.size();
     }
     
@@ -137,13 +138,13 @@ void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std:
     h.stream_id = id_;
     h.length = static_cast<uint32_t>(total_length);
     
-    session->async_send_frame(h, asio::buffer(*combined), [self, handler, total_length, combined](std::error_code ec) {
+    session->async_send_frame(h, asio::buffer(combined.get(), total_length), [self, handler, total_length, combined](std::error_code ec) {
         if (!ec) {
             handler(ec, total_length);
         } else {
             handler(ec, 0);
         }
-    }, std::move(*combined));
+    }, combined);
 }
 
 void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -211,15 +212,14 @@ std::string MuxStream::protocol_name() {
     return "unknown";
 }
 
-void MuxStream::handle_data(std::vector<uint8_t> data) {
+void MuxStream::handle_data(std::shared_ptr<uint8_t[]> data, size_t length) {
     if (!strand_.running_in_this_thread()) {
-        asio::post(strand_, [this, self = shared_from_this(), data = std::move(data)]() mutable {
-            handle_data(std::move(data));
+        asio::post(strand_, [this, self = shared_from_this(), data, length]() {
+            handle_data(data, length);
         });
         return;
     }
-    // Reduced churn: push the whole vector into the queue instead of copying bytes to deque
-    read_queue_.push_back(std::move(data));
+    read_queue_.push_back({data, length});
     do_read_from_buffer();
 }
 
@@ -276,7 +276,7 @@ void MuxStream::do_read_from_buffer() {
         // Check if we can fulfill read_all
         if (pr.read_all) {
             size_t available = 0;
-            for (const auto& vec : read_queue_) available += vec.size();
+            for (const auto& block : read_queue_) available += block.length;
             available -= read_queue_offset_;
             
             if (available < buffer_remaining && !remote_closed_) {
@@ -285,18 +285,18 @@ void MuxStream::do_read_from_buffer() {
         }
 
         while (buffer_remaining > 0 && !read_queue_.empty()) {
-            auto& front_vec = read_queue_.front();
-            size_t vec_available = front_vec.size() - read_queue_offset_;
+            auto& block = read_queue_.front();
+            size_t vec_available = block.length - read_queue_offset_;
             size_t to_copy = std::min(buffer_remaining, vec_available);
 
             std::memcpy(static_cast<uint8_t*>(pr.buffer.data()) + total_copied,
-                        front_vec.data() + read_queue_offset_, to_copy);
+                        block.data.get() + read_queue_offset_, to_copy);
 
             total_copied += to_copy;
             buffer_remaining -= to_copy;
             read_queue_offset_ += to_copy;
 
-            if (read_queue_offset_ == front_vec.size()) {
+            if (read_queue_offset_ == block.length) {
                 read_queue_.pop_front();
                 read_queue_offset_ = 0;
             }
@@ -330,12 +330,15 @@ void MuxStream::do_read_from_buffer() {
 
 // --- Session ---
 
-Session::Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server)
+Session::Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server, std::shared_ptr<BufferPool> buffer_pool)
     : underlying_stream_(std::move(underlying_stream)), 
       strand_(asio::make_strand(underlying_stream_->get_executor())),
+      buffer_pool_(std::move(buffer_pool)),
       is_server_(is_server), 
       next_stream_id_(is_server ? 2 : 1),
-      heartbeat_timer_(strand_) {}
+      heartbeat_timer_(strand_) {
+    if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
+}
 
 void Session::start(std::function<void(std::shared_ptr<MuxStream>)> on_new_stream) {
     on_new_stream_ = std::move(on_new_stream);
@@ -425,10 +428,10 @@ void Session::remove_stream(uint32_t stream_id) {
     }
 }
 
-void Session::async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler, std::vector<uint8_t>&& body_storage) {
+void Session::async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler, std::shared_ptr<uint8_t[]> body_storage) {
     if (!strand_.running_in_this_thread()) {
-        asio::post(strand_, [this, self = shared_from_this(), h, body, handler, bs = std::move(body_storage)]() mutable {
-            async_send_frame(h, body, handler, std::move(bs));
+        asio::post(strand_, [this, self = shared_from_this(), h, body, handler, body_storage]() mutable {
+            async_send_frame(h, body, handler, body_storage);
         });
         return;
     }
@@ -436,11 +439,11 @@ void Session::async_send_frame(Header h, asio::const_buffer body, std::function<
     auto pw = std::make_shared<PendingWrite>();
     h.encode(pw->header_data);
     pw->body = body;
-    pw->body_storage = std::move(body_storage);
+    pw->body_storage = body_storage;
     
     // If we have body_storage and body is empty, it might mean the caller wants us to use body_storage as body
-    if (pw->body.size() == 0 && !pw->body_storage.empty()) {
-        pw->body = asio::buffer(pw->body_storage);
+    if (pw->body.size() == 0 && pw->body_storage) {
+        pw->body = asio::buffer(pw->body_storage.get(), h.length);
     }
     
     pw->handler = std::move(handler);
@@ -465,7 +468,7 @@ void Session::do_read_header() {
                 if (header.type == (uint8_t)Type::Data && header.length > 0) {
                     do_read_body(header);
                 } else {
-                    handle_frame(header, {});
+                    handle_frame(header, {}, 0);
                     do_read_header();
                 }
             } else {
@@ -476,15 +479,15 @@ void Session::do_read_header() {
 
 void Session::do_read_body(Header h) {
     auto self = shared_from_this();
-    auto body = std::make_shared<std::vector<uint8_t>>(h.length);
-    underlying_stream_->async_read(asio::buffer(*body),
+    auto body = buffer_pool_->Get(h.length);
+    underlying_stream_->async_read(asio::buffer(body.get(), h.length),
         asio::bind_executor(strand_, [this, self, h, body](std::error_code ec, std::size_t) {
             {
                 std::lock_guard<std::mutex> lock(mux_mutex_);
                 if (stopped_) return;
             }
             if (!ec) {
-                handle_frame(h, std::move(*body));
+                handle_frame(h, body, h.length);
                 do_read_header();
             } else {
                 stop();
@@ -492,7 +495,7 @@ void Session::do_read_body(Header h) {
         }));
 }
 
-void Session::handle_frame(Header h, std::vector<uint8_t> body) {
+void Session::handle_frame(Header h, std::shared_ptr<uint8_t[]> body, size_t length) {
     std::shared_ptr<MuxStream> stream;
     {
         std::lock_guard<std::mutex> lock(mux_mutex_);
@@ -524,8 +527,8 @@ void Session::handle_frame(Header h, std::vector<uint8_t> body) {
         }
         
         if (stream) {
-            if (!body.empty()) {
-                stream->handle_data(std::move(body));
+            if (length > 0) {
+                stream->handle_data(body, length);
             }
             if (h.flags & Flags::FIN) {
                 stream->handle_close();

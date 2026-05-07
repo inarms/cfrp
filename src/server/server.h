@@ -40,6 +40,7 @@
 #include "common/async_bridge.h"
 #include "common/zstd_utils.h"
 #include "common/hash_utils.h"
+#include "common/buffer_pool.h"
 
 namespace cfrp {
 namespace server {
@@ -67,7 +68,7 @@ class ControlSession;
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr, std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Start();
 
 private:
@@ -75,6 +76,7 @@ private:
 
     std::shared_ptr<common::AsyncStream> stream_;
     std::shared_ptr<common::RateLimiter> rate_limiter_;
+    std::shared_ptr<common::BufferPool> buffer_pool_;
     udp::socket& socket_;
     udp::endpoint remote_endpoint_;
     bool use_compression_;
@@ -87,7 +89,7 @@ private:
 
 class UdpProxyListener : public std::enable_shared_from_this<UdpProxyListener> {
 public:
-    UdpProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name);
+    UdpProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name, std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
@@ -98,6 +100,7 @@ private:
     void DoReceive();
 
     Server& server_;
+    std::shared_ptr<common::BufferPool> buffer_pool_;
     udp::socket socket_;
     udp::endpoint sender_endpoint_;
     std::weak_ptr<ControlSession> session_;
@@ -159,9 +162,11 @@ private:
 
 class Server {
 public:
-    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto", const std::vector<PortRange>& allowed_ports = {}, const std::vector<std::string>& allowed_clients = {});
+    Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol = "auto", const std::vector<PortRange>& allowed_ports = {}, const std::vector<std::string>& allowed_clients = {}, std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Run();
     void Stop();
+
+    std::shared_ptr<common::BufferPool> buffer_pool() const { return buffer_pool_; }
 
     void SetVhostPorts(uint16_t http_port, uint16_t https_port) {
         vhost_http_port_ = http_port;
@@ -200,6 +205,7 @@ private:
     std::string token_;
     std::string protocol_;
     SslConfig ssl_config_;
+    std::shared_ptr<common::BufferPool> buffer_pool_;
     std::vector<PortRange> allowed_ports_;
     std::unordered_set<std::string> allowed_clients_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
