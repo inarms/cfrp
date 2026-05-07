@@ -16,6 +16,7 @@
 
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
+#include <unordered_map>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/quic.h>
@@ -202,7 +203,11 @@ namespace {
     }
 
     int recv_stream_data(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t offset, const uint8_t *data, size_t datalen, void *user_data, void *stream_user_data) {
-        static_cast<QuicSession*>(user_data)->on_stream_data(stream_id, data, datalen);
+        auto session = static_cast<QuicSession*>(user_data);
+        session->on_stream_data(stream_id, data, datalen);
+        if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
+            session->on_stream_close(stream_id);
+        }
         return 0;
     }
     int stream_close(ngtcp2_conn *conn, uint32_t flags, int64_t stream_id, uint64_t app_error_code, void *user_data, void *stream_user_data) {
@@ -443,6 +448,7 @@ std::shared_ptr<QuicStream> QuicSession::open_stream() {
 void QuicSession::close_session() {
     std::lock_guard lock(ngtcp2_mutex_);
     if (!conn_ || closed_notified_) return;
+    
     uint8_t buf[1500];
     ngtcp2_pkt_info pi;
     ngtcp2_ccerr ccerr;
@@ -458,7 +464,21 @@ void QuicSession::close_session() {
             socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
         }
     }
-    // check_closed called outside this lock in send_packets if needed, or we can call it here
+    
+    // Explicitly trigger closure notification
+    closed_notified_ = true;
+    auto streams_to_close = std::move(streams_);
+    streams_.clear();
+    for (auto& pair : streams_to_close) {
+        pair.second->handle_close();
+    }
+    
+    if (on_closed_cb_) {
+        auto cb = on_closed_cb_;
+        asio::post(strand_, [this, cb, self = shared_from_this()]() {
+            cb(self);
+        });
+    }
 }
 
 void QuicSession::close_stream(int64_t stream_id) {
@@ -468,10 +488,12 @@ void QuicSession::close_stream(int64_t stream_id) {
         });
         return;
     }
-    std::lock_guard lock(ngtcp2_mutex_);
-    if (!conn_) return;
-    ngtcp2_conn_shutdown_stream(conn_, 0, stream_id, 0);
-    // Don't call send_packets inside lock if it might re-lock or post
+    {
+        std::lock_guard lock(ngtcp2_mutex_);
+        if (!conn_) return;
+        ngtcp2_conn_shutdown_stream(conn_, 0, stream_id, 0);
+    }
+    send_packets();
 }
 
 void QuicSession::write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler) {
@@ -644,7 +666,7 @@ void QuicSession::check_closed() {
     if (ngtcp2_conn_in_closing_period(conn_) || ngtcp2_conn_in_draining_period(conn_)) {
         closed_notified_ = true;
 
-        std::map<int64_t, std::shared_ptr<QuicStream>> streams_to_close;
+        std::unordered_map<int64_t, std::shared_ptr<QuicStream>> streams_to_close;
         streams_to_close = std::move(streams_);
         streams_.clear();
 

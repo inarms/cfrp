@@ -220,15 +220,22 @@ void ControlSession::Stop() {
         return;
     }
 
-    common::Logger::Info("[Server] Client disconnected: " + client_endpoint_ + " [" + client_name_ + "]");
-    server_.ReleaseClientName(client_name_);
+    if (authenticated_) {
+        common::Logger::Info("[Server] Client disconnected: " + client_endpoint_ + " [" + client_name_ + "]");
+        server_.ReleaseClientName(client_name_);
+    } else {
+        common::Logger::Info("[Server] Unauthenticated client disconnected: " + client_endpoint_);
+    }
+    
     for (auto& proxy : proxies_) {
+        common::Logger::Info("[Server] Cleaning up proxy [" + proxy->name() + "] for client [" + client_name_ + "]");
         server_.ClearPendingForProxy(proxy->name());
         server_.RemoveRateLimiter(proxy->name());
         proxy->Stop();
     }
     proxies_.clear();
     for (auto& proxy : udp_proxies_) {
+        common::Logger::Info("[Server] Cleaning up UDP proxy [" + proxy->name() + "] for client [" + client_name_ + "]");
         server_.ClearPendingForProxy(proxy->name());
         server_.RemoveRateLimiter(proxy->name());
         proxy->Stop();

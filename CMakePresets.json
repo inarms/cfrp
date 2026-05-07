@@ -15,10 +15,7 @@
         "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "VCPKG_HOST_TRIPLET": "arm64-osx"
       },
-      "binaryDir": "${sourceDir}/build",
-      "environment": {
-        "VCPKG_ROOT": "$env{VCPKG_ROOT}"
-      }
+      "binaryDir": "${sourceDir}/build"
     },
     {
       "name": "release",
@@ -34,10 +31,7 @@
         "VCPKG_TARGET_TRIPLET": "arm64-osx",
         "VCPKG_HOST_TRIPLET": "arm64-osx"
       },
-      "binaryDir": "${sourceDir}/build_release",
-      "environment": {
-        "VCPKG_ROOT": "$env{VCPKG_ROOT}"
-      }
+      "binaryDir": "${sourceDir}/build_release"
     }
   ],
   "buildPresets": [
@@ -59,7 +53,7 @@
       "name": "default",
       "configurePreset": "default",
       "output": {
-        "outputOnFailure": "always"
+        "outputOnFailure": true
       },
       "execution": {
         "stopOnFailure": false

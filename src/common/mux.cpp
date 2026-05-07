@@ -16,6 +16,7 @@
 
 #include "common/mux.h"
 #include "common/utils.h"
+#include <unordered_map>
 #include <asio/read.hpp>
 #include <asio/write.hpp>
 #include <asio/post.hpp>
@@ -316,7 +317,7 @@ void Session::stop() {
         return;
     }
 
-    std::map<uint32_t, std::shared_ptr<MuxStream>> streams_to_close;
+    std::unordered_map<uint32_t, std::shared_ptr<MuxStream>> streams_to_close;
     {
         std::lock_guard<std::mutex> lock(mux_mutex_);
         if (stopped_) return;

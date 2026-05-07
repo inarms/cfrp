@@ -477,12 +477,11 @@ void Client::HandleDisconnect(const std::string& reason) {
         return;
     }
 
-    if (stopping_) return;
-
-    connection_id_++;
-    if (reason != "QUIC_TIMEOUT") {
+    if (reason != "QUIC_TIMEOUT" && !reason.empty()) {
         common::Logger::Info(reason);
     }
+
+    connection_id_++;
 
     if (mux_session_) {
         mux_session_->stop();
