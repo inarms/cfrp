@@ -388,7 +388,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             } else if (type == "http" || type == "https") {
                 for (const auto& domain : custom_domains) {
                     server_.AddVhostRoute(domain, shared_from_this(), name, type);
-                    registered_domains_.push_back(domain);
+                    registered_domains_.insert(domain);
                 }
             } else {
                 auto listener = std::make_shared<ProxyListener>(server_, io_context_, remote_port, shared_from_this(), name);
@@ -475,7 +475,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
       protocol_(protocol),
       ssl_config_(ssl_config),
       allowed_ports_(allowed_ports),
-    allowed_clients_(allowed_clients) {
+    allowed_clients_(allowed_clients.begin(), allowed_clients.end()) {
     
     if (ssl_config_.enable || protocol_ == "quic" || protocol_ == "auto") {
         if (ssl_config_.auto_generate) {
@@ -560,7 +560,7 @@ void Server::Stop() {
     // We collect them first to avoid iterator invalidation when callbacks are triggered
     std::vector<std::shared_ptr<common::quic::QuicSession>> sessions_to_close;
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(quic_mutex_);
         for (auto& pair : quic_sessions_) {
             sessions_to_close.push_back(pair.second);
         }
@@ -572,7 +572,7 @@ void Server::Stop() {
     }
 
     {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::unique_lock<std::shared_mutex> lock(quic_mutex_);
         quic_sessions_.clear();
     }
 
@@ -587,7 +587,7 @@ void Server::DoUdpRead() {
             if (!ec) {
                 std::shared_ptr<common::quic::QuicSession> session;
                 {
-                    std::lock_guard<std::mutex> lock(map_mutex_);
+                    std::shared_lock<std::shared_mutex> lock(quic_mutex_);
                     auto it = quic_sessions_.find(*endpoint);
                     if (it != quic_sessions_.end()) {
                         session = it->second;
@@ -623,13 +623,13 @@ void Server::DoUdpRead() {
 
                     new_session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
                         std::cout << "[Server] QUIC session closed for " << *endpoint << std::endl;
-                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        std::unique_lock<std::shared_mutex> lock(quic_mutex_);
                         quic_sessions_.erase(*endpoint);
                     });
 
                     new_session->init(quic_ssl_ctx_->native_handle(), &n_dcid, &n_scid);
                     {
-                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        std::unique_lock<std::shared_mutex> lock(quic_mutex_);
                         auto it = quic_sessions_.find(*endpoint);
                         if (it != quic_sessions_.end()) {
                             session = it->second;
@@ -660,17 +660,17 @@ void Server::DoUdpRead() {
 }
 
 void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::lock_guard<std::mutex> lock(pending_conn_mutex_);
     pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name});
 }
 
 void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::lock_guard<std::mutex> lock(pending_conn_mutex_);
     pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name});
 }
 
 std::string Server::AllocateClientName(const std::string& requested_name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::lock_guard<std::mutex> lock(client_name_mutex_);
     std::string name = requested_name;
     if (name.empty()) {
         name = "client";
@@ -678,28 +678,25 @@ std::string Server::AllocateClientName(const std::string& requested_name) {
 
     std::string final_name = name;
     int suffix = 1;
-    while (std::find(active_client_names_.begin(), active_client_names_.end(), final_name) != active_client_names_.end()) {
+    while (active_client_names_.find(final_name) != active_client_names_.end()) {
         final_name = name + "_" + std::to_string(suffix++);
     }
-    active_client_names_.push_back(final_name);
+    active_client_names_.insert(final_name);
     return final_name;
 }
 
 void Server::ReleaseClientName(const std::string& name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    auto it = std::find(active_client_names_.begin(), active_client_names_.end(), name);
-    if (it != active_client_names_.end()) {
-        active_client_names_.erase(it);
-    }
+    std::lock_guard<std::mutex> lock(client_name_mutex_);
+    active_client_names_.erase(name);
 }
 
 void Server::RemoveRateLimiter(const std::string& proxy_name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::unique_lock<std::shared_mutex> lock(rate_limit_mutex_);
     proxy_rate_limiters_.erase(proxy_name);
 }
 
 void Server::ClearPendingForProxy(const std::string& proxy_name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::lock_guard<std::mutex> lock(pending_conn_mutex_);
     for (auto it = pending_user_conns_.begin(); it != pending_user_conns_.end(); ) {
         if (it->second.proxy_name == proxy_name) {
             it = pending_user_conns_.erase(it); // tcp::socket dtor closes the fd
@@ -802,19 +799,52 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                     std::string ticket(reinterpret_cast<char*>(ticket_ptr->data() + 1), 64);
                     ticket.erase(ticket.find_last_not_of(" \n\r\t") + 1);
 
-                    std::lock_guard<std::mutex> lock(map_mutex_);
-                    auto it_tcp = pending_user_conns_.find(ticket);
-                    if (it_tcp != pending_user_conns_.end()) {
-                        common::Logger::Info("Splicing user TCP connection and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
-                        auto initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
-                        auto user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
-                        auto proxy_name = it_tcp->second.proxy_name;
-                        pending_user_conns_.erase(it_tcp);
+                    std::shared_ptr<tcp::socket> user_socket;
+                    std::shared_ptr<std::vector<uint8_t>> initial_data;
+                    std::string proxy_name;
+                    bool found_tcp = false;
 
-                        std::shared_ptr<common::RateLimiter> rl;
+                    std::shared_ptr<UdpProxyListener> udp_listener;
+                    udp::endpoint udp_endpoint;
+                    bool found_udp = false;
+
+                    {
+                        std::lock_guard<std::mutex> lock(pending_conn_mutex_);
+                        auto it_tcp = pending_user_conns_.find(ticket);
+                        if (it_tcp != pending_user_conns_.end()) {
+                            initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
+                            user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
+                            proxy_name = it_tcp->second.proxy_name;
+                            pending_user_conns_.erase(it_tcp);
+                            found_tcp = true;
+                        } else {
+                            auto it_udp = pending_udp_sessions_.find(ticket);
+                            if (it_udp != pending_udp_sessions_.end()) {
+                                udp_listener = it_udp->second.listener;
+                                udp_endpoint = it_udp->second.endpoint;
+                                proxy_name = it_udp->second.proxy_name;
+                                pending_udp_sessions_.erase(it_udp);
+                                found_udp = true;
+                            }
+                        }
+                    }
+
+                    if (!found_tcp && !found_udp) {
+                        common::Logger::Error("No pending connection/session for ticket: " + ticket);
+                        stream->close();
+                        return;
+                    }
+
+                    std::shared_ptr<common::RateLimiter> rl;
+                    {
+                        std::shared_lock<std::shared_mutex> lock(rate_limit_mutex_);
                         auto it_rl = proxy_rate_limiters_.find(proxy_name);
                         if (it_rl != proxy_rate_limiters_.end()) rl = it_rl->second;
+                    }
 
+                    if (found_tcp) {
+                        common::Logger::Info("Splicing user TCP connection and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
+                        
                         if (!initial_data->empty()) {
                             // If compression is enabled, we MUST wrap initial_data in a compressed header
                             // because the client Bridge expects it.
@@ -834,10 +864,6 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                                 } else {
                                     final_header = asio::detail::socket_ops::host_to_network_long(static_cast<uint32_t>(initial_data->size()));
                                 }
-                            } else {
-                                // Mux is raw, but we don't use this branch if use_compression is true.
-                                // Actually, Bridge only exists if we use compression or not.
-                                // If use_compression is false, Bridge uses async_read_some (no headers).
                             }
 
                             if (use_compression) {
@@ -871,21 +897,10 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                             auto bridge = std::make_shared<common::Bridge>(user_stream, stream, use_compression, 1, rl);
                             bridge->Start();
                         }
-                    } else {
-                        auto it_udp = pending_udp_sessions_.find(ticket);
-                        if (it_udp != pending_udp_sessions_.end()) {
-                            common::Logger::Info("Splicing user UDP session and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
-                            std::shared_ptr<common::RateLimiter> rl;
-                            auto it_rl = proxy_rate_limiters_.find(it_udp->second.proxy_name);
-                            if (it_rl != proxy_rate_limiters_.end()) rl = it_rl->second;
-                            
-                            auto bridge = std::make_shared<UdpBridge>(io_context_, stream, it_udp->second.listener->socket(), it_udp->second.endpoint, use_compression, rl);
-                            bridge->Start();
-                            pending_udp_sessions_.erase(it_udp);
-                        } else {
-                            common::Logger::Error("No pending connection/session for ticket: " + ticket);
-                            stream->close();
-                        }
+                    } else if (found_udp) {
+                        common::Logger::Info("Splicing user UDP session and mux work stream for ticket: " + ticket + " (Compressed: " + (use_compression ? "true" : "false") + ")");
+                        auto bridge = std::make_shared<UdpBridge>(io_context_, stream, udp_listener->socket(), udp_endpoint, use_compression, rl);
+                        bridge->Start();
                     }
                 }
             });
@@ -893,25 +908,25 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
 }
 
 void Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::unique_lock<std::shared_mutex> lock(vhost_mutex_);
     vhost_routes_[domain] = {session, proxy_name, type};
     common::Logger::Info("[Server] Added vhost route: " + domain + " -> " + proxy_name + " (" + type + ")");
 }
 
 void Server::RemoveVhostRoute(const std::string& domain) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::unique_lock<std::shared_mutex> lock(vhost_mutex_);
     vhost_routes_.erase(domain);
 }
 
 std::shared_ptr<common::RateLimiter> Server::GetRateLimiter(const std::string& proxy_name) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::shared_lock<std::shared_mutex> lock(rate_limit_mutex_);
     auto it = proxy_rate_limiters_.find(proxy_name);
     if (it != proxy_rate_limiters_.end()) return it->second;
     return nullptr;
 }
 
 void Server::CreateRateLimiter(const std::string& proxy_name, int64_t bytes_per_sec) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
+    std::unique_lock<std::shared_mutex> lock(rate_limit_mutex_);
     if (proxy_rate_limiters_.find(proxy_name) == proxy_rate_limiters_.end()) {
         proxy_rate_limiters_[proxy_name] = std::make_shared<common::RateLimiter>(io_context_, bytes_per_sec);
     } else {
@@ -996,7 +1011,7 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
                     std::shared_ptr<ControlSession> session;
                     std::string proxy_name;
                     {
-                        std::lock_guard<std::mutex> lock(map_mutex_);
+                        std::shared_lock<std::shared_mutex> lock(vhost_mutex_);
                         auto it = vhost_routes_.find(domain);
                         if (it != vhost_routes_.end()) {
                             session = it->second.session.lock();
@@ -1033,7 +1048,7 @@ bool Server::IsPortAllowed(uint16_t port) const {
 
 bool Server::IsClientAllowed(const std::string& name) const {
     if (allowed_clients_.empty()) return true;
-    return std::find(allowed_clients_.begin(), allowed_clients_.end(), name) != allowed_clients_.end();
+    return allowed_clients_.find(name) != allowed_clients_.end();
 }
 
 } // namespace server

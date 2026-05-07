@@ -28,7 +28,9 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
+#include <shared_mutex>
 #include <deque>
 #include "common/protocol.h"
 #include "common/stream.h"
@@ -147,7 +149,7 @@ private:
     std::vector<char> body_data_;
     std::vector<std::shared_ptr<ProxyListener>> proxies_;
     std::vector<std::shared_ptr<UdpProxyListener>> udp_proxies_;
-    std::vector<std::string> registered_domains_;
+    std::unordered_set<std::string> registered_domains_;
     bool authenticated_ = false;
     bool compression_enabled_ = false;
 
@@ -199,7 +201,7 @@ private:
     std::string protocol_;
     SslConfig ssl_config_;
     std::vector<PortRange> allowed_ports_;
-    std::vector<std::string> allowed_clients_;
+    std::unordered_set<std::string> allowed_clients_;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     std::unique_ptr<asio::ssl::context> quic_ssl_ctx_;
 
@@ -230,8 +232,14 @@ private:
 
     std::unordered_map<std::string, TcpSessionInfo> pending_user_conns_;
     std::unordered_map<std::string, UdpSessionInfo> pending_udp_sessions_;
-    std::vector<std::string> active_client_names_;
-    std::mutex map_mutex_;
+    std::unordered_set<std::string> active_client_names_;
+    
+    // Split locks for better concurrency
+    mutable std::shared_mutex quic_mutex_;
+    mutable std::shared_mutex vhost_mutex_;
+    mutable std::shared_mutex rate_limit_mutex_;
+    std::mutex pending_conn_mutex_;
+    std::mutex client_name_mutex_;
 
     // ngtcp2 state
     std::unordered_map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>, common::UdpEndpointHash> quic_sessions_;
