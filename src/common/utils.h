@@ -145,6 +145,15 @@ public:
     static void SetLevel(LogLevel level) noexcept { level_ = level; }
     static LogLevel GetLevel() noexcept { return level_; }
 
+    static void SetLevel(const std::string& level_s) {
+        std::string s = level_s;
+        for (auto& c : s) c = std::tolower(c);
+        if (s == "none" || s == "0") level_ = LogLevel::None;
+        else if (s == "error" || s == "1") level_ = LogLevel::Error;
+        else if (s == "info" || s == "2") level_ = LogLevel::Info;
+        else if (s == "debug" || s == "3") level_ = LogLevel::Debug;
+    }
+
     static void Error(const std::string& msg) {
         if (level_ >= LogLevel::Error) {
             std::lock_guard<std::mutex> lock(mutex_);

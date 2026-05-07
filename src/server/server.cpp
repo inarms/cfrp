@@ -622,7 +622,7 @@ void Server::DoUdpRead() {
                     });
 
                     new_session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
-                        std::cout << "[Server] QUIC session closed for " << *endpoint << std::endl;
+                        common::Logger::Info("[Server] QUIC session closed for " + endpoint->address().to_string() + ":" + std::to_string(endpoint->port()));
                         std::unique_lock<std::shared_mutex> lock(quic_mutex_);
                         quic_sessions_.erase(*endpoint);
                     });
@@ -651,7 +651,7 @@ void Server::DoUdpRead() {
             }
 
             if (ec != asio::error::operation_aborted) {
-                std::cerr << "[Server] UDP receive error on QUIC socket: " << ec.message() << std::endl;
+                common::Logger::Error("[Server] UDP receive error on QUIC socket: " + ec.message());
                 if (udp_socket_.is_open()) {
                     DoUdpRead();
                 }
@@ -718,7 +718,7 @@ void Server::DoAccept() {
         [this](std::error_code ec, tcp::socket socket) {
             if (ec) {
                 if (ec != asio::error::operation_aborted) {
-                    std::cerr << "Accept error: " << ec.message() << std::endl;
+                    common::Logger::Error("Accept error: " + ec.message());
                     DoAccept();
                 }
                 return;
@@ -775,7 +775,7 @@ void Server::DoAccept() {
                         start_mux(stream);
                     }
                 } else {
-                    std::cerr << "[Server] TLS handshake failed from " << peer_addr << ": " << ec.message() << " (likely a non-TLS probe)" << std::endl;
+                    common::Logger::Error("[Server] TLS handshake failed from " + peer_addr + ": " + ec.message() + " (likely a non-TLS probe)");
                 }
             });
             

@@ -255,7 +255,7 @@ void Client::DoConnect() {
                 return;
             }
 
-            std::cout << "Connecting to server " << server_addr_ << " (" << endpoint_.address().to_string() << ":" << server_port_ << ") (TCP)..." << std::endl;
+            common::Logger::Info("Connecting to server " + server_addr_ + " (" + endpoint_.address().to_string() + ":" + std::to_string(server_port_) + ") (TCP)...");
             
             tcp::socket socket(io_context_);
             auto socket_ptr = std::make_shared<tcp::socket>(std::move(socket));
@@ -303,14 +303,14 @@ bool Client::RebindUdpSocketForEndpoint(const udp::endpoint& endpoint) {
 
     udp_socket_.open(endpoint.protocol(), ec);
     if (ec) {
-        std::cerr << "Failed to open UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        common::Logger::Error("Failed to open UDP socket for QUIC endpoint " + endpoint.address().to_string() + ":" + std::to_string(endpoint.port()) + ": " + ec.message());
         return false;
     }
 
     udp::endpoint bind_ep(endpoint.protocol(), 0);
     udp_socket_.bind(bind_ep, ec);
     if (ec) {
-        std::cerr << "Failed to bind UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        common::Logger::Error("Failed to bind UDP socket for QUIC endpoint " + endpoint.address().to_string() + ":" + std::to_string(endpoint.port()) + ": " + ec.message());
         std::error_code close_ec;
         udp_socket_.close(close_ec);
         return false;
@@ -318,7 +318,7 @@ bool Client::RebindUdpSocketForEndpoint(const udp::endpoint& endpoint) {
 
     udp_socket_.connect(endpoint, ec);
     if (ec) {
-        std::cerr << "Failed to connect UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        common::Logger::Error("Failed to connect UDP socket for QUIC endpoint " + endpoint.address().to_string() + ":" + std::to_string(endpoint.port()) + ": " + ec.message());
         std::error_code close_ec;
         udp_socket_.close(close_ec);
         return false;
@@ -342,7 +342,7 @@ bool Client::TryNextQuicEndpoint(int conn_id, const char* reason) {
             continue;
         }
 
-        std::cout << "Trying QUIC endpoint " << udp_endpoint_ << " (" << reason << ")" << std::endl;
+        common::Logger::Info("Trying QUIC endpoint " + udp_endpoint_.address().to_string() + ":" + std::to_string(udp_endpoint_.port()) + " (" + std::string(reason) + ")");
         DoQuicConnect(conn_id);
         return true;
     }
@@ -351,7 +351,7 @@ bool Client::TryNextQuicEndpoint(int conn_id, const char* reason) {
 }
 
 void Client::DoQuicConnect(int conn_id) {
-    std::cout << "Connecting to server via QUIC " << udp_endpoint_.address().to_string() << ":" << udp_endpoint_.port() << "..." << std::endl;
+    common::Logger::Info("Connecting to server via QUIC " + udp_endpoint_.address().to_string() + ":" + std::to_string(udp_endpoint_.port()) + "...");
     quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
 
     if (!quic_ssl_ctx_) {
@@ -380,7 +380,7 @@ void Client::DoQuicConnect(int conn_id) {
             if (TryNextQuicEndpoint(conn_id, "handshake timeout")) {
                 return;
             }
-            std::cout << "QUIC handshake timed out, failing over to TCP..." << std::endl;
+            common::Logger::Info("QUIC handshake timed out, failing over to TCP...");
             HandleDisconnect("QUIC_TIMEOUT");
             return;
         }
@@ -392,7 +392,7 @@ void Client::DoQuicConnect(int conn_id) {
     quic_session_->set_on_connected([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
         if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
-        std::cout << "QUIC handshake completed. Opening control stream..." << std::endl;
+        common::Logger::Info("QUIC handshake completed. Opening control stream...");
         auto stream = session->open_stream();
         if (stream) {
             OnConnect(std::error_code(), stream);
@@ -745,19 +745,19 @@ void Client::PollConfDirectory() {
                             new_proxies[pc.name] = pc;
                         }
                     } catch (const std::exception& e) {
-                        std::cerr << "[Client] Error parsing [" << entry.path().filename() << "]: " << e.what() << std::endl;
+                        common::Logger::Error("[Client] Error parsing [" + entry.path().filename().string() + "]: " + e.what());
                     }
                 }
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "[Client] Error scanning conf.d: " << e.what() << std::endl;
+        common::Logger::Error("[Client] Error scanning conf.d: " + std::string(e.what()));
     }
 
     // Diff
     for (auto const& [name, pc] : dynamic_proxies_) {
         if (new_proxies.find(name) == new_proxies.end()) {
-            std::cout << "[Client] Removing dynamic proxy [" << name << "]" << std::endl;
+            common::Logger::Info("[Client] Removing dynamic proxy [" + name + "]");
             UnregisterProxy(name);
         }
     }
@@ -765,7 +765,7 @@ void Client::PollConfDirectory() {
     for (auto const& [name, pc] : new_proxies) {
         auto it = dynamic_proxies_.find(name);
         if (it == dynamic_proxies_.end()) {
-            std::cout << "[Client] Adding dynamic proxy [" << name << "]" << std::endl;
+            common::Logger::Info("[Client] Adding dynamic proxy [" + name + "]");
             RegisterProxy(pc);
         } else {
             bool changed = (it->second.type != pc.type || 
@@ -773,7 +773,7 @@ void Client::PollConfDirectory() {
                             it->second.local_port != pc.local_port ||
                             it->second.remote_port != pc.remote_port);
             if (changed) {
-                std::cout << "[Client] Updating dynamic proxy [" << name << "]" << std::endl;
+                common::Logger::Info("[Client] Updating dynamic proxy [" + name + "]");
                 UnregisterProxy(name);
                 RegisterProxy(pc);
             }
@@ -812,7 +812,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
     }
 
     if (!found) {
-        std::cerr << "Unknown proxy name: " << proxy_name << std::endl;
+        common::Logger::Error("Unknown proxy name: " + proxy_name);
         return;
     }
 
@@ -842,7 +842,7 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                             work_stream->async_write(asio::buffer(*ticket_buf),
                                 [this, self, local_socket, work_stream, ticket_buf, pc](std::error_code ec, std::size_t) {
                                     if (!ec) {
-                                        std::cout << "Bridging local service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
+                                        common::Logger::Info("Bridging local service and mux work stream (Compressed: " + std::string(compression_ ? "true" : "false") + ")");
                                         auto user_stream = std::make_shared<common::TcpStream>(std::move(*local_socket));
                                         
                                         std::shared_ptr<common::RateLimiter> rl;
@@ -852,15 +852,15 @@ void Client::HandleNewUserConn(const std::string& proxy_name, const std::string&
                                         auto bridge = std::make_shared<common::Bridge>(user_stream, work_stream, compression_, compression_level_, rl);
                                         bridge->Start();
                                     } else {
-                                        std::cerr << "Failed to send ticket over mux stream" << std::endl;
+                                        common::Logger::Error("Failed to send ticket over mux stream");
                                     }
                                 });
                         } else {
-                            std::cerr << "Failed to connect to local service (" << pc.local_ip << ":" << pc.local_port << "): " << ec.message() << std::endl;
+                            common::Logger::Error("Failed to connect to local service (" + pc.local_ip + ":" + std::to_string(pc.local_port) + "): " + ec.message());
                         }
                     });
             } else {
-                std::cerr << "Failed to resolve local service (" << pc.local_ip << "): " << ec.message() << std::endl;
+                common::Logger::Error("Failed to resolve local service (" + pc.local_ip + "): " + ec.message());
             }
         });
 }
@@ -882,7 +882,7 @@ void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& tick
     resolver->async_resolve(pc.local_ip, std::to_string(pc.local_port),
         [this, self, work_stream, ticket_buf, pc, resolver](std::error_code ec, udp::resolver::results_type results) {
             if (!ec && !results.empty()) {
-                std::cout << "Bridging local UDP service and mux work stream (Compressed: " << compression_ << ")" << std::endl;
+                common::Logger::Info("Bridging local UDP service and mux work stream (Compressed: " + std::string(compression_ ? "true" : "false") + ")");
                 
                 std::shared_ptr<common::RateLimiter> rl;
                 auto it = proxy_rate_limiters_.find(pc.name);
@@ -891,11 +891,11 @@ void Client::HandleNewUdpUserConn(const ProxyConfig& pc, const std::string& tick
                 auto bridge = std::make_shared<UdpBridge>(io_context_, work_stream, *results.begin(), compression_, compression_level_, rl);
                 bridge->Start();
             } else {
-                std::cerr << "Failed to resolve local UDP service (" << pc.local_ip << "): " << (ec ? ec.message() : "No results") << std::endl;
+                common::Logger::Error("Failed to resolve local UDP service (" + pc.local_ip + "): " + (ec ? ec.message() : "No results"));
             }
         });
             } else {
-                std::cerr << "Failed to send ticket over mux stream for UDP" << std::endl;
+                common::Logger::Error("Failed to send ticket over mux stream for UDP");
             }
         });
 }

@@ -238,6 +238,8 @@ int main(int argc, char** argv) {
             ca_path = argv[++i];
         } else if ((arg == "-t" || arg == "--token") && i + 1 < argc) {
             cli_token = argv[++i];
+        } else if ((arg == "-l" || arg == "--log-level") && i + 1 < argc) {
+            cfrp::common::Logger::SetLevel(argv[++i]);
         } else if (arg == "-v" || arg == "--version") {
             std::cout << "cfrp version " << CFRP_VERSION << std::endl;
             return 0;
@@ -248,6 +250,7 @@ int main(int argc, char** argv) {
             std::cout << "  [config.toml]        Path to the configuration file (TOML). If provided, all other options are ignored." << std::endl;
             std::cout << "  -c, --ca PATH        Path to the CA file (only used when no config file is provided)" << std::endl;
             std::cout << "  -t, --token STRING   Authentication token (only used when no config file is provided)" << std::endl;
+            std::cout << "  -l, --log-level LVL  Log level: none, error, info, debug (default: info)" << std::endl;
             std::cout << "  -v, --version        Show version information" << std::endl;
             std::cout << "  -h, --help           Show this help message" << std::endl;
             std::cout << "Commands:" << std::endl;
@@ -377,7 +380,7 @@ int main(int argc, char** argv) {
 
     if (!config_found) {
         if (ca_provided) {
-            std::cout << "No client configuration found. Generating default client.toml..." << std::endl;
+            cfrp::common::Logger::Info("No client configuration found. Generating default client.toml...");
             config_path = "client.toml";
             std::ofstream ofs(config_path);
             if (ofs) {
@@ -390,6 +393,7 @@ name = "my-client"
 protocol = "auto"
 compression = true
 threads = 2
+log_level = "info"
 
 [client.ssl]
 enable = true
@@ -405,11 +409,11 @@ remote_port = 6000
 )" << std::endl;
                 ofs.close();
             } else {
-                std::cerr << "Error: Could not generate default client.toml" << std::endl;
+                cfrp::common::Logger::Error("Error: Could not generate default client.toml");
                 return 1;
             }
         } else {
-            std::cout << "No functional configuration found. Generating default server.toml..." << std::endl;
+            cfrp::common::Logger::Info("No functional configuration found. Generating default server.toml...");
             config_path = "server.toml";
             std::ofstream ofs(config_path);
             if (ofs) {
@@ -419,6 +423,7 @@ bind_addr = "0.0.0.0"
 bind_port = 7001
 token = ")" << (token_provided ? cli_token : "secret_token") << R"("
 threads = 2
+log_level = "info"
 
 # Virtual Host ports for HTTP and HTTPS (SNI routing)
 vhost_http_port = 8080
@@ -433,14 +438,14 @@ ca_file = "certs/ca.crt"
 )" << std::endl;
                 ofs.close();
             } else {
-                std::cerr << "Error: Could not generate default server.toml" << std::endl;
+                cfrp::common::Logger::Error("Error: Could not generate default server.toml");
                 return 1;
             }
         }
     }
 
     if (!fs::exists(config_path)) {
-        std::cerr << "Error: Configuration file not found: " << config_path << std::endl;
+        cfrp::common::Logger::Error("Error: Configuration file not found: " + config_path);
         return 1;
     }
 
@@ -453,7 +458,7 @@ ca_file = "certs/ca.crt"
 
         asio::signal_set signals(io_context, SIGINT, SIGTERM);
         signals.async_wait([&](std::error_code /*ec*/, int /*signo*/) {
-            std::cout << "\nCaught signal, exiting..." << std::endl;
+            cfrp::common::Logger::Info("Caught signal, exiting...");
             if (server) server->Stop();
             if (client) client->Stop();
             if (fs::exists(pid_path)) {
@@ -477,6 +482,9 @@ ca_file = "certs/ca.crt"
         });
 
         if (config["server"] && !ca_provided) {
+            if (auto log_level = config["server"]["log_level"].as_string()) {
+                cfrp::common::Logger::SetLevel(log_level->get());
+            }
             std::string bind_addr = config["server"]["bind_addr"].value_or("0.0.0.0");
             uint16_t bind_port = config["server"]["bind_port"].value_or(7000);
             std::string token = token_provided ? cli_token : config["server"]["token"].value_or("");
@@ -529,6 +537,10 @@ ca_file = "certs/ca.crt"
             // Force client mode if -ca is provided, even if config has [server]
             auto client_node = config["client"];
             if (!client_node) client_node = config["server"]; // Use server node as base if client node is missing (unlikely but safe)
+
+            if (auto log_level = client_node["log_level"].as_string()) {
+                cfrp::common::Logger::SetLevel(log_level->get());
+            }
 
             std::string server_addr = client_node["server_addr"].value_or("127.0.0.1");
             uint16_t server_port = static_cast<uint16_t>(client_node["server_port"].value_or(7001));
@@ -600,7 +612,7 @@ ca_file = "certs/ca.crt"
             if (thread_count == 0) thread_count = 2;
         }
         
-        std::cout << "Running with " << thread_count << " event loop threads." << std::endl;
+        cfrp::common::Logger::Info("Running with " + std::to_string(thread_count) + " event loop threads.");
         
         std::vector<std::thread> threads;
         for (unsigned int i = 0; i < thread_count; ++i) {
@@ -614,11 +626,11 @@ ca_file = "certs/ca.crt"
         }
 
     } catch (const toml::parse_error& err) {
-        std::cerr << "Parsing failed:\n" << err << std::endl;
+        cfrp::common::Logger::Error("Parsing failed: " + std::string(err.description()));
         wolfSSL_Cleanup();
         return 1;
     } catch (const std::exception& err) {
-        std::cerr << "Error: " << err.what() << std::endl;
+        cfrp::common::Logger::Error("Error: " + std::string(err.what()));
         wolfSSL_Cleanup();
         return 1;
     }
