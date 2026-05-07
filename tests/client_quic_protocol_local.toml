@@ -1,0 +1,39 @@
+# Example Client Configuration
+[client]
+server_addr = "127.0.0.1"
+server_port = 7001
+token = "secret_token"
+name = "my-client"
+# Protocol to use ("tcp", "quic", "websocket", or "auto")
+# "auto" will try QUIC -> TCP -> WebSocket in sequence.
+protocol = "quic"
+conf_d = "./conf.d"
+compression = true
+compression_level = 1 # Zstd compression level (1-22, 1 is fastest)
+
+[client.ssl]
+enable = true
+verify_peer = false
+# ca_file = "certs/ca.crt"
+
+[[client.proxies]]
+name = "ssh"
+type = "tcp"
+local_ip = "127.0.0.1"
+local_port = 2222
+remote_port = 6000
+
+[[client.proxies]]
+name = "web-http"
+type = "http"
+local_ip = "localhost" # Supports domain names now!
+local_port = 8080
+custom_domains = ["a.com", "b.com"]
+bandwidth_limit = "1M" # Limit to 1MB/s aggregate for this proxy
+
+[[client.proxies]]
+name = "web-https"
+type = "https"
+local_ip = "127.0.0.1"
+local_port = 8443
+custom_domains = "secure.com"

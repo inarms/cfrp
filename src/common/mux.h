@@ -128,8 +128,9 @@ private:
 
     std::shared_ptr<AsyncStream> underlying_stream_;
     asio::strand<asio::any_io_executor> strand_;
-    std::mutex mux_mutex_; // Protect streams_ and next_stream_id_
+    std::mutex mux_mutex_; // Protect streams_, next_stream_id_, and stopped_
     bool is_server_;
+    bool stopped_ = false;
     uint32_t next_stream_id_;
     std::function<void(std::shared_ptr<MuxStream>)> on_new_stream_;
     

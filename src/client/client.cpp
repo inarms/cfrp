@@ -316,6 +316,14 @@ bool Client::RebindUdpSocketForEndpoint(const udp::endpoint& endpoint) {
         return false;
     }
 
+    udp_socket_.connect(endpoint, ec);
+    if (ec) {
+        std::cerr << "Failed to connect UDP socket for QUIC endpoint " << endpoint << ": " << ec.message() << std::endl;
+        std::error_code close_ec;
+        udp_socket_.close(close_ec);
+        return false;
+    }
+
     return true;
 }
 
@@ -423,6 +431,10 @@ void Client::DoUdpRead() {
 
             if (ec != asio::error::operation_aborted) {
                 common::Logger::Error("Client UDP receive error on QUIC socket: " + ec.message());
+                if (ec == asio::error::connection_refused || ec == asio::error::connection_reset) {
+                    HandleDisconnect("QUIC UDP connection refused/reset");
+                    return;
+                }
                 if (udp_socket_.is_open()) {
                     DoUdpRead();
                 }
@@ -464,6 +476,9 @@ void Client::HandleDisconnect(const std::string& reason) {
         asio::post(strand_, [this, self = shared_from_this(), reason]() { HandleDisconnect(reason); });
         return;
     }
+
+    if (stopping_) return;
+
     connection_id_++;
     if (reason != "QUIC_TIMEOUT") {
         common::Logger::Info(reason);
@@ -476,6 +491,9 @@ void Client::HandleDisconnect(const std::string& reason) {
     if (quic_session_) {
         quic_session_->close_session();
         quic_session_.reset();
+    }
+    if (control_stream_) {
+        control_stream_.reset();
     }
 
     if (stopping_) return;
@@ -511,13 +529,18 @@ void Client::HandleDisconnect(const std::string& reason) {
 void Client::ScheduleReconnect() {
     if (stopping_) return;
 
+    int delay = reconnect_delay_sec_;
     if (reconnect_delay_sec_ < 600) {
         reconnect_delay_sec_ += 10;
     }
 
-    common::Logger::Info("Reconnecting in " + std::to_string(reconnect_delay_sec_) + " seconds...");
+    if (delay == 0) {
+        common::Logger::Info("Reconnecting immediately...");
+    } else {
+        common::Logger::Info("Reconnecting in " + std::to_string(delay) + " seconds...");
+    }
 
-    reconnect_timer_.expires_after(std::chrono::seconds(reconnect_delay_sec_));
+    reconnect_timer_.expires_after(std::chrono::seconds(delay));
     std::weak_ptr<Client> weak_self = shared_from_this();
     reconnect_timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
         if (!ec) {
@@ -559,8 +582,10 @@ void Client::SendMessage(protocol::MessageType type, const std::vector<uint8_t>&
     std::memcpy(data->data() + sizeof(net_len), to_send_body.data(), to_send_body.size());
 
     auto self(shared_from_this());
-    control_stream_->async_write(asio::buffer(*data), asio::bind_executor(strand_, [this, self, data](std::error_code ec, std::size_t) {
+    int conn_id = connection_id_;
+    control_stream_->async_write(asio::buffer(*data), asio::bind_executor(strand_, [this, self, data, conn_id](std::error_code ec, std::size_t) {
         if (ec) {
+            if (conn_id != connection_id_) return;
             common::Logger::Error("Failed to send message: " + ec.message());
             HandleDisconnect("Failed to send control message");
         }
