@@ -112,7 +112,7 @@ private:
 
     asio::ip::udp::socket& socket_;
     asio::strand<asio::any_io_executor> strand_;
-    std::mutex ngtcp2_mutex_; // Protect ngtcp2_conn and stream map
+    std::recursive_mutex ngtcp2_mutex_; // Protect ngtcp2_conn and stream map
     asio::ip::udp::endpoint remote_endpoint_;
     bool is_server_;
     bool closed_notified_ = false;

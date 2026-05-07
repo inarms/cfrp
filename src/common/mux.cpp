@@ -316,16 +316,25 @@ void Session::stop() {
         return;
     }
 
+    std::map<uint32_t, std::shared_ptr<MuxStream>> streams_to_close;
+    {
+        std::lock_guard<std::mutex> lock(mux_mutex_);
+        if (stopped_) return;
+        stopped_ = true;
+        streams_to_close = std::move(streams_);
+        streams_.clear();
+    }
+
     // Clear the callback first to break any shared_ptr cycle where a caller
     // captures 'mux_session' (shared_ptr<Session>) inside the on_new_stream_ lambda.
     on_new_stream_ = nullptr;
 
     heartbeat_timer_.cancel();
     underlying_stream_->close();
-    for (auto& [id, stream] : streams_) {
+    
+    for (auto& [id, stream] : streams_to_close) {
         stream->handle_close();
     }
-    streams_.clear();
 }
 
 void Session::schedule_heartbeat() {
@@ -410,6 +419,10 @@ void Session::do_read_header() {
     auto self = shared_from_this();
     underlying_stream_->async_read(asio::buffer(header_buf_, Header::size),
         asio::bind_executor(strand_, [this, self](std::error_code ec, std::size_t) {
+            {
+                std::lock_guard<std::mutex> lock(mux_mutex_);
+                if (stopped_) return;
+            }
             if (!ec) {
                 auto header = Header::decode(header_buf_);
                 if (header.type == (uint8_t)Type::Data && header.length > 0) {
@@ -429,6 +442,10 @@ void Session::do_read_body(Header h) {
     auto body = std::make_shared<std::vector<uint8_t>>(h.length);
     underlying_stream_->async_read(asio::buffer(*body),
         asio::bind_executor(strand_, [this, self, h, body](std::error_code ec, std::size_t) {
+            {
+                std::lock_guard<std::mutex> lock(mux_mutex_);
+                if (stopped_) return;
+            }
             if (!ec) {
                 handle_frame(h, std::move(*body));
                 do_read_header();
