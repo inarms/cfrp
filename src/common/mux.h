@@ -122,6 +122,7 @@ public:
     void remove_stream(uint32_t stream_id);
 
     // Optimized write: supports scatter-gather and optional body ownership
+    void async_send_frame(Header h, const std::vector<asio::const_buffer>& bodies, std::function<void(std::error_code)> handler = nullptr, std::shared_ptr<uint8_t[]> body_storage = {});
     void async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler = nullptr, std::shared_ptr<uint8_t[]> body_storage = {});
 
     asio::any_io_executor get_executor() { return strand_; }
@@ -150,7 +151,7 @@ private:
     
     struct PendingWrite {
         uint8_t header_data[Header::size];
-        asio::const_buffer body;
+        std::vector<asio::const_buffer> bodies;
         std::shared_ptr<uint8_t[]> body_storage; // Used when we need to own the data
         std::function<void(std::error_code)> handler;
     };

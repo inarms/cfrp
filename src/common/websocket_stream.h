@@ -17,6 +17,7 @@
 #pragma once
 
 #include "common/stream.h"
+#include "common/buffer_pool.h"
 #include <vector>
 #include <string>
 #include <random>
@@ -57,12 +58,14 @@ private:
     void ReadWsFrame(std::function<void(std::error_code, std::size_t)> handler, asio::mutable_buffer user_buffer);
 
     std::shared_ptr<AsyncStream> underlying_;
+    std::shared_ptr<BufferPool> buffer_pool_;
     bool is_client_;
     bool perform_underlying_handshake_;
     bool handshaked_ = false;
     
     // Internal buffer for reading WS frames
-    std::vector<uint8_t> read_buffer_;
+    std::shared_ptr<uint8_t[]> read_buffer_;
+    size_t read_buffer_size_ = 0;
     size_t read_offset_ = 0;
     size_t read_remaining_ = 0;
     

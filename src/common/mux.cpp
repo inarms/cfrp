@@ -123,14 +123,6 @@ void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std:
     size_t total_length = 0;
     for (const auto& b : buffers) total_length += b.size();
 
-    auto pool = session->buffer_pool();
-    auto combined = pool->Get(total_length);
-    size_t offset = 0;
-    for (const auto& b : buffers) {
-        std::memcpy(combined.get() + offset, b.data(), b.size());
-        offset += b.size();
-    }
-    
     Header h;
     h.version = 0;
     h.type = (uint8_t)Type::Data;
@@ -138,13 +130,14 @@ void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std:
     h.stream_id = id_;
     h.length = static_cast<uint32_t>(total_length);
     
-    session->async_send_frame(h, asio::buffer(combined.get(), total_length), [self, handler, total_length, combined](std::error_code ec) {
+    // Zero-copy write: pass the user's buffers directly to the session.
+    session->async_send_frame(h, buffers, [self, handler, total_length](std::error_code ec) {
         if (!ec) {
             handler(ec, total_length);
         } else {
             handler(ec, 0);
         }
-    }, combined);
+    });
 }
 
 void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -183,7 +176,7 @@ void MuxStream::close() {
         h.flags = Flags::FIN;
         h.stream_id = id_;
         h.length = 0;
-        session->async_send_frame(h, {});
+        session->async_send_frame(h, asio::const_buffer{});
     }
 
     for (auto& pr : pending_reads_) {
@@ -320,7 +313,7 @@ void MuxStream::do_read_from_buffer() {
                 h.flags = 0;
                 h.stream_id = id_;
                 h.length = static_cast<uint32_t>(consumed_since_last_update_);
-                session->async_send_frame(h, {});
+                session->async_send_frame(h, asio::const_buffer{});
                 consumed_since_last_update_ = 0;
             }
         }
@@ -390,7 +383,7 @@ void Session::schedule_heartbeat() {
             h.flags = Flags::SYN; // Ping request
             h.stream_id = 0;
             h.length = 0;
-            async_send_frame(h, {});
+            async_send_frame(h, asio::const_buffer{});
             schedule_heartbeat();
         }
     }));
@@ -416,7 +409,7 @@ std::shared_ptr<MuxStream> Session::open_stream() {
     h.flags = Flags::SYN;
     h.stream_id = id;
     h.length = 0;
-    async_send_frame(h, {});
+    async_send_frame(h, asio::const_buffer{});
     
     return stream;
 }
@@ -428,22 +421,22 @@ void Session::remove_stream(uint32_t stream_id) {
     }
 }
 
-void Session::async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler, std::shared_ptr<uint8_t[]> body_storage) {
+void Session::async_send_frame(Header h, const std::vector<asio::const_buffer>& bodies, std::function<void(std::error_code)> handler, std::shared_ptr<uint8_t[]> body_storage) {
     if (!strand_.running_in_this_thread()) {
-        asio::post(strand_, [this, self = shared_from_this(), h, body, handler, body_storage]() mutable {
-            async_send_frame(h, body, handler, body_storage);
+        asio::post(strand_, [this, self = shared_from_this(), h, bodies, handler, body_storage]() mutable {
+            async_send_frame(h, bodies, handler, body_storage);
         });
         return;
     }
 
     auto pw = std::make_shared<PendingWrite>();
     h.encode(pw->header_data);
-    pw->body = body;
+    pw->bodies = bodies;
     pw->body_storage = body_storage;
     
-    // If we have body_storage and body is empty, it might mean the caller wants us to use body_storage as body
-    if (pw->body.size() == 0 && pw->body_storage) {
-        pw->body = asio::buffer(pw->body_storage.get(), h.length);
+    // If we have body_storage and bodies is empty, it might mean the caller wants us to use body_storage as body
+    if (pw->bodies.empty() && pw->body_storage) {
+        pw->bodies.push_back(asio::buffer(pw->body_storage.get(), h.length));
     }
     
     pw->handler = std::move(handler);
@@ -453,6 +446,12 @@ void Session::async_send_frame(Header h, asio::const_buffer body, std::function<
         is_writing_ = true;
         do_write();
     }
+}
+
+void Session::async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler, std::shared_ptr<uint8_t[]> body_storage) {
+    std::vector<asio::const_buffer> bodies;
+    if (body.size() > 0) bodies.push_back(body);
+    async_send_frame(h, bodies, std::move(handler), std::move(body_storage));
 }
 
 void Session::do_read_header() {
@@ -522,7 +521,7 @@ void Session::handle_frame(Header h, std::shared_ptr<uint8_t[]> body, size_t len
                 resp.flags = Flags::ACK;
                 resp.stream_id = h.stream_id;
                 resp.length = 0;
-                async_send_frame(resp, {});
+                async_send_frame(resp, asio::const_buffer{});
             }
         }
         
@@ -546,7 +545,7 @@ void Session::handle_frame(Header h, std::shared_ptr<uint8_t[]> body, size_t len
             resp.flags = Flags::ACK;
             resp.stream_id = 0;
             resp.length = 0;
-            async_send_frame(resp, {});
+            async_send_frame(resp, asio::const_buffer{});
         }
     } else if (h.type == (uint8_t)Type::GoAway) {
         stop();
@@ -562,12 +561,14 @@ void Session::do_write() {
 
     auto self = shared_from_this();
     
-    // Scatter-gather write: header and body sent together without merging into a single buffer.
+    // Scatter-gather write: header and all body buffers sent together without merging.
     std::vector<asio::const_buffer> write_buffers;
-    write_buffers.reserve(2);
+    write_buffers.reserve(1 + pw->bodies.size());
     write_buffers.push_back(asio::buffer(pw->header_data, Header::size));
-    if (pw->body.size() > 0) {
-        write_buffers.push_back(pw->body);
+    for (const auto& b : pw->bodies) {
+        if (b.size() > 0) {
+            write_buffers.push_back(b);
+        }
     }
 
     underlying_stream_->async_write(write_buffers,

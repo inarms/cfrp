@@ -71,18 +71,13 @@ void QuicStream::async_write(asio::const_buffer buffer, std::function<void(std::
 }
 
 void QuicStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
-    // Fallback: merge buffers
-    size_t total_size = 0;
-    for (const auto& b : buffers) total_size += b.size();
-    auto temp = std::make_shared<std::vector<uint8_t>>(total_size);
-    size_t offset = 0;
-    for (const auto& b : buffers) {
-        std::memcpy(temp->data() + offset, b.data(), b.size());
-        offset += b.size();
+    auto session = session_.lock();
+    if (!session) {
+        asio::post(get_executor(), [handler]() { handler(asio::error::connection_reset, 0); });
+        return;
     }
-    async_write(asio::buffer(*temp), [temp, handler](std::error_code ec, std::size_t n) {
-        handler(ec, n);
-    });
+
+    session->write_stream(stream_id_, buffers, std::move(handler));
 }
 
 void QuicStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -133,8 +128,8 @@ std::string QuicStream::remote_endpoint_string() {
 
 std::string QuicStream::protocol_name() { return "QUIC"; }
 
-void QuicStream::handle_data(const uint8_t* data, size_t len) {
-    read_queue_.push_back(std::vector<uint8_t>(data, data + len));
+void QuicStream::handle_data(std::shared_ptr<uint8_t[]> data, size_t len) {
+    read_queue_.push_back({data, len});
     do_read();
 }
 
@@ -166,7 +161,7 @@ void QuicStream::do_read() {
         // Check if we can fulfill read_all
         if (pr.read_all) {
             size_t available = 0;
-            for (const auto& vec : read_queue_) available += vec.size();
+            for (const auto& block : read_queue_) available += block.length;
             available -= read_queue_offset_;
             
             if (available < buffer_remaining && !closed_) {
@@ -175,18 +170,18 @@ void QuicStream::do_read() {
         }
 
         while (buffer_remaining > 0 && !read_queue_.empty()) {
-            auto& front_vec = read_queue_.front();
-            size_t vec_available = front_vec.size() - read_queue_offset_;
-            size_t to_copy = std::min(buffer_remaining, vec_available);
+            auto& block = read_queue_.front();
+            size_t block_available = block.length - read_queue_offset_;
+            size_t to_copy = std::min(buffer_remaining, block_available);
 
             std::memcpy(static_cast<uint8_t*>(pr.buffer.data()) + total_copied,
-                        front_vec.data() + read_queue_offset_, to_copy);
+                        block.data.get() + read_queue_offset_, to_copy);
 
             total_copied += to_copy;
             buffer_remaining -= to_copy;
             read_queue_offset_ += to_copy;
 
-            if (read_queue_offset_ == front_vec.size()) {
+            if (read_queue_offset_ == block.length) {
                 read_queue_.pop_front();
                 read_queue_offset_ = 0;
             }
@@ -248,7 +243,12 @@ namespace {
 }
 
 QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server)
-    : socket_(socket), strand_(asio::make_strand(socket.get_executor())), remote_endpoint_(remote_endpoint), is_server_(is_server), timer_(strand_) {
+    : socket_(socket), 
+      strand_(asio::make_strand(socket.get_executor())), 
+      buffer_pool_(BufferPool::CreateDefault()),
+      remote_endpoint_(remote_endpoint), 
+      is_server_(is_server), 
+      timer_(strand_) {
     
     auto local_ep = socket_.local_endpoint();
     std::memcpy(&local_addr_, local_ep.data(), local_ep.size());
@@ -508,10 +508,23 @@ void QuicSession::close_stream(int64_t stream_id) {
 }
 
 void QuicSession::write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler) {
+    std::vector<asio::const_buffer> buffers;
+    if (len > 0) {
+        auto pooled_data = buffer_pool_->Get(len);
+        std::memcpy(pooled_data.get(), data, len);
+        buffers.push_back(asio::buffer(pooled_data.get(), len));
+        write_stream(stream_id, buffers, [handler, pooled_data](std::error_code ec, std::size_t n) {
+            handler(ec, n);
+        });
+    } else {
+        write_stream(stream_id, buffers, std::move(handler));
+    }
+}
+
+void QuicSession::write_stream(int64_t stream_id, const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
     if (!strand_.running_in_this_thread()) {
-        auto buf = std::make_shared<std::vector<uint8_t>>(data, data + len);
-        asio::post(strand_, [this, self = shared_from_this(), stream_id, buf, handler]() {
-            write_stream(stream_id, buf->data(), buf->size(), handler);
+        asio::post(strand_, [this, self = shared_from_this(), stream_id, buffers, handler]() {
+            write_stream(stream_id, buffers, handler);
         });
         return;
     }
@@ -524,7 +537,7 @@ void QuicSession::write_stream(int64_t stream_id, const uint8_t* data, size_t le
     std::lock_guard lock(ngtcp2_mutex_);
     auto pw = std::make_shared<PendingWrite>();
     pw->stream_id = stream_id;
-    pw->data.assign(data, data + len);
+    pw->bodies = buffers;
     pw->handler = std::move(handler);
 
     write_queue_.push_back(pw);
@@ -550,22 +563,42 @@ void QuicSession::do_write() {
     int packets_sent = 0;
     while (!write_queue_.empty() && packets_sent < 16) {
         auto pw = write_queue_.front();
-        ngtcp2_vec v{pw->data.data() + pw->consumed, pw->data.size() - pw->consumed};
+        
+        // Prepare ngtcp2_vec for writev
+        std::vector<ngtcp2_vec> v;
+        size_t skip = pw->consumed;
+        size_t total_to_write = 0;
+        for (const auto& b : pw->bodies) {
+            if (skip >= b.size()) {
+                skip -= b.size();
+                continue;
+            }
+            v.push_back({(uint8_t*)b.data() + skip, b.size() - skip});
+            total_to_write += b.size() - skip;
+            skip = 0;
+        }
+
+        if (v.empty() && !pw->bodies.empty()) {
+            // All data already consumed? This shouldn't happen if write_queue management is correct.
+            write_queue_.pop_front();
+            continue;
+        }
+
         ngtcp2_ssize consumed_datalen = 0;
         ngtcp2_pkt_info pi;
         uint8_t buf[1500];
         
         ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
-        ngtcp2_ssize res = ngtcp2_conn_writev_stream(conn_, &path_, &pi, buf, sizeof(buf), &consumed_datalen, 0, pw->stream_id, &v, 1, ts);
+        ngtcp2_ssize res = ngtcp2_conn_writev_stream(conn_, &path_, &pi, buf, sizeof(buf), &consumed_datalen, 0, pw->stream_id, v.data(), v.size(), ts);
         
         if (res > 0) {
             packets_sent++;
             std::error_code ec;
             if (is_server_) {
-            socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
-        } else {
-            socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
-        }
+                socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
+            } else {
+                socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
+            }
             if (ec) {
                 if (ec != asio::error::operation_aborted) {
                     Logger::Error("[QUIC] do_write send_to error: " + ec.message());
@@ -574,11 +607,13 @@ void QuicSession::do_write() {
             }
             if (consumed_datalen > 0) {
                 pw->consumed += consumed_datalen;
-                if (pw->consumed >= pw->data.size()) {
+                size_t total_orig = 0;
+                for (const auto& b : pw->bodies) total_orig += b.size();
+
+                if (pw->consumed >= total_orig) {
                     if (pw->handler) {
                         auto h = std::move(pw->handler);
-                        size_t total = pw->data.size();
-                        asio::post(strand_, [h, total]() { h(std::error_code(), total); });
+                        asio::post(strand_, [h, total_orig]() { h(std::error_code(), total_orig); });
                     }
                     write_queue_.pop_front();
                 }
@@ -620,7 +655,11 @@ int QuicSession::on_stream_data(int64_t stream_id, const uint8_t* data, size_t l
         }
     }
     
-    if (stream) stream->handle_data(data, len);
+    if (stream) {
+        auto pooled_data = buffer_pool_->Get(len);
+        std::memcpy(pooled_data.get(), data, len);
+        stream->handle_data(pooled_data, len);
+    }
     return 0;
 }
 
