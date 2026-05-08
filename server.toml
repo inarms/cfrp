@@ -14,6 +14,10 @@ vhost_https_port = 18443
 # Optional: List of allowed client names (whitelisting)
 # allowed_clients = ["my-client", "office-pc"]
 
+[performance]
+threads = 2
+memory_profile = "low" # Options: low, standard, high
+
 [server.ssl]
 enable = true
 auto_generate = true
