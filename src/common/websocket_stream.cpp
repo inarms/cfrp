@@ -24,7 +24,10 @@ namespace cfrp {
 namespace common {
 
 WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake)
-    : underlying_(std::move(underlying)), is_client_(is_client), perform_underlying_handshake_(perform_underlying_handshake) {
+    : underlying_(std::move(underlying)), 
+      buffer_pool_(BufferPool::CreateDefault()),
+      is_client_(is_client), 
+      perform_underlying_handshake_(perform_underlying_handshake) {
     std::random_device rd;
     rng_.seed(rd());
 }
@@ -143,64 +146,76 @@ void WebsocketStream::DoServerHandshake(std::function<void(std::error_code)> han
 }
 
 void WebsocketStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    auto self = shared_from_this();
-    size_t payload_len = buffer.size();
-    
-    std::vector<uint8_t> frame;
-    frame.push_back(0x82); // FIN + Binary
-    
-    uint8_t mask_bit = is_client_ ? 0x80 : 0x00;
-    
-    if (payload_len <= 125) {
-        frame.push_back(mask_bit | (uint8_t)payload_len);
-    } else if (payload_len <= 65535) {
-        frame.push_back(mask_bit | 126);
-        frame.push_back((payload_len >> 8) & 0xFF);
-        frame.push_back(payload_len & 0xFF);
-    } else {
-        frame.push_back(mask_bit | 127);
-        for (int i = 7; i >= 0; --i) {
-            frame.push_back((payload_len >> (i * 8)) & 0xFF);
-        }
-    }
-    
-    uint8_t mask[4];
-    if (is_client_) {
-        std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
-        uint32_t m = dist(rng_);
-        std::memcpy(mask, &m, 4);
-        frame.insert(frame.end(), mask, mask + 4);
-    }
-    
-    size_t header_size = frame.size();
-    frame.resize(header_size + payload_len);
-    std::memcpy(frame.data() + header_size, buffer.data(), payload_len);
-    
-    if (is_client_) {
-        for (size_t i = 0; i < payload_len; ++i) {
-            frame[header_size + i] ^= mask[i % 4];
-        }
-    }
-    
-    auto frame_ptr = std::make_shared<std::vector<uint8_t>>(std::move(frame));
-    underlying_->async_write(asio::buffer(*frame_ptr), [this, self, frame_ptr, handler, payload_len](std::error_code ec, std::size_t) {
-        handler(ec, payload_len);
-    });
+    std::vector<asio::const_buffer> buffers;
+    buffers.push_back(buffer);
+    async_write(buffers, handler);
 }
 
 void WebsocketStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
-    // Fallback: merge buffers
-    size_t total_size = 0;
-    for (const auto& b : buffers) total_size += b.size();
-    auto temp = std::make_shared<std::vector<uint8_t>>(total_size);
-    size_t offset = 0;
-    for (const auto& b : buffers) {
-        std::memcpy(temp->data() + offset, b.data(), b.size());
-        offset += b.size();
+    auto self = shared_from_this();
+    size_t total_payload_len = 0;
+    for (const auto& b : buffers) total_payload_len += b.size();
+    
+    auto header = std::make_shared<std::vector<uint8_t>>();
+    header->push_back(0x82); // FIN + Binary
+    
+    uint8_t mask_bit = is_client_ ? 0x80 : 0x00;
+    
+    if (total_payload_len <= 125) {
+        header->push_back(mask_bit | (uint8_t)total_payload_len);
+    } else if (total_payload_len <= 65535) {
+        header->push_back(mask_bit | 126);
+        header->push_back((total_payload_len >> 8) & 0xFF);
+        header->push_back(total_payload_len & 0xFF);
+    } else {
+        header->push_back(mask_bit | 127);
+        for (int i = 7; i >= 0; --i) {
+            header->push_back((total_payload_len >> (i * 8)) & 0xFF);
+        }
     }
-    async_write(asio::buffer(*temp), [temp, handler](std::error_code ec, std::size_t n) {
-        handler(ec, n);
-    });
+    
+    if (is_client_) {
+        uint8_t mask[4];
+        std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+        uint32_t m = dist(rng_);
+        std::memcpy(mask, &m, 4);
+        header->insert(header->end(), mask, mask + 4);
+
+        // Client MUST mask. We have to copy because user's buffers are const and we cannot modify them.
+        auto masked_payload = std::make_shared<std::vector<uint8_t>>(total_payload_len);
+        size_t offset = 0;
+        for (const auto& b : buffers) {
+            if (b.size() > 0) {
+                std::memcpy(masked_payload->data() + offset, b.data(), b.size());
+                offset += b.size();
+            }
+        }
+        for (size_t i = 0; i < total_payload_len; ++i) {
+            (*masked_payload)[i] ^= mask[i % 4];
+        }
+
+        std::vector<asio::const_buffer> write_buffers;
+        write_buffers.push_back(asio::buffer(*header));
+        write_buffers.push_back(asio::buffer(*masked_payload));
+
+        underlying_->async_write(write_buffers, [this, self, header, masked_payload, handler, total_payload_len](std::error_code ec, std::size_t) {
+            handler(ec, total_payload_len);
+        });
+    } else {
+        // Server side: NO MASKING. True zero-copy scatter-gather!
+        std::vector<asio::const_buffer> write_buffers;
+        write_buffers.reserve(1 + buffers.size());
+        write_buffers.push_back(asio::buffer(*header));
+        for (const auto& b : buffers) {
+            if (b.size() > 0) {
+                write_buffers.push_back(b);
+            }
+        }
+
+        underlying_->async_write(write_buffers, [this, self, header, handler, total_payload_len](std::error_code ec, std::size_t) {
+            handler(ec, total_payload_len);
+        });
+    }
 }
 
 void WebsocketStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -220,7 +235,7 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
 
     if (read_remaining_ > 0) {
         size_t to_copy = std::min(read_remaining_, buffer.size());
-        std::memcpy(buffer.data(), read_buffer_.data() + read_offset_, to_copy);
+        std::memcpy(buffer.data(), read_buffer_.get() + read_offset_, to_copy);
         read_offset_ += to_copy;
         read_remaining_ -= to_copy;
         
@@ -246,10 +261,10 @@ void WebsocketStream::async_read(asio::mutable_buffer buffer, std::function<void
         }
         
         size_t to_copy = std::min(length, buffer.size());
-        std::memcpy(buffer.data(), read_buffer_.data(), to_copy);
+        std::memcpy(buffer.data(), read_buffer_.get() + read_offset_, to_copy);
         
         if (length > to_copy) {
-            read_offset_ = to_copy;
+            read_offset_ += to_copy;
             read_remaining_ = length - to_copy;
         } else {
             read_offset_ = 0;
@@ -289,15 +304,15 @@ void WebsocketStream::ReadWsFrame(std::function<void(std::error_code, std::size_
         
         auto next_step = [this, self, masked, handler](uint64_t len) {
             size_t extra = masked ? 4 : 0;
-            auto payload = std::make_shared<std::vector<uint8_t>>(len + extra);
+            auto payload = buffer_pool_->Get(len + extra);
             
-            underlying_->async_read(asio::buffer(*payload), [this, self, payload, masked, len, handler](std::error_code ec, std::size_t) {
+            underlying_->async_read(asio::buffer(payload.get(), len + extra), [this, self, payload, masked, len, handler](std::error_code ec, std::size_t) {
                 if (ec) {
                     handler(ec, 0);
                     return;
                 }
                 
-                uint8_t* data = payload->data();
+                uint8_t* data = payload.get();
                 if (masked) {
                     uint8_t mask[4];
                     std::memcpy(mask, data, 4);
@@ -307,7 +322,21 @@ void WebsocketStream::ReadWsFrame(std::function<void(std::error_code, std::size_
                     }
                 }
                 
-                read_buffer_.assign(data, data + len);
+                read_buffer_ = payload;
+                if (masked) {
+                    // Adjust read_buffer_ to point past the mask if we want to be strictly correct,
+                    // but since we return shared_ptr, we just need to remember the offset.
+                    // Actually, for simplicity, we'll just copy if masked, or use an offset.
+                    // Let's use an offset.
+                    read_offset_ = 4;
+                } else {
+                    read_offset_ = 0;
+                }
+                read_remaining_ = len;
+                
+                // If we use an offset, we should adjust how async_read uses read_buffer_.get().
+                // I've already updated async_read to use read_buffer_.get() + read_offset_.
+                
                 handler(std::error_code(), len);
             });
         };

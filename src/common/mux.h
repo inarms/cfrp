@@ -24,6 +24,7 @@
 #include <mutex>
 #include <functional>
 #include "common/stream.h"
+#include "common/buffer_pool.h"
 
 namespace cfrp {
 namespace common {
@@ -76,7 +77,7 @@ public:
     std::string protocol_name() override;
 
     // Internal methods used by Session
-    void handle_data(std::vector<uint8_t> data);
+    void handle_data(std::shared_ptr<uint8_t[]> data, size_t length);
     void handle_window_update(uint32_t delta);
     void handle_close();
 
@@ -94,7 +95,11 @@ private:
     size_t consumed_since_last_update_ = 0;
     
     // Improved read buffer: queue of frame bodies instead of byte deque
-    std::deque<std::vector<uint8_t>> read_queue_;
+    struct DataBlock {
+        std::shared_ptr<uint8_t[]> data;
+        size_t length;
+    };
+    std::deque<DataBlock> read_queue_;
     size_t read_queue_offset_ = 0;
     
     struct PendingRead {
@@ -109,7 +114,7 @@ private:
 
 class Session : public std::enable_shared_from_this<Session> {
 public:
-    Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server);
+    Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server, std::shared_ptr<BufferPool> buffer_pool = nullptr);
     void start(std::function<void(std::shared_ptr<MuxStream>)> on_new_stream);
     void stop();
 
@@ -117,22 +122,25 @@ public:
     void remove_stream(uint32_t stream_id);
 
     // Optimized write: supports scatter-gather and optional body ownership
-    void async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler = nullptr, std::vector<uint8_t>&& body_storage = {});
+    void async_send_frame(Header h, const std::vector<asio::const_buffer>& bodies, std::function<void(std::error_code)> handler = nullptr, std::shared_ptr<uint8_t[]> body_storage = {});
+    void async_send_frame(Header h, asio::const_buffer body, std::function<void(std::error_code)> handler = nullptr, std::shared_ptr<uint8_t[]> body_storage = {});
 
     asio::any_io_executor get_executor() { return strand_; }
     asio::strand<asio::any_io_executor>& strand() { return strand_; }
     std::string remote_endpoint_string() { return underlying_stream_->remote_endpoint_string(); }
     std::string protocol_name() { return underlying_stream_->protocol_name(); }
+    std::shared_ptr<BufferPool> buffer_pool() const { return buffer_pool_; }
 
 private:
     void do_read_header();
     void do_read_body(Header h);
-    void handle_frame(Header h, std::vector<uint8_t> body);
+    void handle_frame(Header h, std::shared_ptr<uint8_t[]> body, size_t length);
     void do_write();
     void schedule_heartbeat();
 
     std::shared_ptr<AsyncStream> underlying_stream_;
     asio::strand<asio::any_io_executor> strand_;
+    std::shared_ptr<BufferPool> buffer_pool_;
     std::mutex mux_mutex_; // Protect streams_, next_stream_id_, and stopped_
     bool is_server_;
     bool stopped_ = false;
@@ -143,8 +151,8 @@ private:
     
     struct PendingWrite {
         uint8_t header_data[Header::size];
-        asio::const_buffer body;
-        std::vector<uint8_t> body_storage; // Used when we need to own the data
+        std::vector<asio::const_buffer> bodies;
+        std::shared_ptr<uint8_t[]> body_storage; // Used when we need to own the data
         std::function<void(std::error_code)> handler;
     };
     std::deque<std::shared_ptr<PendingWrite>> write_queue_;

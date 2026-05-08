@@ -11,6 +11,10 @@ conf_d = "./conf.d"
 compression = true
 compression_level = 1 # Zstd compression level (1-22, 1 is fastest)
 
+[performance]
+threads = 2
+memory_profile = "low" # Options: low, standard, high
+
 [client.ssl]
 enable = true
 verify_peer = false

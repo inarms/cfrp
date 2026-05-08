@@ -25,11 +25,52 @@
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
+#include "common/buffer_pool.h"
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/wolfcrypt/logging.h>
 
 namespace fs = std::filesystem;
+
+static cfrp::common::BufferPool::PoolConfig ParsePoolConfig(const toml::table& table) {
+    cfrp::common::BufferPool::PoolConfig config;
+    config.buffer_size = static_cast<size_t>(table["buffer_size"].value_or(0));
+    config.initial_count = static_cast<size_t>(table["initial_count"].value_or(0));
+    config.max_count = static_cast<size_t>(table["max_count"].value_or(0));
+    return config;
+}
+
+static std::shared_ptr<cfrp::common::BufferPool> ParseBufferPool(const toml::table* node) {
+    if (!node) return cfrp::common::BufferPool::CreateDefault();
+    
+    std::string profile = "low";
+    auto pool_node = (*node)["buffer_pool"];
+    
+    if (auto perf = (*node)["performance"].as_table()) {
+        profile = (*perf)["memory_profile"].value_or("low");
+        if ((*perf)["buffer_pool"]) {
+            pool_node = (*perf)["buffer_pool"];
+        }
+    }
+
+    // If explicit buffer_pool array is provided, it overrides the profile
+    if (pool_node && pool_node.is_array()) {
+        std::vector<cfrp::common::BufferPool::PoolConfig> configs;
+        for (auto& elem : *pool_node.as_array()) {
+            if (auto table = elem.as_table()) {
+                auto config = ParsePoolConfig(*table);
+                if (config.buffer_size > 0) {
+                    configs.push_back(config);
+                }
+            }
+        }
+        if (!configs.empty()) {
+            return std::make_shared<cfrp::common::BufferPool>(configs);
+        }
+    }
+
+    return cfrp::common::BufferPool::CreateByProfile(profile);
+}
 
 static cfrp::server::PortRange ParsePortRange(const std::string& s) {
     size_t dash = s.find('-');
@@ -392,8 +433,17 @@ token = ")" << (token_provided ? cli_token : "secret_token") << R"("
 name = "my-client"
 protocol = "auto"
 compression = true
-threads = 2
 log_level = "info"
+
+[client.performance]
+threads = 2
+# Buffer Pool settings (optional, optimized for low memory by default)
+# buffer_pool = [
+#   { buffer_size = 512, initial_count = 8, max_count = 32 },
+#   { buffer_size = 1024, initial_count = 4, max_count = 16 },
+#   { buffer_size = 4096, initial_count = 2, max_count = 8 },
+#   { buffer_size = 65536, initial_count = 1, max_count = 4 }
+# ]
 
 [client.ssl]
 enable = true
@@ -422,8 +472,11 @@ remote_port = 6000
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = ")" << (token_provided ? cli_token : "secret_token") << R"("
-threads = 2
 log_level = "info"
+
+[server.performance]
+threads = 2
+memory_profile = "low" # Options: low, standard, high. Optimized for edge devices by default.
 
 # Virtual Host ports for HTTP and HTTPS (SNI routing)
 vhost_http_port = 8080
@@ -524,13 +577,15 @@ ca_file = "certs/ca.crt"
             uint16_t vhost_http_port = static_cast<uint16_t>(config["server"]["vhost_http_port"].value_or(0));
             uint16_t vhost_https_port = static_cast<uint16_t>(config["server"]["vhost_https_port"].value_or(0));
 
+            auto buffer_pool = ParseBufferPool(config.as_table());
+
             std::ofstream status_ofs(status_path);
             if (status_ofs) {
                 status_ofs << "Mode:        Server\n";
                 status_ofs << "Config:      " << config_path << "\n";
             }
 
-            server = std::make_shared<cfrp::server::Server>(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients);
+            server = std::make_shared<cfrp::server::Server>(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients, buffer_pool);
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
         } else if (config["client"] || (config["server"] && ca_provided)) {
@@ -558,7 +613,9 @@ ca_file = "certs/ca.crt"
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 
-            client = std::make_shared<cfrp::client::Client>(io_context, server_addr, server_port, token, client_name, ssl_config, compression, compression_level, conf_d, protocol);
+            auto buffer_pool = ParseBufferPool(client_node.as_table());
+
+            client = std::make_shared<cfrp::client::Client>(io_context, server_addr, server_port, token, client_name, ssl_config, compression, compression_level, conf_d, protocol, buffer_pool);
 
             std::ofstream status_ofs(status_path);
             if (status_ofs) {
@@ -602,9 +659,11 @@ ca_file = "certs/ca.crt"
         // 0 means auto (hardware concurrency)
         unsigned int thread_count = 2;
         if (config["server"]) {
-            thread_count = static_cast<unsigned int>(config["server"]["threads"].value_or(2));
+            auto s = config["server"];
+            thread_count = static_cast<unsigned int>(s["performance"]["threads"].value_or(s["threads"].value_or(2)));
         } else if (config["client"]) {
-            thread_count = static_cast<unsigned int>(config["client"]["threads"].value_or(2));
+            auto c = config["client"];
+            thread_count = static_cast<unsigned int>(c["performance"]["threads"].value_or(c["threads"].value_or(2)));
         }
 
         if (thread_count == 0) {

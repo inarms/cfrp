@@ -35,6 +35,7 @@
 
 #include "common/rate_limiter.h"
 #include "common/async_bridge.h"
+#include "common/buffer_pool.h"
 
 namespace cfrp {
 namespace client {
@@ -62,7 +63,7 @@ class Client;
 
 class UdpBridge : public std::enable_shared_from_this<UdpBridge> {
 public:
-    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, int compression_level = 1, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr);
+    UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::endpoint local_endpoint, bool use_compression, int compression_level = 1, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr, std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Start();
 
 private:
@@ -71,6 +72,7 @@ private:
 
     std::shared_ptr<common::AsyncStream> stream_;
     std::shared_ptr<common::RateLimiter> rate_limiter_;
+    std::shared_ptr<common::BufferPool> buffer_pool_;
     udp::socket socket_;
     udp::endpoint local_endpoint_;
     bool use_compression_;
@@ -84,7 +86,7 @@ private:
 
 class Client : public std::enable_shared_from_this<Client> {
 public:
-    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, int compression_level, const std::string& conf_d_path, const std::string& protocol = "auto");
+    Client(asio::io_context& io_context, const std::string& server_addr, uint16_t server_port, const std::string& token, const std::string& name, const SslConfig& ssl_config, bool compression, int compression_level, const std::string& conf_d_path, const std::string& protocol = "auto", std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Run();
     void Stop();
     void AddProxy(const ProxyConfig& proxy);
@@ -127,6 +129,7 @@ private:
     int compression_level_ = 1;
     std::unique_ptr<asio::ssl::context> ssl_ctx_;
     std::unique_ptr<asio::ssl::context> quic_ssl_ctx_;
+    std::shared_ptr<common::BufferPool> buffer_pool_;
     
     tcp::endpoint endpoint_;
     udp::endpoint udp_endpoint_;

@@ -19,6 +19,7 @@
 #include "common/stream.h"
 #include "common/rate_limiter.h"
 #include "common/zstd_utils.h"
+#include "common/buffer_pool.h"
 #include <asio.hpp>
 #include <memory>
 
@@ -38,7 +39,8 @@ public:
            std::shared_ptr<AsyncStream> s2,
            bool use_compression,
            int compression_level = 1,
-           std::shared_ptr<RateLimiter> rate_limiter = nullptr);
+           std::shared_ptr<RateLimiter> rate_limiter = nullptr,
+           std::shared_ptr<BufferPool> buffer_pool = nullptr);
 
     void Start();
 
@@ -48,10 +50,11 @@ private:
     std::shared_ptr<AsyncStream> s1_;
     std::shared_ptr<AsyncStream> s2_;
     std::shared_ptr<RateLimiter> rate_limiter_;
+    std::shared_ptr<BufferPool> buffer_pool_;
     bool use_compression_;
     int compression_level_;
-    char data1_[32768];
-    char data2_[32768];
+    std::shared_ptr<uint8_t[]> data1_;
+    std::shared_ptr<uint8_t[]> data2_;
     uint32_t header2_{};
 
     ZstdContext cctx_;

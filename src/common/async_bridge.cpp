@@ -29,11 +29,17 @@ Bridge::Bridge(std::shared_ptr<AsyncStream> s1,
                std::shared_ptr<AsyncStream> s2,
                bool use_compression,
                int compression_level,
-               std::shared_ptr<RateLimiter> rate_limiter)
+               std::shared_ptr<RateLimiter> rate_limiter,
+               std::shared_ptr<BufferPool> buffer_pool)
     : s1_(std::move(s1)), s2_(std::move(s2)),
       rate_limiter_(std::move(rate_limiter)),
+      buffer_pool_(std::move(buffer_pool)),
       use_compression_(use_compression),
-      compression_level_(compression_level) {}
+      compression_level_(compression_level) {
+    if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
+    data1_ = buffer_pool_->Get(32768);
+    data2_ = buffer_pool_->Get(32768);
+}
 
 void Bridge::Start() {
     DoRead(1);
@@ -48,13 +54,13 @@ void Bridge::DoRead(int direction) {
         auto from    = (direction == 1) ? s1_ : s2_;
         auto buf     = (direction == 1) ? data1_ : data2_;
 
-        from->async_read_some(asio::buffer(buf, sizeof(data1_)),
+        from->async_read_some(asio::buffer(buf.get(), 32768),
             [this, self, direction, buf](std::error_code ec, std::size_t length) {
                 if (!ec) {
                     auto to_inner  = (direction == 1) ? s2_ : s1_;
 
                     auto write_op = [this, self, direction, to_inner, buf, length]() {
-                        to_inner->async_write(asio::buffer(buf, length),
+                        to_inner->async_write(asio::buffer(buf.get(), length),
                             [this, self, direction](std::error_code ec2, std::size_t) {
                                 if (!ec2) {
                                     DoRead(direction);
@@ -86,13 +92,13 @@ void Bridge::DoRead(int direction) {
 
     } else if (direction == 1) {
         // ---- Compress & Frame:  s1 (raw) → s2 (work) ----
-        s1_->async_read_some(asio::buffer(data1_, sizeof(data1_)),
+        s1_->async_read_some(asio::buffer(data1_.get(), 32768),
             [this, self](std::error_code ec, std::size_t length) {
                 if (!ec) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
                     auto& compressed_buf = cctx_.get_compress_buf(cSizeBound);
                     size_t const cSize = cctx_.compress(
-                        compressed_buf.data(), cSizeBound, data1_, length, compression_level_);
+                        compressed_buf.data(), cSizeBound, data1_.get(), length, compression_level_);
 
                     uint32_t final_header;
                     const void* write_buf;
@@ -106,17 +112,17 @@ void Bridge::DoRead(int direction) {
                     } else {
                         final_header = asio::detail::socket_ops::host_to_network_long(
                             static_cast<uint32_t>(length));
-                        write_buf = data1_;
+                        write_buf = data1_.get();
                         write_len = length;
                     }
 
-                    auto packet = std::make_shared<std::vector<uint8_t>>(
-                        sizeof(final_header) + write_len);
-                    std::memcpy(packet->data(), &final_header, sizeof(final_header));
-                    std::memcpy(packet->data() + sizeof(final_header), write_buf, write_len);
+                    size_t packet_len = sizeof(final_header) + write_len;
+                    auto packet = buffer_pool_->Get(packet_len);
+                    std::memcpy(packet.get(), &final_header, sizeof(final_header));
+                    std::memcpy(packet.get() + sizeof(final_header), write_buf, write_len);
 
-                    auto write_op = [this, self, packet]() {
-                        s2_->async_write(asio::buffer(*packet),
+                    auto write_op = [this, self, packet, packet_len]() {
+                        s2_->async_write(asio::buffer(packet.get(), packet_len),
                             [this, self, packet](std::error_code ec2, std::size_t) {
                                 if (!ec2) {
                                     DoRead(1);
@@ -149,13 +155,13 @@ void Bridge::DoRead(int direction) {
                         s1_->close(); s2_->close(); return;
                     }
 
-                    auto body = std::make_shared<std::vector<uint8_t>>(len);
-                    s2_->async_read(asio::buffer(*body),
-                        [this, self, body, compressed](std::error_code ec2, std::size_t) {
+                    auto body = buffer_pool_->Get(len);
+                    s2_->async_read(asio::buffer(body.get(), len),
+                        [this, self, body, len, compressed](std::error_code ec2, std::size_t) {
                             if (!ec2) {
                                 if (compressed) {
                                     unsigned long long const decodedSize =
-                                        ZSTD_getFrameContentSize(body->data(), body->size());
+                                        ZSTD_getFrameContentSize(body.get(), len);
                                     if (decodedSize == ZSTD_CONTENTSIZE_ERROR ||
                                         decodedSize == ZSTD_CONTENTSIZE_UNKNOWN ||
                                         decodedSize > protocol::MAX_DECOMPRESSED_SIZE) {
@@ -165,16 +171,16 @@ void Bridge::DoRead(int direction) {
                                     auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
                                     size_t const dSize = dctx_.decompress(
                                         decompressed_buf.data(), decodedSize,
-                                        body->data(), body->size());
+                                        body.get(), len);
                                     if (ZSTD_isError(dSize)) {
                                         s1_->close(); s2_->close(); return;
                                     }
 
-                                    auto final_decompressed = std::make_shared<std::vector<uint8_t>>(
-                                        decompressed_buf.begin(), decompressed_buf.begin() + dSize);
+                                    auto final_decompressed = buffer_pool_->Get(dSize);
+                                    std::memcpy(final_decompressed.get(), decompressed_buf.data(), dSize);
 
-                                    auto write_op = [this, self, final_decompressed]() {
-                                        s1_->async_write(asio::buffer(*final_decompressed),
+                                    auto write_op = [this, self, final_decompressed, dSize]() {
+                                        s1_->async_write(asio::buffer(final_decompressed.get(), dSize),
                                             [this, self, final_decompressed](std::error_code ec3, std::size_t) {
                                                 if (!ec3) DoRead(2);
                                                 else { s1_->close(); s2_->close(); }
@@ -182,14 +188,14 @@ void Bridge::DoRead(int direction) {
                                     };
 
                                     if (rate_limiter_) {
-                                        rate_limiter_->async_wait(final_decompressed->size(),
+                                        rate_limiter_->async_wait(dSize,
                                                                    std::move(write_op));
                                     } else {
                                         write_op();
                                     }
                                 } else {
-                                    auto write_op = [this, self, body]() {
-                                        s1_->async_write(asio::buffer(*body),
+                                    auto write_op = [this, self, body, len]() {
+                                        s1_->async_write(asio::buffer(body.get(), len),
                                             [this, self, body](std::error_code ec3, std::size_t) {
                                                 if (!ec3) DoRead(2);
                                                 else { s1_->close(); s2_->close(); }
@@ -197,7 +203,7 @@ void Bridge::DoRead(int direction) {
                                     };
 
                                     if (rate_limiter_) {
-                                        rate_limiter_->async_wait(body->size(),
+                                        rate_limiter_->async_wait(len,
                                                                    std::move(write_op));
                                     } else {
                                         write_op();

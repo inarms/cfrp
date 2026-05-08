@@ -17,6 +17,7 @@
 #pragma once
 
 #include "common/stream.h"
+#include "common/buffer_pool.h"
 #include <asio.hpp>
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
@@ -57,7 +58,7 @@ public:
     std::string protocol_name() override;
 
     // Internal
-    void handle_data(const uint8_t* data, size_t len);
+    void handle_data(std::shared_ptr<uint8_t[]> data, size_t len);
     void handle_close();
 
 private:
@@ -65,7 +66,12 @@ private:
 
     int64_t stream_id_;
     std::weak_ptr<QuicSession> session_;
-    std::deque<std::vector<uint8_t>> read_queue_;
+    
+    struct DataBlock {
+        std::shared_ptr<uint8_t[]> data;
+        size_t length;
+    };
+    std::deque<DataBlock> read_queue_;
     size_t read_queue_offset_ = 0;
     struct PendingRead {
         asio::mutable_buffer buffer;
@@ -94,6 +100,7 @@ public:
     void close_session();
     void close_stream(int64_t stream_id);
     void write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler);
+    void write_stream(int64_t stream_id, const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler);
 
     asio::any_io_executor get_executor() { return strand_; }
     asio::strand<asio::any_io_executor>& strand() { return strand_; }
@@ -104,6 +111,7 @@ public:
     int on_stream_close(int64_t stream_id);
 
     ngtcp2_conn* conn() { return conn_; }
+    std::shared_ptr<BufferPool> buffer_pool() const { return buffer_pool_; }
 
 private:
     void schedule_timer();
@@ -112,6 +120,7 @@ private:
 
     asio::ip::udp::socket& socket_;
     asio::strand<asio::any_io_executor> strand_;
+    std::shared_ptr<BufferPool> buffer_pool_;
     std::recursive_mutex ngtcp2_mutex_; // Protect ngtcp2_conn and stream map
     asio::ip::udp::endpoint remote_endpoint_;
     bool is_server_;
@@ -130,7 +139,8 @@ private:
     asio::steady_timer timer_;
     struct PendingWrite {
         int64_t stream_id;
-        std::vector<uint8_t> data;
+        std::vector<asio::const_buffer> bodies;
+        std::shared_ptr<uint8_t[]> bodies_storage; // Used when we need to own the data
         size_t consumed = 0;
         std::function<void(std::error_code, std::size_t)> handler;
     };
