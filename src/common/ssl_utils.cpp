@@ -21,14 +21,39 @@
 #include <wolfssl/openssl/evp.h>
 #include <wolfssl/openssl/rsa.h>
 #include <wolfssl/openssl/pem.h>
+#include <asio/ip/address.hpp>
 #include <iostream>
 #include <filesystem>
 #include <chrono>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
 namespace cfrp {
 namespace common {
+
+namespace {
+
+bool IsIpAddress(const std::string& value) {
+    std::error_code ec;
+    asio::ip::make_address(value, ec);
+    return !ec;
+}
+
+bool IsLoopbackIp(const std::string& value) {
+    std::error_code ec;
+    auto address = asio::ip::make_address(value, ec);
+    return !ec && address.is_loopback();
+}
+
+bool AddUniqueSan(std::vector<std::string>& sans, const std::string& san) {
+    if (san.empty()) return false;
+    if (std::find(sans.begin(), sans.end(), san) != sans.end()) return false;
+    sans.push_back(san);
+    return true;
+}
+
+} // namespace
 
 bool SslUtils::CreateDirectoryIfNotExists(const std::string& path) {
     try {
@@ -89,6 +114,48 @@ bool SslUtils::EnsureCertificates(const CertConfig& config) {
     return false;
 }
 
+std::vector<std::string> SslUtils::DefaultServerSubjectAltNames(const std::string& bind_addr) {
+    std::vector<std::string> sans;
+
+    if (!bind_addr.empty() && bind_addr != "0.0.0.0" && bind_addr != "::") {
+        if (IsIpAddress(bind_addr)) {
+            AddUniqueSan(sans, "IP:" + bind_addr);
+        } else {
+            AddUniqueSan(sans, "DNS:" + bind_addr);
+        }
+    }
+
+    AddUniqueSan(sans, "DNS:localhost");
+    AddUniqueSan(sans, "DNS:cfrp");
+    AddUniqueSan(sans, "IP:127.0.0.1");
+    AddUniqueSan(sans, "IP:::1");
+
+    return sans;
+}
+
+bool SslUtils::ConfigureClientTlsIdentity(WOLFSSL* ssl, const std::string& server_name, bool verify_peer) {
+    if (!ssl || server_name.empty()) return false;
+
+    if (SSL_set_tlsext_host_name(ssl, server_name.c_str()) != SSL_SUCCESS) {
+        return false;
+    }
+
+    if (!verify_peer) {
+        return true;
+    }
+
+    X509_VERIFY_PARAM* param = SSL_get0_param(ssl);
+    if (!param) {
+        return false;
+    }
+
+    if (IsLoopbackIp(server_name)) {
+        return X509_VERIFY_PARAM_set1_host(param, "localhost", 0) == 1;
+    }
+
+    return X509_VERIFY_PARAM_set1_host(param, server_name.c_str(), 0) == 1;
+}
+
 // Helper to generate a key
 static EVP_PKEY* GenerateKey() {
     EVP_PKEY* pkey = EVP_PKEY_new();
@@ -143,7 +210,8 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
     X509_set_pubkey(server_cert, server_key);
 
     X509_NAME* server_name = X509_get_subject_name(server_cert);
-    X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)"cfrp Server", -1, -1, 0);
+    const std::string common_name = !config.server_subject_alt_names.empty() ? config.server_subject_alt_names.front().substr(4) : "localhost";
+    X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)common_name.c_str(), -1, -1, 0);
     X509_set_issuer_name(server_cert, ca_name);
 
     if (!X509_sign(server_cert, ca_key, EVP_sha256())) {

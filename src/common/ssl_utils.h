@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <wolfssl/options.h>
+#include <wolfssl/openssl/ssl.h>
 #include <string>
 #include <vector>
 
@@ -27,6 +29,7 @@ struct CertConfig {
     std::string ca_key_file = "certs/ca.key";
     std::string server_cert_file = "certs/server.crt";
     std::string server_key_file = "certs/server.key";
+    std::vector<std::string> server_subject_alt_names;
     int ca_expiry_days = 3650;      // 10 years
     int server_expiry_days = 365;   // 1 year
 };
@@ -50,6 +53,10 @@ public:
      * @brief Generates a new CA and a server certificate signed by that CA.
      */
     static bool GenerateFullChain(const CertConfig& config);
+
+    static std::vector<std::string> DefaultServerSubjectAltNames(const std::string& bind_addr);
+
+    static bool ConfigureClientTlsIdentity(WOLFSSL* ssl, const std::string& server_name, bool verify_peer);
 
 private:
     static bool CreateDirectoryIfNotExists(const std::string& path);

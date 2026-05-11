@@ -27,6 +27,33 @@
 namespace cfrp {
 namespace server {
 
+namespace {
+
+std::string GenerateTicket() {
+    WC_RNG rng;
+    if (wc_InitRng(&rng) != 0) {
+        return {};
+    }
+
+    uint8_t random_bytes[32];
+    if (wc_RNG_GenerateBlock(&rng, random_bytes, sizeof(random_bytes)) != 0) {
+        wc_FreeRng(&rng);
+        return {};
+    }
+    wc_FreeRng(&rng);
+
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string ticket(sizeof(random_bytes) * 2, '\0');
+    for (size_t index = 0; index < sizeof(random_bytes); ++index) {
+        ticket[index * 2] = hex[random_bytes[index] >> 4];
+        ticket[index * 2 + 1] = hex[random_bytes[index] & 0x0F];
+    }
+
+    return ticket;
+}
+
+} // namespace
+
 // --- UdpBridge ---
 UdpBridge::UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter, std::shared_ptr<common::BufferPool> buffer_pool)
     : stream_(std::move(stream)), rate_limiter_(std::move(rate_limiter)), buffer_pool_(std::move(buffer_pool)), socket_(socket), remote_endpoint_(remote_endpoint), use_compression_(use_compression) {
@@ -135,18 +162,23 @@ void UdpProxyListener::DoReceive() {
                 std::string ticket;
                 auto it = endpoint_to_ticket_.find(sender_endpoint_);
                 if (it == endpoint_to_ticket_.end()) {
-                    ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_" + std::to_string(rand());
+                    auto session = session_.lock();
+                    ticket = GenerateTicket();
+                    if (!session || ticket.empty()) {
+                        common::Logger::Error("Failed to create UDP session ticket for [" + proxy_name_ + "]");
+                        DoReceive();
+                        return;
+                    }
+
                     endpoint_to_ticket_[sender_endpoint_] = ticket;
                     common::Logger::Info("New UDP session for [" + proxy_name_ + "] from " + sender_endpoint_.address().to_string() + ":" + std::to_string(sender_endpoint_.port()) + ", ticket: " + ticket);
 
-                    server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_, proxy_name_);
+                    server_.RegisterUdpSession(ticket, shared_from_this(), sender_endpoint_, proxy_name_, session);
 
-                    if (auto session = session_.lock()) {
-                        protocol::NewUserConnMessage m;
-                        m.proxy_name = proxy_name_;
-                        m.ticket = ticket;
-                        session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
-                    }
+                    protocol::NewUserConnMessage m;
+                    m.proxy_name = proxy_name_;
+                    m.ticket = ticket;
+                    session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
                 } else {
                     ticket = it->second;
                 }
@@ -199,17 +231,24 @@ void ProxyListener::DoAccept() {
         }
 
         common::SetTcpKeepalive(socket);
-        std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        auto owner_session = session_.lock();
+        std::string ticket = GenerateTicket();
+        if (!owner_session || ticket.empty()) {
+            common::Logger::Error("Failed to create TCP session ticket for [" + proxy_name_ + "]");
+            std::error_code close_ec;
+            socket.close(close_ec);
+            DoAccept();
+            return;
+        }
+
         common::Logger::Info("New user connection for proxy [" + proxy_name_ + "], ticket: " + ticket);
 
-        server_.RegisterUserConn(ticket, std::move(socket), proxy_name_);
+        server_.RegisterUserConn(ticket, std::move(socket), proxy_name_, owner_session);
 
-        if (auto session = session_.lock()) {
-            protocol::NewUserConnMessage m;
-            m.proxy_name = proxy_name_;
-            m.ticket = ticket;
-            session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
-        }
+        protocol::NewUserConnMessage m;
+        m.proxy_name = proxy_name_;
+        m.ticket = ticket;
+        owner_session->SendMessage(protocol::MessageType::NewUserConn, m.Serialize());
 
         DoAccept();
     }));
@@ -235,6 +274,11 @@ void ControlSession::Stop() {
         common::Logger::Info("[Server] Unauthenticated client disconnected: " + client_endpoint_);
     }
     
+    auto self = shared_from_this();
+    if (mux_session_key_) {
+        server_.UnregisterMuxControlSession(mux_session_key_, self);
+    }
+
     for (auto& proxy : proxies_) {
         common::Logger::Info("[Server] Cleaning up proxy [" + proxy->name() + "] for client [" + client_name_ + "]");
         server_.ClearPendingForProxy(proxy->name());
@@ -250,7 +294,7 @@ void ControlSession::Stop() {
     }
     udp_proxies_.clear();
     for (const auto& domain : registered_domains_) {
-        server_.RemoveVhostRoute(domain);
+        server_.RemoveVhostRoute(domain, self);
     }
     registered_domains_.clear();
     stream_->close();
@@ -394,8 +438,23 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
                 listener->Start();
                 udp_proxies_.push_back(listener);
             } else if (type == "http" || type == "https") {
+                std::vector<std::string> claimed_domains;
                 for (const auto& domain : custom_domains) {
-                    server_.AddVhostRoute(domain, shared_from_this(), name, type);
+                    if (!server_.AddVhostRoute(domain, shared_from_this(), name, type)) {
+                        for (const auto& claimed_domain : claimed_domains) {
+                            server_.RemoveVhostRoute(claimed_domain, shared_from_this());
+                            registered_domains_.erase(claimed_domain);
+                        }
+
+                        protocol::RegisterProxyRespMessage resp;
+                        resp.status = "error";
+                        resp.message = "vhost already claimed by another client";
+                        resp.name = name;
+                        SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
+                        return;
+                    }
+
+                    claimed_domains.push_back(domain);
                     registered_domains_.insert(domain);
                 }
             } else {
@@ -494,6 +553,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
             cert_config.ca_cert_file = ssl_config_.ca_file;
             cert_config.server_cert_file = ssl_config_.cert_file;
             cert_config.server_key_file = ssl_config_.key_file;
+            cert_config.server_subject_alt_names = common::SslUtils::DefaultServerSubjectAltNames(bind_addr);
             // Derive ca_key_file from ca_cert_file by changing extension to .key if not specified differently
             // but for now we'll just use a default or derive it.
             cert_config.ca_key_file = std::string(ssl_config_.ca_file).replace(ssl_config_.ca_file.find(".crt"), 4, ".key");
@@ -670,14 +730,58 @@ void Server::DoUdpRead() {
         });
 }
 
-void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data) {
+void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, std::shared_ptr<ControlSession> owner_session, const std::vector<uint8_t>& initial_data) {
     std::lock_guard<std::mutex> lock(pending_conn_mutex_);
-    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name});
+    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name, owner_session});
 }
 
-void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name) {
+void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name, std::shared_ptr<ControlSession> owner_session) {
     std::lock_guard<std::mutex> lock(pending_conn_mutex_);
-    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name});
+    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name, owner_session});
+}
+
+void Server::RegisterMuxControlSession(const void* mux_session_key, const std::shared_ptr<ControlSession>& session) {
+    if (!mux_session_key || !session) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mux_session_mutex_);
+    mux_control_sessions_[mux_session_key] = session;
+}
+
+void Server::UnregisterMuxControlSession(const void* mux_session_key, const std::shared_ptr<ControlSession>& session) {
+    if (!mux_session_key || !session) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mux_session_mutex_);
+    auto it = mux_control_sessions_.find(mux_session_key);
+    if (it == mux_control_sessions_.end()) {
+        return;
+    }
+
+    auto existing_session = it->second.lock();
+    if (!existing_session || existing_session == session) {
+        mux_control_sessions_.erase(it);
+    }
+}
+
+std::shared_ptr<ControlSession> Server::GetMuxControlSession(const void* mux_session_key) {
+    if (!mux_session_key) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(mux_session_mutex_);
+    auto it = mux_control_sessions_.find(mux_session_key);
+    if (it == mux_control_sessions_.end()) {
+        return nullptr;
+    }
+
+    auto session = it->second.lock();
+    if (!session) {
+        mux_control_sessions_.erase(it);
+    }
+    return session;
 }
 
 std::string Server::AllocateClientName(const std::string& requested_name) {
@@ -798,14 +902,23 @@ void Server::DoAccept() {
 void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream) {
     if (stream->id() == 1) {
         common::Logger::Info("Control stream (ID 1) requested. Starting session...");
-        std::make_shared<ControlSession>(*this, stream, io_context_)->Start();
+        auto control_session = std::make_shared<ControlSession>(*this, stream, io_context_, mux_session.get());
+        RegisterMuxControlSession(mux_session.get(), control_session);
+        control_session->Start();
     } else {
+        auto owner_session = GetMuxControlSession(mux_session.get());
+        if (!owner_session) {
+            common::Logger::Error("Rejected work stream without an owning control session");
+            stream->close();
+            return;
+        }
+
         // Work connection
         auto ticket_ptr = std::make_shared<std::vector<uint8_t>>();
         ticket_ptr->resize(65);
         
         stream->async_read(asio::buffer(*ticket_ptr),
-            [this, stream, ticket_ptr](std::error_code ec, std::size_t) {
+            [this, stream, ticket_ptr, owner_session](std::error_code ec, std::size_t) {
                 if (!ec) {
                     bool use_compression = ((*ticket_ptr)[0] == 0x01);
                     std::string ticket(reinterpret_cast<char*>(ticket_ptr->data() + 1), 64);
@@ -824,19 +937,25 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                         std::lock_guard<std::mutex> lock(pending_conn_mutex_);
                         auto it_tcp = pending_user_conns_.find(ticket);
                         if (it_tcp != pending_user_conns_.end()) {
-                            initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
-                            user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
-                            proxy_name = it_tcp->second.proxy_name;
-                            pending_user_conns_.erase(it_tcp);
-                            found_tcp = true;
+                            auto ticket_owner = it_tcp->second.owner_session.lock();
+                            if (ticket_owner && ticket_owner == owner_session) {
+                                initial_data = std::make_shared<std::vector<uint8_t>>(std::move(it_tcp->second.initial_data));
+                                user_socket = std::make_shared<tcp::socket>(std::move(it_tcp->second.socket));
+                                proxy_name = it_tcp->second.proxy_name;
+                                pending_user_conns_.erase(it_tcp);
+                                found_tcp = true;
+                            }
                         } else {
                             auto it_udp = pending_udp_sessions_.find(ticket);
                             if (it_udp != pending_udp_sessions_.end()) {
-                                udp_listener = it_udp->second.listener;
-                                udp_endpoint = it_udp->second.endpoint;
-                                proxy_name = it_udp->second.proxy_name;
-                                pending_udp_sessions_.erase(it_udp);
-                                found_udp = true;
+                                auto ticket_owner = it_udp->second.owner_session.lock();
+                                if (ticket_owner && ticket_owner == owner_session) {
+                                    udp_listener = it_udp->second.listener;
+                                    udp_endpoint = it_udp->second.endpoint;
+                                    proxy_name = it_udp->second.proxy_name;
+                                    pending_udp_sessions_.erase(it_udp);
+                                    found_udp = true;
+                                }
                             }
                         }
                     }
@@ -919,15 +1038,37 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
     }
 }
 
-void Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type) {
+bool Server::AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type) {
     std::unique_lock<std::shared_mutex> lock(vhost_mutex_);
-    vhost_routes_[domain] = {session, proxy_name, type};
+    auto it = vhost_routes_.find(domain);
+    if (it != vhost_routes_.end()) {
+        auto existing_session = it->second.session.lock();
+        if (existing_session && existing_session != session && it->second.client_name != session->client_name()) {
+            common::Logger::Error("[Server] Rejected vhost route collision for domain [" + domain + "] by client [" + session->client_name() + "]");
+            return false;
+        }
+    }
+
+    vhost_routes_[domain] = {session, session->client_name(), proxy_name, type};
     common::Logger::Info("[Server] Added vhost route: " + domain + " -> " + proxy_name + " (" + type + ")");
+    return true;
 }
 
-void Server::RemoveVhostRoute(const std::string& domain) {
+void Server::RemoveVhostRoute(const std::string& domain, const std::shared_ptr<ControlSession>& owner_session) {
     std::unique_lock<std::shared_mutex> lock(vhost_mutex_);
-    vhost_routes_.erase(domain);
+    auto it = vhost_routes_.find(domain);
+    if (it == vhost_routes_.end()) {
+        return;
+    }
+
+    if (owner_session) {
+        auto existing_session = it->second.session.lock();
+        if (existing_session && existing_session != owner_session) {
+            return;
+        }
+    }
+
+    vhost_routes_.erase(it);
 }
 
 std::shared_ptr<common::RateLimiter> Server::GetRateLimiter(const std::string& proxy_name) {
@@ -1032,8 +1173,13 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
                     }
 
                     if (session) {
-                        std::string ticket = std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "_vhost_" + std::to_string(rand());
-                        RegisterUserConn(ticket, std::move(*socket), proxy_name, *buffer);
+                        std::string ticket = GenerateTicket();
+                        if (ticket.empty()) {
+                            common::Logger::Error("Failed to create vhost ticket for domain [" + domain + "]");
+                            return;
+                        }
+
+                        RegisterUserConn(ticket, std::move(*socket), proxy_name, session, *buffer);
                         protocol::NewUserConnMessage m;
                         m.proxy_name = proxy_name;
                         m.ticket = ticket;

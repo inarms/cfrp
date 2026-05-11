@@ -16,6 +16,7 @@
 
 #include "client.h"
 #include "common/quic_ngtcp2.h"
+#include "common/ssl_utils.h"
 #include "common/utils.h"
 #include "common/websocket_stream.h"
 #include <algorithm>
@@ -293,6 +294,11 @@ void Client::DoConnect() {
                             stream = std::make_shared<common::WebsocketStream>(stream, true);
                         }
 
+                        if (ssl_config_.enable && !common::SslUtils::ConfigureClientTlsIdentity(static_cast<WOLFSSL*>(stream->get_native_handle()), server_addr_, ssl_config_.verify_peer)) {
+                            HandleDisconnect("Failed to configure TLS peer identity verification for " + server_addr_);
+                            return;
+                        }
+
                         stream->set_host_name(server_addr_);
                         stream->async_handshake(asio::ssl::stream_base::client, asio::bind_executor(strand_, [this, stream, conn_id](std::error_code ec) {
                             if (conn_id != connection_id_) return;
@@ -379,7 +385,7 @@ void Client::DoQuicConnect(int conn_id) {
             quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
     }
-    quic_session_->init(quic_ssl_ctx_->native_handle());
+    quic_session_->init(quic_ssl_ctx_->native_handle(), nullptr, nullptr, server_addr_, ssl_config_.verify_peer);
 
     handshake_timer_.expires_after(std::chrono::seconds(5));
     handshake_timer_.async_wait([this, conn_id](std::error_code ec) {

@@ -23,6 +23,7 @@
 #include <asio.hpp>
 #include <wolfssl/options.h>
 #include <wolfssl/openssl/ssl.h>
+#include <wolfssl/wolfcrypt/random.h>
 #include <asio/ssl.hpp>
 #include <memory>
 #include <vector>
@@ -129,12 +130,13 @@ private:
 
 class ControlSession : public std::enable_shared_from_this<ControlSession> {
 public:
-    explicit ControlSession(Server& server, std::shared_ptr<common::AsyncStream> stream, asio::io_context& io_context)
-        : server_(server), stream_(std::move(stream)), io_context_(io_context), strand_(asio::make_strand(io_context)) {}
+    explicit ControlSession(Server& server, std::shared_ptr<common::AsyncStream> stream, asio::io_context& io_context, const void* mux_session_key = nullptr)
+        : server_(server), stream_(std::move(stream)), io_context_(io_context), strand_(asio::make_strand(io_context)), mux_session_key_(mux_session_key) {}
 
     void Start();
     void Stop();
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
+    const std::string& client_name() const { return client_name_; }
 
 private:
     void DoReadHeader();
@@ -146,6 +148,7 @@ private:
     std::shared_ptr<common::AsyncStream> stream_;
     asio::io_context& io_context_;
     asio::strand<asio::io_context::executor_type> strand_;
+    const void* mux_session_key_ = nullptr;
     std::string client_endpoint_;
     std::string client_name_;
     protocol::Header header_;
@@ -173,11 +176,11 @@ public:
         vhost_https_port_ = https_port;
     }
 
-    void RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data = {});
-    void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name);
+    void RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, std::shared_ptr<ControlSession> owner_session, const std::vector<uint8_t>& initial_data = {});
+    void RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name, std::shared_ptr<ControlSession> owner_session);
     
-    void AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type);
-    void RemoveVhostRoute(const std::string& domain);
+    bool AddVhostRoute(const std::string& domain, std::shared_ptr<ControlSession> session, const std::string& proxy_name, const std::string& type);
+    void RemoveVhostRoute(const std::string& domain, const std::shared_ptr<ControlSession>& owner_session = {});
 
     std::shared_ptr<common::RateLimiter> GetRateLimiter(const std::string& proxy_name);
     void CreateRateLimiter(const std::string& proxy_name, int64_t bytes_per_sec);
@@ -193,6 +196,10 @@ public:
     bool IsClientAllowed(const std::string& name) const;
 
 private:
+    void RegisterMuxControlSession(const void* mux_session_key, const std::shared_ptr<ControlSession>& session);
+    void UnregisterMuxControlSession(const void* mux_session_key, const std::shared_ptr<ControlSession>& session);
+    std::shared_ptr<ControlSession> GetMuxControlSession(const void* mux_session_key);
+
     void DoAccept();
     void DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::string& type);
     void HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_session, std::shared_ptr<common::mux::MuxStream> stream);
@@ -218,6 +225,7 @@ private:
 
     struct VhostRoute {
         std::weak_ptr<ControlSession> session;
+        std::string client_name;
         std::string proxy_name;
         std::string type; // "http" or "https"
     };
@@ -228,17 +236,20 @@ private:
         tcp::socket socket;
         std::vector<uint8_t> initial_data;
         std::string proxy_name;
+        std::weak_ptr<ControlSession> owner_session;
     };
 
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;
         udp::endpoint endpoint;
         std::string proxy_name;
+        std::weak_ptr<ControlSession> owner_session;
     };
 
     std::unordered_map<std::string, TcpSessionInfo> pending_user_conns_;
     std::unordered_map<std::string, UdpSessionInfo> pending_udp_sessions_;
     std::unordered_set<std::string> active_client_names_;
+    std::unordered_map<const void*, std::weak_ptr<ControlSession>> mux_control_sessions_;
     
     // Split locks for better concurrency
     mutable std::shared_mutex quic_mutex_;
@@ -246,9 +257,12 @@ private:
     mutable std::shared_mutex rate_limit_mutex_;
     std::mutex pending_conn_mutex_;
     std::mutex client_name_mutex_;
+    std::mutex mux_session_mutex_;
 
     // ngtcp2 state
     std::unordered_map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>, common::UdpEndpointHash> quic_sessions_;
+
+    friend class ControlSession;
 };
 
 } // namespace server

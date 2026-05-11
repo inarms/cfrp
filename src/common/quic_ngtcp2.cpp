@@ -15,6 +15,7 @@
  */
 
 #include "common/quic_ngtcp2.h"
+#include "common/ssl_utils.h"
 #include "common/utils.h"
 #include <unordered_map>
 #include <wolfssl/options.h>
@@ -272,7 +273,7 @@ QuicSession::~QuicSession() {
     }
 }
 
-void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, const ngtcp2_cid* client_scid) {
+void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, const ngtcp2_cid* client_scid, const std::string& server_name, bool verify_peer) {
     if (!ssl_ctx) return;
 
     if (is_server_) {
@@ -283,9 +284,12 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
 
     ssl_ = wolfSSL_new(ssl_ctx);
     if (is_server_) wolfSSL_set_accept_state(ssl_); else wolfSSL_set_connect_state(ssl_);
-    
-    if (!is_server_) {
-        wolfSSL_set_verify(ssl_, WOLFSSL_VERIFY_NONE, NULL);
+
+    if (!is_server_ && !SslUtils::ConfigureClientTlsIdentity(ssl_, server_name, verify_peer)) {
+        Logger::Error("[QUIC] Failed to configure peer identity verification for " + server_name);
+        wolfSSL_free(ssl_);
+        ssl_ = nullptr;
+        return;
     }
 
     wolfSSL_UseALPN(ssl_, (char*)"cfrp", 4, WOLFSSL_ALPN_FAILED_ON_MISMATCH);

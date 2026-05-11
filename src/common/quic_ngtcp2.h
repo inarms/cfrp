@@ -87,7 +87,7 @@ public:
     QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server);
     ~QuicSession();
 
-    void init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* dcid = nullptr, const ngtcp2_cid* scid = nullptr);
+    void init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* dcid = nullptr, const ngtcp2_cid* scid = nullptr, const std::string& server_name = {}, bool verify_peer = false);
     void handle_packet(const uint8_t* data, size_t len);
     void send_packets();
     
