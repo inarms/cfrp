@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <csignal>
+#include <cctype>
 #define TOML_IMPLEMENTATION
 #include <toml++/toml.h>
 #include "server/server.h"
@@ -82,6 +83,39 @@ static cfrp::server::PortRange ParsePortRange(const std::string& s) {
         uint16_t port = static_cast<uint16_t>(std::stoi(s));
         return {port, port};
     }
+}
+
+static std::string TrimCopy(const std::string& value) {
+    size_t start = 0;
+    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
+        ++start;
+    }
+
+    size_t end = value.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+
+    return value.substr(start, end - start);
+}
+
+static std::string NormalizeSanEntry(const std::string& raw_value) {
+    std::string value = TrimCopy(raw_value);
+    if (value.empty()) {
+        return {};
+    }
+
+    if (value.rfind("DNS:", 0) == 0 || value.rfind("IP:", 0) == 0) {
+        return value;
+    }
+
+    std::error_code ec;
+    asio::ip::make_address(value, ec);
+    if (!ec) {
+        return "IP:" + value;
+    }
+
+    return "DNS:" + value;
 }
 
 int main(int argc, char** argv) {
@@ -550,6 +584,22 @@ ca_file = "certs/ca.crt"
                 ssl_config.cert_file = (*ssl)["cert_file"].value_or("certs/server.crt");
                 ssl_config.key_file = (*ssl)["key_file"].value_or("certs/server.key");
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
+
+                if (auto sans = (*ssl)["server_subject_alt_names"].as_array()) {
+                    for (auto& item : *sans) {
+                        if (auto san = item.as_string()) {
+                            auto normalized = NormalizeSanEntry(san->get());
+                            if (!normalized.empty()) {
+                                ssl_config.server_subject_alt_names.push_back(normalized);
+                            }
+                        }
+                    }
+                } else if (auto san = (*ssl)["server_subject_alt_names"].as_string()) {
+                    auto normalized = NormalizeSanEntry(san->get());
+                    if (!normalized.empty()) {
+                        ssl_config.server_subject_alt_names.push_back(normalized);
+                    }
+                }
             }
 
             std::vector<cfrp::server::PortRange> allowed_ports;

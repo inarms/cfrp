@@ -55,6 +55,7 @@ struct SslConfig {
     std::string cert_file = "certs/server.crt";
     std::string key_file = "certs/server.key";
     std::string ca_file = "certs/ca.crt";
+    std::vector<std::string> server_subject_alt_names;
 };
 
 struct PortRange {

@@ -24,5 +24,8 @@ auto_generate = true
 cert_file = "certs/server.crt"
 key_file = "certs/server.key"
 ca_file = "certs/ca.crt"
+# Optional: Additional identities for auto-generated certificate.
+# Accepts DNS/IP values (for example: "frp.example.com" or "203.0.113.10").
+# server_subject_alt_names = ["frp.example.com", "127.0.0.1"]
 
 # ... other server settings

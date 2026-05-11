@@ -273,7 +273,24 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
     X509_set_pubkey(server_cert, server_key);
 
     X509_NAME* server_name = X509_get_subject_name(server_cert);
-    const std::string common_name = !config.server_subject_alt_names.empty() ? config.server_subject_alt_names.front().substr(4) : "localhost";
+    std::string common_name = "localhost";
+    if (!config.server_subject_alt_names.empty()) {
+        for (const auto& san : config.server_subject_alt_names) {
+            if (san.rfind("DNS:", 0) == 0 && san.size() > 4) {
+                common_name = san.substr(4);
+                break;
+            }
+        }
+
+        if (common_name == "localhost") {
+            const auto& first_san = config.server_subject_alt_names.front();
+            if (first_san.rfind("DNS:", 0) == 0 && first_san.size() > 4) {
+                common_name = first_san.substr(4);
+            } else if (first_san.rfind("IP:", 0) == 0 && first_san.size() > 3) {
+                common_name = first_san.substr(3);
+            }
+        }
+    }
     X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)common_name.c_str(), -1, -1, 0);
     X509_set_issuer_name(server_cert, ca_name);
 

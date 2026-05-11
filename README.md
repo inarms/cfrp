@@ -84,6 +84,8 @@ protocol = "auto" # Supports TCP and QUIC simultaneously
 [server.ssl]
 enable = true
 auto_generate = true # Auto-generate CA and certificates
+# Optional identities included in auto-generated cert SAN
+# server_subject_alt_names = ["frp.example.com", "127.0.0.1"]
 ```
 
 ##### 2. Start as a Client
@@ -383,6 +385,7 @@ cmake --build .
   - `cert_file`: Path to the certificate file (default `certs/server.crt`).
   - `key_file`: Path to the private key file (default `certs/server.key`).
   - `ca_file`: Path to the CA certificate file (default `certs/ca.crt`).
+   - `server_subject_alt_names`: Optional SAN list for auto-generated server certificates. Entries can be hostnames or IPs (for example `"frp.example.com"`, `"127.0.0.1"`).
 
 ### Client Section
 - `server_addr`: Server IP or hostname.
