@@ -99,13 +99,76 @@ bool SslUtils::IsCertValid(const std::string& cert_file) {
     return true;
 }
 
-bool SslUtils::EnsureCertificates(const CertConfig& config) {
-    if (IsCertValid(config.ca_cert_file) && IsCertValid(config.server_cert_file) &&
-        fs::exists(config.ca_key_file) && fs::exists(config.server_key_file)) {
+bool SslUtils::IsServerCertIdentityValid(const std::string& cert_file, const std::vector<std::string>& expected_server_subject_alt_names) {
+    if (!fs::exists(cert_file)) return false;
+
+    std::vector<std::string> expected_dns_names;
+    expected_dns_names.reserve(expected_server_subject_alt_names.size());
+    for (const auto& san : expected_server_subject_alt_names) {
+        if (san.rfind("DNS:", 0) == 0) {
+            expected_dns_names.push_back(san.substr(4));
+        }
+    }
+
+    if (expected_dns_names.empty()) {
         return true;
     }
 
-    std::cout << "[Server] SSL/QUIC certificates missing or expired. Generating new self-signed chain..." << std::endl;
+    FILE* fp = fopen(cert_file.c_str(), "r");
+    if (!fp) return false;
+
+    X509* x509 = PEM_read_X509(fp, NULL, NULL, NULL);
+    fclose(fp);
+
+    if (!x509) return false;
+
+    char common_name[256] = {0};
+    X509_NAME* subject = X509_get_subject_name(x509);
+    int common_name_len = X509_NAME_get_text_by_NID(subject, NID_commonName, common_name, static_cast<int>(sizeof(common_name)));
+    X509_free(x509);
+
+    if (common_name_len <= 0) {
+        return false;
+    }
+
+    const std::string cert_common_name(common_name, static_cast<size_t>(common_name_len));
+    return std::find(expected_dns_names.begin(), expected_dns_names.end(), cert_common_name) != expected_dns_names.end();
+}
+
+bool SslUtils::EnsureCertificates(const CertConfig& config) {
+    const bool ca_cert_exists = fs::exists(config.ca_cert_file);
+    const bool server_cert_exists = fs::exists(config.server_cert_file);
+    const bool ca_key_exists = fs::exists(config.ca_key_file);
+    const bool server_key_exists = fs::exists(config.server_key_file);
+
+    const bool ca_cert_valid = ca_cert_exists && IsCertValid(config.ca_cert_file);
+    const bool server_cert_valid = server_cert_exists && IsCertValid(config.server_cert_file);
+    const bool server_identity_valid = server_cert_valid && IsServerCertIdentityValid(config.server_cert_file, config.server_subject_alt_names);
+
+    if (ca_cert_valid && server_cert_valid && server_identity_valid && ca_key_exists && server_key_exists) {
+        return true;
+    }
+
+    std::vector<std::string> reasons;
+    if (!ca_cert_exists) reasons.push_back("missing CA certificate");
+    if (!server_cert_exists) reasons.push_back("missing server certificate");
+    if (!ca_key_exists) reasons.push_back("missing CA key");
+    if (!server_key_exists) reasons.push_back("missing server key");
+    if (ca_cert_exists && !ca_cert_valid) reasons.push_back("expired or near-expiry CA certificate");
+    if (server_cert_exists && !server_cert_valid) reasons.push_back("expired or near-expiry server certificate");
+    if (server_cert_valid && !server_identity_valid) reasons.push_back("server certificate identity mismatch");
+
+    std::string reason_text;
+    for (size_t index = 0; index < reasons.size(); ++index) {
+        if (index > 0) reason_text += ", ";
+        reason_text += reasons[index];
+    }
+
+    if (reason_text.empty()) {
+        reason_text = "unknown reason";
+    }
+
+    std::cout << "[Server] SSL/QUIC certificate regeneration triggered: " << reason_text << std::endl;
     if (GenerateFullChain(config)) {
         std::cout << "[Server] Generated new self-signed chain in " << fs::path(config.ca_cert_file).parent_path() << std::endl;
         std::cout << "[Server] TIP: You only need to copy '" << config.ca_cert_file << "' to your clients to enable 'verify_peer'." << std::endl;

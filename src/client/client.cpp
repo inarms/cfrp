@@ -207,6 +207,13 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
             ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
         std::cout << "SSL enabled on client (TLSv1.3)." << std::endl;
+        if (ssl_config_.verify_peer) {
+            if (!ssl_config_.ca_file.empty()) {
+                common::Logger::Info("[Client] TLS peer verification is enabled. CA file: " + ssl_config_.ca_file);
+            } else {
+                common::Logger::Info("[Client] TLS peer verification is enabled. Using system default CA paths.");
+            }
+        }
     }
     
     std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
@@ -294,9 +301,18 @@ void Client::DoConnect() {
                             stream = std::make_shared<common::WebsocketStream>(stream, true);
                         }
 
-                        if (ssl_config_.enable && !common::SslUtils::ConfigureClientTlsIdentity(static_cast<WOLFSSL*>(stream->get_native_handle()), server_addr_, ssl_config_.verify_peer)) {
-                            HandleDisconnect("Failed to configure TLS peer identity verification for " + server_addr_);
-                            return;
+                        if (ssl_config_.enable) {
+                            if (!common::SslUtils::ConfigureClientTlsIdentity(static_cast<WOLFSSL*>(stream->get_native_handle()), server_addr_, ssl_config_.verify_peer)) {
+                                if (ssl_config_.verify_peer) {
+                                    common::Logger::Error("[Client] TLS peer verification setup failed for host: " + server_addr_);
+                                }
+                                HandleDisconnect("Failed to configure TLS peer identity verification for " + server_addr_);
+                                return;
+                            }
+
+                            if (ssl_config_.verify_peer) {
+                                common::Logger::Info("[Client] TLS peer verification configured for host: " + server_addr_ + " (" + stream->protocol_name() + ")");
+                            }
                         }
 
                         stream->set_host_name(server_addr_);
@@ -385,6 +401,9 @@ void Client::DoQuicConnect(int conn_id) {
             quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
     }
+    if (ssl_config_.verify_peer) {
+        common::Logger::Info("[Client] QUIC peer verification is enabled for host: " + server_addr_);
+    }
     quic_session_->init(quic_ssl_ctx_->native_handle(), nullptr, nullptr, server_addr_, ssl_config_.verify_peer);
 
     handshake_timer_.expires_after(std::chrono::seconds(5));
@@ -408,6 +427,9 @@ void Client::DoQuicConnect(int conn_id) {
     quic_session_->set_on_connected([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
         if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
+        if (ssl_config_.verify_peer) {
+            common::Logger::Info("[Client] QUIC peer verification succeeded for host: " + server_addr_);
+        }
         common::Logger::Info("QUIC handshake completed. Opening control stream...");
         auto stream = session->open_stream();
         if (stream) {
@@ -420,6 +442,9 @@ void Client::DoQuicConnect(int conn_id) {
     quic_session_->set_on_closed([this, conn_id](std::shared_ptr<common::quic::QuicSession> session) {
         if (conn_id != connection_id_) return;
         handshake_timer_.cancel();
+        if (ssl_config_.verify_peer) {
+            common::Logger::Error("[Client] QUIC peer verification/handshake failed or session closed before stream setup.");
+        }
         if (TryNextQuicEndpoint(conn_id, "session closed")) {
             return;
         }
@@ -461,6 +486,9 @@ void Client::DoUdpRead() {
 void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncStream> underlying_stream) {
     handshake_timer_.cancel();
     if (!ec) {
+        if (ssl_config_.enable && ssl_config_.verify_peer) {
+            common::Logger::Info("[Client] TLS peer verification succeeded for " + underlying_stream->protocol_name() + " connection.");
+        }
         common::Logger::Info("Connected to server via " + underlying_stream->protocol_name() + ". Initializing MuxSession...");
         reconnect_delay_sec_ = 0;
         
@@ -476,6 +504,9 @@ void Client::OnConnect(const std::error_code& ec, std::shared_ptr<common::AsyncS
         DoLogin();
         DoReadHeader(connection_id_);
     } else {
+        if (ssl_config_.enable && ssl_config_.verify_peer) {
+            common::Logger::Error("[Client] TLS peer verification failed for " + underlying_stream->protocol_name() + " connection.");
+        }
         common::Logger::Error("SSL Handshake/Connect failed: " + ec.message() + " (Category: " + ec.category().name() + " Code: " + std::to_string(ec.value()) + ")");
 #ifdef ASIO_USE_WOLFSSL
         char errBuf[160];

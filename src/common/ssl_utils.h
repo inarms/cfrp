@@ -49,6 +49,8 @@ public:
      */
     static bool IsCertValid(const std::string& cert_file);
 
+    static bool IsServerCertIdentityValid(const std::string& cert_file, const std::vector<std::string>& expected_server_subject_alt_names);
+
     /**
      * @brief Generates a new CA and a server certificate signed by that CA.
      */
