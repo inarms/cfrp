@@ -106,6 +106,8 @@ public:
     asio::strand<asio::any_io_executor>& strand() { return strand_; }
     std::string remote_endpoint_string() { return remote_endpoint_.address().to_string() + ":" + std::to_string(remote_endpoint_.port()); }
 
+    WOLFSSL* get_ssl() const { return ssl_; }
+
     // Internal callbacks
     int on_stream_data(int64_t stream_id, const uint8_t* data, size_t len);
     int on_stream_close(int64_t stream_id);

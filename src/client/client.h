@@ -46,6 +46,7 @@ using asio::ip::udp;
 struct SslConfig {
     bool enable = true;
     bool verify_peer = false;
+    bool verify_host = false;
     std::string ca_file = "certs/ca.crt";
 };
 

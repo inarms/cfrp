@@ -27,6 +27,7 @@ struct CertConfig {
     std::string ca_key_file = "certs/ca.key";
     std::string server_cert_file = "certs/server.crt";
     std::string server_key_file = "certs/server.key";
+    std::vector<std::string> domains;
     int ca_expiry_days = 3650;      // 10 years
     int server_expiry_days = 365;   // 1 year
 };

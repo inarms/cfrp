@@ -494,6 +494,7 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
             cert_config.ca_cert_file = ssl_config_.ca_file;
             cert_config.server_cert_file = ssl_config_.cert_file;
             cert_config.server_key_file = ssl_config_.key_file;
+            cert_config.domains = ssl_config_.domains;
             // Derive ca_key_file from ca_cert_file by changing extension to .key if not specified differently
             // but for now we'll just use a default or derive it.
             cert_config.ca_key_file = std::string(ssl_config_.ca_file).replace(ssl_config_.ca_file.find(".crt"), 4, ".key");

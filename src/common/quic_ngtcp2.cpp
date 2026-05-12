@@ -221,7 +221,7 @@ namespace {
         return 0;
     }
     int handshake_completed(ngtcp2_conn *conn, void *user_data) {
-        Logger::Info("[QUIC] Handshake completed successfully!");
+        Logger::Info("[QUIC] Handshake/Verification: SUCCESS");
         static_cast<QuicSession*>(user_data)->trigger_connected();
         return 0;
     }

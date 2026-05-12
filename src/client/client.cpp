@@ -202,10 +202,13 @@ Client::Client(asio::io_context& io_context, const std::string& server_addr, uin
             } else {
                 ssl_ctx_->set_default_verify_paths();
             }
+
+            if (ssl_config_.verify_host) {
+                ssl_ctx_->set_verify_callback(asio::ssl::host_name_verification(server_addr));
+            }
         } else {
             ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
-        std::cout << "SSL enabled on client (TLSv1.3)." << std::endl;
     }
     
     std::cout << "Client initialized (" << protocol_ << " Mux Enabled). Target: " << server_addr << ":" << server_port << std::endl;
@@ -285,6 +288,11 @@ void Client::DoConnect() {
                         std::shared_ptr<common::AsyncStream> stream;
                         if (ssl_config_.enable) {
                             stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                            common::Logger::Info("SSL Peer Verification: " + std::string(ssl_config_.verify_peer ? "ENABLED" : "DISABLED (Insecure)"));
+                            if (ssl_config_.verify_peer) {
+                                common::Logger::Info("SSL CA File: " + (ssl_config_.ca_file.empty() ? "[System Default]" : ssl_config_.ca_file));
+                                common::Logger::Info("SSL Host Verification: " + std::string(ssl_config_.verify_host ? "ENABLED (Target: " + server_addr_ + ")" : "DISABLED"));
+                            }
                         } else {
                             stream = std::make_shared<common::TcpStream>(std::move(*socket_ptr));
                         }
@@ -296,6 +304,13 @@ void Client::DoConnect() {
                         stream->set_host_name(server_addr_);
                         stream->async_handshake(asio::ssl::stream_base::client, asio::bind_executor(strand_, [this, stream, conn_id](std::error_code ec) {
                             if (conn_id != connection_id_) return;
+                            if (ssl_config_.enable) {
+                                if (!ec) {
+                                    common::Logger::Info("SSL Handshake/Verification: SUCCESS");
+                                } else {
+                                    common::Logger::Error("SSL Handshake/Verification: FAILED: " + ec.message());
+                                }
+                            }
                             OnConnect(ec, stream);
                         }));
                     } else {
@@ -369,6 +384,8 @@ void Client::DoQuicConnect(int conn_id) {
         quic_ssl_ctx_->set_options(asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3);
 
         if (ssl_config_.verify_peer) {
+            common::Logger::Info("QUIC Peer Verification: ENABLED");
+            common::Logger::Info("QUIC CA File: " + (ssl_config_.ca_file.empty() ? "[System Default]" : ssl_config_.ca_file));
             quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_peer);
             if (!ssl_config_.ca_file.empty()) {
                 quic_ssl_ctx_->load_verify_file(ssl_config_.ca_file);
@@ -376,10 +393,18 @@ void Client::DoQuicConnect(int conn_id) {
                 quic_ssl_ctx_->set_default_verify_paths();
             }
         } else {
+            common::Logger::Info("QUIC Peer Verification: DISABLED (Insecure)");
             quic_ssl_ctx_->set_verify_mode(asio::ssl::verify_none);
         }
     }
     quic_session_->init(quic_ssl_ctx_->native_handle());
+
+    if (ssl_config_.enable && ssl_config_.verify_peer && ssl_config_.verify_host) {
+        common::Logger::Info("QUIC Host Verification: ENABLED (Target: " + server_addr_ + ")");
+        wolfSSL_check_domain_name(quic_session_->get_ssl(), server_addr_.c_str());
+    } else if (ssl_config_.enable) {
+        common::Logger::Info("QUIC Host Verification: DISABLED");
+    }
 
     handshake_timer_.expires_after(std::chrono::seconds(5));
     handshake_timer_.async_wait([this, conn_id](std::error_code ec) {

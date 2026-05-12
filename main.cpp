@@ -550,6 +550,13 @@ ca_file = "certs/ca.crt"
                 ssl_config.cert_file = (*ssl)["cert_file"].value_or("certs/server.crt");
                 ssl_config.key_file = (*ssl)["key_file"].value_or("certs/server.key");
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
+                if (auto domains = (*ssl)["domains"].as_array()) {
+                    for (auto& elem : *domains) {
+                        if (auto s = elem.as_string()) {
+                            ssl_config.domains.push_back(s->get());
+                        }
+                    }
+                }
             }
 
             std::vector<cfrp::server::PortRange> allowed_ports;
@@ -610,6 +617,7 @@ ca_file = "certs/ca.crt"
             if (auto ssl = client_node["ssl"].as_table()) {
                 ssl_config.enable = (*ssl)["enable"].value_or(true);
                 ssl_config.verify_peer = (*ssl)["verify_peer"].value_or(false);
+                ssl_config.verify_host = (*ssl)["verify_host"].value_or(false);
                 ssl_config.ca_file = (*ssl)["ca_file"].value_or("certs/ca.crt");
             }
 

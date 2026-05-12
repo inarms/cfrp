@@ -18,6 +18,7 @@ memory_profile = "low" # Options: low, standard, high
 [client.ssl]
 enable = true
 verify_peer = false
+verify_host = false
 # ca_file = "certs/ca.crt"
 
 [[client.proxies]]

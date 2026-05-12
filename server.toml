@@ -24,5 +24,6 @@ auto_generate = true
 cert_file = "certs/server.crt"
 key_file = "certs/server.key"
 ca_file = "certs/ca.crt"
+domains = ["example.com", "www.example.com", "127.0.0.1"]
 
 # ... other server settings

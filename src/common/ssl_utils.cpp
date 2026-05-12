@@ -21,6 +21,7 @@
 #include <wolfssl/openssl/evp.h>
 #include <wolfssl/openssl/rsa.h>
 #include <wolfssl/openssl/pem.h>
+#include <wolfssl/openssl/x509v3.h>
 #include <iostream>
 #include <filesystem>
 #include <chrono>
@@ -143,8 +144,30 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
     X509_set_pubkey(server_cert, server_key);
 
     X509_NAME* server_name = X509_get_subject_name(server_cert);
-    X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)"cfrp Server", -1, -1, 0);
+    if (!config.domains.empty()) {
+        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)config.domains[0].c_str(), -1, -1, 0);
+    } else {
+        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)"cfrp Server", -1, -1, 0);
+    }
     X509_set_issuer_name(server_cert, ca_name);
+
+    // Add SANs if domains are provided
+    if (!config.domains.empty()) {
+        std::string sans = "DNS:" + config.domains[0];
+        for (size_t i = 1; i < config.domains.size(); ++i) {
+            sans += ",DNS:" + config.domains[i];
+        }
+        std::cout << "[SslUtils] Adding SANs to certificate: " << sans << std::endl;
+
+        // Add extensions
+        X509V3_CTX ctx;
+        X509V3_set_ctx(&ctx, ca_cert, server_cert, NULL, NULL, 0);
+        X509_EXTENSION* ext = X509V3_EXT_nconf_nid(NULL, &ctx, NID_subject_alt_name, (char*)sans.c_str());
+        if (ext) {
+            X509_add_ext(server_cert, ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+    }
 
     if (!X509_sign(server_cert, ca_key, EVP_sha256())) {
         X509_free(server_cert);
