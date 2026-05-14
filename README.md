@@ -2,104 +2,55 @@
 
 English | [简体中文](./README_zh.md) | [日本語](./README_ja.md) | [한국어](./README_ko.md)
 
-`cfrp` is a high-performance, asynchronous reverse proxy built with C++17 and Standalone Asio.
-It is a lightweight way to expose services behind NAT or firewalls, inspired by [fatedier/frp](https://github.com/fatedier/frp).
-
-## Platform Support
-
-`cfrp` is a cross-platform tool and supports:
-- **Windows**
-- **Linux**
-- **macOS**
+`cfrp` is a high-performance, asynchronous reverse proxy built with C++17 and Standalone Asio, inspired by [fatedier/frp](https://github.com/fatedier/frp). It exposes local services behind NATs or firewalls securely and efficiently.
 
 ## Features
+- **High Performance:** Non-blocking async I/O with Standalone Asio.
+- **Multiprotocol:** Supports TCP, UDP, HTTP, HTTPS (SNI), QUIC, and WebSockets.
+- **Security Built-in:** Automatic SSL/QUIC certificate generation and token authentication.
+- **Efficiency:** Multiplexed tunnels and optional Zstd compression.
+- **Dynamic Configuration:** Hot-reload proxies via `conf.d` directory.
+- **Cross-Platform:** Works on Windows, Linux, and macOS.
 
-- **High Performance**: Built on Standalone Asio for non-blocking, asynchronous I/O.
-- **Zero-Config Security**: Generates SSL/QUIC certificates and CA chains when needed.
-- **Single Tunnel, Multiple Streams**: Multiplexes traffic over one TCP/QUIC connection.
-- **Auto Protocol Mode**:
-   - **Server**: Handles TCP and QUIC clients on the same port.
-   - **Client**: Tries QUIC first, then falls back to TCP.
-- **Secure by Design**: Optional SSL/TLS and token-based authentication with wolfSSL.
-- **Bandwidth Efficiency**: Optional Zstd compression for control and data channels.
-- **Resilient Client**: Automatic reconnect with exponential backoff and graceful cleanup.
-- **Dynamic Proxying**: TCP, UDP, HTTP, and HTTPS (SNI) proxies with `conf.d` hot-reload.
-- **Protocol Flexibility**: TCP, QUIC, and WebSocket tunnels (Cloudflare/CDN-friendly).
-- **VHost Support**: Multiple web services can share the same HTTP (80) or HTTPS (443) port using domain-based routing.
-- **DNS Resolution**: `local_ip` now supports hostnames (e.g., `localhost` or Docker service names).
-- **Traffic Control**: Per-proxy bandwidth limiting to prevent network saturation.
-- **Lightweight**: Minimal dependencies (`asio`, `tomlplusplus`, `wolfssl`, `ngtcp2`) and a compact binary protocol.
-- **Clean Configuration**: Uses TOML for easy-to-read server and client settings.
-
-## Zero-Config Security
-
-`cfrp` makes it effortless to secure your tunnel. When you enable QUIC or TLS:
-1. **Automated PKI**: If certificates are missing or expired, the server automatically generates a Root CA and a Server Certificate.
-2. **Auto-Cleanup**: Certificates are stored in the `certs/` directory and renewed automatically when they near expiration.
-3. **Easy Distribution**: Simply copy the generated `certs/ca.crt` to your client devices to enable full peer verification.
+## Quick Start (Docker)
+The easiest way to run `cfrp` is via Docker:
+```bash
+# Start server and client locally
+docker compose up -d
+```
 
 ## Installation
 
-### 1. Manual Installation
-
-#### Download Instructions
-1. Go to the **[GitHub Releases](https://github.com/inarms/cfrp/releases)** page.
-2. Download the compressed file corresponding to your platform and architecture.
-3. Extract the contents:
-   - **Server Package**: Contains `cfrp` binary and `server.toml`.
-   - **Client Package**: Contains `cfrp` binary, `client.toml`, and `config.d/`.
-
-#### Automatic Configuration Selection
-**Note: If `server.toml` or `client.toml` exists in the current directory, they take absolute precedence. All command-line positional arguments and flags (like `-c` or `-t`) will be ignored.**
-
-If no configuration file exists, the application follows this logic:
-1. **Positional Argument**: If a path is provided (e.g., `./cfrp my.toml`), it uses that file.
-2. **Flags**: If `-c` and `-t` are provided, it generates a `client.toml` using those values.
-3. **Default**: Otherwise, it generates a default `server.toml` and starts as a Server.
-
-The search order for existing files is:
-1. **`server.toml`**: If found, starts as a **Server**.
-2. **`client.toml`**: If found, starts as a **Client**.
-
-#### Manual Usage Examples
-
-##### 1. Start as a Server
-To run a server using the default `server.toml`:
+### Script Installation (Linux/macOS)
 ```bash
-./cfrp
-```
-Or specify a custom configuration:
-```bash
-./cfrp my_server.toml
-```
+# Server
+curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode server
 
-Example **`server.toml`**:
+# Client
+curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
+```
+*(For Windows PowerShell scripts, see [Releases](https://github.com/inarms/cfrp/releases))*
+
+### Manual Configuration
+Basic `server.toml`:
 ```toml
 [server]
 bind_addr = "0.0.0.0"
 bind_port = 7001
 token = "your_secret_token"
-protocol = "auto" # Supports TCP and QUIC simultaneously
+protocol = "auto"
 
 [server.ssl]
 enable = true
-auto_generate = true # Auto-generate CA and certificates
+auto_generate = true
 ```
 
-##### 2. Start as a Client
-To run a client using the default `client.toml`:
-```bash
-./cfrp
-```
-
-Example **`client.toml`**:
+Basic `client.toml`:
 ```toml
 [client]
 server_addr = "your_server_ip"
 server_port = 7001
 token = "your_secret_token"
-name = "my-client"
-protocol = "auto" # Try QUIC first, failover to TCP
 
 [[client.proxies]]
 name = "ssh"
@@ -109,317 +60,14 @@ local_port = 22
 remote_port = 6000
 ```
 
-##### 3. Quick Client Setup (Automatic Generation)
-If you have the server's CA certificate (`ca.crt`) and the token, you can quickly start a client. `cfrp` will automatically generate a `client.toml` if it doesn't exist:
-```bash
-./cfrp -c certs/ca.crt -t your_secret_token
-```
-- If `client.toml` is **missing**, it generates a default one using the provided CA for verification and the provided token.
-- If `client.toml` **exists**, it uses the existing configuration (the `-c` and `-t` parameters are ignored).
+Run with `cfrp server.toml` or `cfrp client.toml`.
 
-##### 4. Access your service
-Once the tunnel is established, access your local service via the server's public IP:
-```bash
-ssh -p 6000 user@your_server_ip
-```
-
----
-
-### 2. Script Installation
-
-#### Server Installation
-Installs the binary and sets up a background service (systemd/launchd/Windows Service).
-
-**Linux & macOS:**
-```bash
-curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode server
-```
-- **Config Path (Linux):** `/etc/cfrp/server.toml`
-- **Config Path (macOS):** `/usr/local/etc/cfrp/server.toml`
-
-**Windows (PowerShell Admin):**
-```powershell
-iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode server"
-```
-- **Config Path:** `C:\Program Files\cfrp\server.toml`
-
-**Uninstall Server:**
-- **Linux/macOS:** `curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.sh | sudo bash -s -- --mode server`
-- **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode server"`
-
-#### Server Management
-##### Linux (systemd)
-- **Start:** `sudo systemctl start cfrp-server`
-- **Stop:** `sudo systemctl stop cfrp-server`
-- **Status:** `systemctl status cfrp-server`
-- **Logs:** `journalctl -u cfrp-server -f`
-
-##### macOS (launchd)
-- **Start:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
-- **Stop:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-server.plist`
-- **Status:** `sudo launchctl list | grep cfrp-server`
-- **Logs:** `tail -f /var/log/cfrp-server.log`
-
-##### Windows (PowerShell)
-- **Start:** `Start-Service cfrp-server`
-- **Stop:** `Stop-Service cfrp-server`
-- **Status:** `Get-Service cfrp-server`
-- **Logs:** Check `C:\Program Files\cfrp\cfrp.log`
-
----
-
-#### Client Installation
-Installs the binary and sets up a background service.
-
-**Linux & macOS:**
-```bash
-curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode client
-```
-- **Config Path (Linux):** `/etc/cfrp/client.toml`
-- **Config Path (macOS):** `/usr/local/etc/cfrp/client.toml`
-
-**Windows (PowerShell Admin):**
-```powershell
-iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode client"
-```
-- **Config Path:** `C:\Program Files\cfrp\client.toml`
-
-**Uninstall Client:**
-- **Linux/macOS:** `curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.sh | sudo bash -s -- --mode client`
-- **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode client"`
-
-#### Client Management
-##### Linux (systemd)
-- **Start:** `sudo systemctl start cfrp-client`
-- **Stop:** `sudo systemctl stop cfrp-client`
-- **Reload Config:** `sudo systemctl restart cfrp-client`
-
-##### macOS (launchd)
-- **Start:** `sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
-- **Stop:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
-- **Reload Config:** `sudo launchctl unload /Library/LaunchDaemons/com.inarms.cfrp-client.plist && sudo launchctl load -w /Library/LaunchDaemons/com.inarms.cfrp-client.plist`
-
-##### Windows (PowerShell)
-- **Start:** `Start-Service cfrp-client`
-- **Stop:** `Stop-Service cfrp-client`
-- **Reload Config:** `Restart-Service cfrp-client`
-
-> **Pro-Tip:** Use the `config.d/` directory (inside the config path) to add new proxies without restarting the service!
-
----
-
-#### CLI Tool Only
-Installs the binary to system PATH without creating a service.
-
-**Linux & macOS:**
-```bash
-curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.sh | sudo bash -s -- --mode cli
-```
-
-**Windows (PowerShell Admin):**
-```powershell
-iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/install.ps1).Content -Args "-Mode cli"
-```
-
-**Uninstall CLI:**
-- **Linux/macOS:** `curl -sSL https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.sh | sudo bash -s -- --mode cli`
-- **Windows:** `iex (iwr https://raw.githubusercontent.com/inarms/cfrp/main/scripts/uninstall.ps1).Content -Args "-Mode cli"`
-
-#### CLI Usage Examples
-
-The `cfrp` CLI behavior is governed by global settings stored in `~/.cfrp/config`.
-
-##### Global Configuration
-Manage tool-wide settings using the `config` command:
-```bash
-# List all global settings
-cfrp config ls
-
-# Set the working mode (foreground or background)
-cfrp config set working_mode background
-
-# Get a specific setting
-cfrp config get working_mode
-```
-
-##### Process Management
-| Command | Description |
-| :--- | :--- |
-| `cfrp status` | Displays if the background process is running, its PID, and current proxy activity. |
-| `cfrp stop` | Gracefully terminates the background daemon and cleans up the PID file. |
-
-##### Execution Behaviors by `working_mode`
-The `working_mode` setting (default: `foreground`) determines how the binary behaves when started:
-
-1. **`foreground` Mode**:
-   - The process stays attached to your terminal.
-   - Logs are printed to `stdout`.
-   - Use this for debugging or when running as a managed service (systemd/docker).
-
-2. **`background` Mode**:
-   - The process immediately "daemons" itself (forks on Linux/macOS, spawns hidden on Windows).
-   - Logs are redirected to `cfrp.log` in the executable directory.
-   - A `cfrp.pid` file is created to track the process.
-   - Use `cfrp stop` to kill the process.
-
-##### Quick Start Flags
-Override or generate configurations on the fly:
-```bash
-# Start a client with a temporary CA and token (generates client.toml if missing)
-cfrp -c certs/ca.crt -t my_secret_token
-
-# Force a specific configuration file
-cfrp /path/to/my_config.toml
-```
-
----
-
-### 3. Docker Installation
-
-The easiest way to run `cfrp` is using Docker. Images are available for both `amd64` and `arm64` architectures.
-
-#### Server Deployment
-1. Create a `server.toml` in your current directory.
-2. Use the provided `docker-compose.server.yml`:
-```bash
-# Download the compose file
-curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.server.yml
-
-# Start the server
-docker compose -f docker-compose.server.yml up -d
-```
-The server will be available on ports `7001` (control), `8080` (HTTP), and `8443` (HTTPS).
-
-#### Client Deployment
-1. Create a `client.toml` and a `conf.d` directory in your current directory.
-2. Use the provided `docker-compose.client.yml`:
-```bash
-# Download the compose file
-curl -O https://raw.githubusercontent.com/inarms/cfrp/main/docker-compose.client.yml
-
-# Start the client
-docker compose -f docker-compose.client.yml up -d
-```
-The client uses `network_mode: host` to easily access services running on your host machine.
-
-#### Local Testing (Server + Client)
-To test `cfrp` locally in a single command:
-```bash
-docker compose up -d
-```
-
----
-
-## Architecture
-
-1. **Multiplexed Tunnel**: A single persistent connection (TCP/SSL or QUIC) between the client and server. Uses a custom multiplexing protocol to handle multiple logical streams over this single physical connection.
-2. **Control Stream**: A virtual stream used for command exchange using a **custom binary** serialization protocol.
-3. **Data Streams**: Dynamic virtual streams established on-demand to bridge traffic. Supports **automatic compression detection**.
-4. **Data Splicing**: Bi-directional asynchronous data forwarding between external users and local services.
-
-## Getting Started
-
-### Prerequisites
-
-- C++17 compatible compiler
-- CMake 3.10+
-- [vcpkg](https://github.com/microsoft/vcpkg) for dependency management
-
-### Building
-
+## Building from Source
 ```bash
 mkdir build && cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=[path/to/vcpkg]/scripts/buildsystems/vcpkg.cmake
 cmake --build .
 ```
 
-## Proxy Hot-Reloading
-
-`cfrp` supports dynamic proxy management without restarting the client. By monitoring a directory (default `./conf.d`), you can add, update, or remove proxies on the fly.
-
-### Steps to use Hot-Reloading:
-
-1. **Enable in Client Config**:
-   Ensure `conf_d` is set in your `client.toml`:
-   ```toml
-   [client]
-   conf_d = "./conf.d"
-   ```
-
-2. **Create the Directory**:
-   ```bash
-   mkdir -p ./conf.d
-   ```
-
-3. **Add a Proxy**:
-   Create a new `.toml` file inside `./conf.d/` (e.g., `web.toml`):
-   ```toml
-   name = "my-web-service"
-   type = "tcp"
-   local_ip = "127.0.0.1"
-   local_port = 8080
-   remote_port = 8081
-   ```
-   The client will detect the new file and register the proxy with the server immediately.
-
-4. **Update or Remove**:
-   - **Update**: Modify the fields in `web.toml`. The client will unregister the old config and register the new one.
-   - **Remove**: Delete `web.toml`. The client will stop the proxy and inform the server.
-
-## Configuration Options
-
-### Server Section
-- `bind_addr`: Address to listen on (default `0.0.0.0`).
-- `bind_port`: Control port (default `7000`).
-- `vhost_http_port`: Port for HTTP vhost routing (e.g., `80`).
-- `vhost_https_port`: Port for HTTPS SNI routing (e.g., `443`).
-- `token`: Authentication token shared with the client.
-- `allowed_ports`: Optional list of allowed ports or port ranges (e.g., `[6000, "8000-9000"]`). If omitted, all ports are allowed.
-- `allowed_clients`: Optional whitelist of allowed client names (e.g., `["my-client", "office-pc"]`). If omitted, any client name is allowed.
-- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`.
-- `[server.ssl]`: SSL settings.
-  - `enable`: Enable SSL/TLS for control and work connections (TCP only).
-  - `auto_generate`: Automatically generate CA and Server certificates if missing or expired (default `true`).
-  - `cert_file`: Path to the certificate file (default `certs/server.crt`).
-  - `key_file`: Path to the private key file (default `certs/server.key`).
-  - `ca_file`: Path to the CA certificate file (default `certs/ca.crt`).
-
-### Client Section
-- `server_addr`: Server IP or hostname.
-- `server_port`: Server control port.
-- `token`: Authentication token.
-- `protocol`: Protocol to use (`tcp`, `quic`, `websocket`, or `auto`). Default is `auto`. In `auto` mode, the client tries protocols in the following order: **QUIC -> TCP -> WebSocket**, failing over to the next if the previous one fails or times out.
-- `name`: Optional unique name for this client. If omitted, the server automatically assigns one and ensures uniqueness by adding suffixes (e.g. `client_1`).
-- `compression`: Enable Zstd compression for all connections (default `true`).
-- `conf_d`: Optional path to a directory for dynamic proxy configurations.
-- `[client.ssl]`: SSL settings.
-  - `enable`: Enable SSL/TLS.
-  - `verify_peer`: Verify server certificate.
-  - `ca_file`: Path to CA certificate for verification.
-
-### Proxy Section (`[[client.proxies]]`)
-- `name`: Unique name for the proxy.
-- `type`: Protocol type (`tcp`, `udp`, `http`, or `https`).
-- `local_ip`: Local service IP or hostname (e.g., `127.0.0.1` or `localhost`).
-- `local_port`: Local service port.
-- `remote_port`: Port on the server to expose the service (required for `tcp`/`udp`).
-- `custom_domains`: Domain name(s) for `http`/`https` types (e.g., `["a.com", "b.com"]`).
-- `bandwidth_limit`: Bandwidth limit for the proxy (e.g., `"1M"`, `"512K"`, or bytes as integer).
-
-## Security Design: wolfSSL & QUIC
-
-This project has migrated to **wolfSSL** to support the modern **QUIC** protocol while maintaining high-performance TLS for TCP connections:
-
-- **QUIC Support**: Leverages `ngtcp2` with `wolfSSL` for state-of-the-art encrypted transport.
-- **One-Way TLS**: Standard TLS combined with **Token Authentication**.
-- **Server-Side**: Requires `cert_file` and `key_file` for both SSL/TLS and QUIC.
-- **Client-Side**: Only needs to verify the server's identity. 
-
-**Why QUIC?**
-QUIC provides better performance in lossy network environments, faster connection establishment (0-RTT), and eliminates head-of-line blocking which is a common issue with traditional TCP multiplexing.
-
 ## License
-
-This project is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
-
-This project is inspired by the original [frp](https://github.com/fatedier/frp) project by fatedier, which is also licensed under the Apache License 2.0.
+Apache License 2.0. Inspired by [fatedier/frp](https://github.com/fatedier/frp).
