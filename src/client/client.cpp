@@ -287,7 +287,14 @@ void Client::DoConnect() {
                         common::SetTcpKeepalive(*socket_ptr);
                         std::shared_ptr<common::AsyncStream> stream;
                         if (ssl_config_.enable) {
-                            stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                            auto ssl_stream = std::make_shared<common::SslStream>(std::move(*socket_ptr), *ssl_ctx_);
+                            
+                            // Set SNI for wolfSSL
+                            wolfSSL_UseSNI(static_cast<WOLFSSL*>(ssl_stream->get_native_handle()), 
+                                           WOLFSSL_SNI_HOST_NAME, server_addr_.c_str(), 
+                                           static_cast<word16>(server_addr_.size()));
+
+                            stream = ssl_stream;
                             common::Logger::Info("SSL Peer Verification: " + std::string(ssl_config_.verify_peer ? "ENABLED" : "DISABLED (Insecure)"));
                             if (ssl_config_.verify_peer) {
                                 common::Logger::Info("SSL CA File: " + (ssl_config_.ca_file.empty() ? "[System Default]" : ssl_config_.ca_file));
@@ -301,7 +308,6 @@ void Client::DoConnect() {
                             stream = std::make_shared<common::WebsocketStream>(stream, true);
                         }
 
-                        stream->set_host_name(server_addr_);
                         stream->async_handshake(asio::ssl::stream_base::client, asio::bind_executor(strand_, [this, stream, conn_id](std::error_code ec) {
                             if (conn_id != connection_id_) return;
                             if (ssl_config_.enable) {
@@ -401,9 +407,14 @@ void Client::DoQuicConnect(int conn_id) {
 
     if (ssl_config_.enable && ssl_config_.verify_peer && ssl_config_.verify_host) {
         common::Logger::Info("QUIC Host Verification: ENABLED (Target: " + server_addr_ + ")");
-        wolfSSL_check_domain_name(quic_session_->get_ssl(), server_addr_.c_str());
+        auto ssl = quic_session_->get_ssl();
+        wolfSSL_check_domain_name(ssl, server_addr_.c_str());
+        wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, server_addr_.c_str(), static_cast<word16>(server_addr_.size()));
     } else if (ssl_config_.enable) {
         common::Logger::Info("QUIC Host Verification: DISABLED");
+        // Still use SNI even if host verification is disabled, for server SNI routing
+        auto ssl = quic_session_->get_ssl();
+        wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, server_addr_.c_str(), static_cast<word16>(server_addr_.size()));
     }
 
     handshake_timer_.expires_after(std::chrono::seconds(5));

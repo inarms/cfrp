@@ -284,10 +284,6 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
     ssl_ = wolfSSL_new(ssl_ctx);
     if (is_server_) wolfSSL_set_accept_state(ssl_); else wolfSSL_set_connect_state(ssl_);
     
-    if (!is_server_) {
-        wolfSSL_set_verify(ssl_, WOLFSSL_VERIFY_NONE, NULL);
-    }
-
     wolfSSL_UseALPN(ssl_, (char*)"cfrp", 4, WOLFSSL_ALPN_FAILED_ON_MISMATCH);
 
     auto conn_ref = new ngtcp2_crypto_conn_ref();

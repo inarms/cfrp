@@ -26,10 +26,25 @@
 #include <filesystem>
 #include <chrono>
 
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace cfrp {
 namespace common {
+
+// Helper to check if a string is an IP address
+static bool IsIpAddress(const std::string& s) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, s.c_str(), &addr) == 1) return true;
+    struct in6_addr addr6;
+    if (inet_pton(AF_INET6, s.c_str(), &addr6) == 1) return true;
+    return false;
+}
 
 bool SslUtils::CreateDirectoryIfNotExists(const std::string& path) {
     try {
@@ -90,20 +105,28 @@ bool SslUtils::EnsureCertificates(const CertConfig& config) {
     return false;
 }
 
-// Helper to generate a key
+// Helper to generate a key using modern EVP API
 static EVP_PKEY* GenerateKey() {
-    EVP_PKEY* pkey = EVP_PKEY_new();
-    BIGNUM* bn = BN_new();
-    BN_set_word(bn, RSA_F4);
-    RSA* rsa = RSA_new();
-    if (RSA_generate_key_ex(rsa, 2048, bn, NULL) != 1) {
-        RSA_free(rsa);
-        BN_free(bn);
-        EVP_PKEY_free(pkey);
+    EVP_PKEY* pkey = nullptr;
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
+    if (!ctx) return nullptr;
+
+    if (EVP_PKEY_keygen_init(ctx) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
         return nullptr;
     }
-    EVP_PKEY_assign_RSA(pkey, rsa);
-    BN_free(bn);
+
+    if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+
+    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+        EVP_PKEY_CTX_free(ctx);
+        return nullptr;
+    }
+
+    EVP_PKEY_CTX_free(ctx);
     return pkey;
 }
 
@@ -114,20 +137,30 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
     EVP_PKEY* ca_key = GenerateKey();
     EVP_PKEY* server_key = GenerateKey();
 
-    if (!ca_key || !server_key) return false;
+    if (!ca_key || !server_key) {
+        if (ca_key) EVP_PKEY_free(ca_key);
+        if (server_key) EVP_PKEY_free(server_key);
+        return false;
+    }
 
     // 1. Generate CA Certificate
     X509* ca_cert = X509_new();
+    if (!ca_cert) {
+        EVP_PKEY_free(ca_key);
+        EVP_PKEY_free(server_key);
+        return false;
+    }
     X509_set_version(ca_cert, 2); // X509 v3
     ASN1_INTEGER_set(X509_get_serialNumber(ca_cert), 1);
     X509_gmtime_adj(X509_get_notBefore(ca_cert), 0);
-    X509_gmtime_adj(X509_get_notAfter(ca_cert), config.ca_expiry_days * 24 * 3600);
+    X509_gmtime_adj(X509_get_notAfter(ca_cert), (long)config.ca_expiry_days * 24 * 3600);
     X509_set_pubkey(ca_cert, ca_key);
 
     X509_NAME* ca_name = X509_get_subject_name(ca_cert);
-    X509_NAME_add_entry_by_txt(ca_name, "CN", MBSTRING_ASC, (unsigned char*)"cfrp Root CA", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(ca_name, "CN", MBSTRING_ASC, (const unsigned char*)"cfrp Root CA", -1, -1, 0);
     X509_set_issuer_name(ca_cert, ca_name);
 
+    // Self-sign CA
     if (!X509_sign(ca_cert, ca_key, EVP_sha256())) {
         X509_free(ca_cert);
         EVP_PKEY_free(ca_key);
@@ -137,35 +170,42 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
 
     // 2. Generate Server Certificate
     X509* server_cert = X509_new();
-    X509_set_version(server_cert, 2);
+    if (!server_cert) {
+        X509_free(ca_cert);
+        EVP_PKEY_free(ca_key);
+        EVP_PKEY_free(server_key);
+        return false;
+    }
+    X509_set_version(server_cert, 2); // X509 v3
     ASN1_INTEGER_set(X509_get_serialNumber(server_cert), 2);
     X509_gmtime_adj(X509_get_notBefore(server_cert), 0);
-    X509_gmtime_adj(X509_get_notAfter(server_cert), config.server_expiry_days * 24 * 3600);
+    X509_gmtime_adj(X509_get_notAfter(server_cert), (long)config.server_expiry_days * 24 * 3600);
     X509_set_pubkey(server_cert, server_key);
 
     X509_NAME* server_name = X509_get_subject_name(server_cert);
     if (!config.domains.empty()) {
-        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)config.domains[0].c_str(), -1, -1, 0);
+        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (const unsigned char*)config.domains[0].c_str(), -1, -1, 0);
     } else {
-        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (unsigned char*)"cfrp Server", -1, -1, 0);
+        X509_NAME_add_entry_by_txt(server_name, "CN", MBSTRING_ASC, (const unsigned char*)"cfrp Server", -1, -1, 0);
     }
     X509_set_issuer_name(server_cert, ca_name);
 
     // Add SANs if domains are provided
     if (!config.domains.empty()) {
-        std::string sans = "DNS:" + config.domains[0];
-        for (size_t i = 1; i < config.domains.size(); ++i) {
-            sans += ",DNS:" + config.domains[i];
-        }
-        std::cout << "[SslUtils] Adding SANs to certificate: " << sans << std::endl;
-
-        // Add extensions
         X509V3_CTX ctx;
         X509V3_set_ctx(&ctx, ca_cert, server_cert, NULL, NULL, 0);
-        X509_EXTENSION* ext = X509V3_EXT_nconf_nid(NULL, &ctx, NID_subject_alt_name, (char*)sans.c_str());
-        if (ext) {
-            X509_add_ext(server_cert, ext, -1);
-            X509_EXTENSION_free(ext);
+
+        for (const auto& domain : config.domains) {
+            // wolfSSL automatically prefixes with DNS: if we pass a string without prefix.
+            // If we add our own prefix, it ends up as DNS:DNS:domain.
+            std::cout << "[SslUtils] Adding SAN to certificate: " << domain << std::endl;
+            X509_EXTENSION* ext = X509V3_EXT_nconf_nid(NULL, &ctx, NID_subject_alt_name, (char*)domain.c_str());
+            if (ext) {
+                X509_add_ext(server_cert, ext, -1);
+                X509_EXTENSION_free(ext);
+            } else {
+                std::cerr << "[SslUtils] Failed to create SAN extension for: " << domain << std::endl;
+            }
         }
     }
 
@@ -186,9 +226,7 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
 
     bio = BIO_new_file(config.ca_key_file.c_str(), "wb");
     if (bio) {
-        RSA* rsa = EVP_PKEY_get1_RSA(ca_key);
-        PEM_write_bio_RSAPrivateKey(bio, rsa, NULL, NULL, 0, NULL, NULL);
-        RSA_free(rsa);
+        PEM_write_bio_PrivateKey(bio, ca_key, NULL, NULL, 0, NULL, NULL);
         BIO_free(bio);
     }
 
@@ -201,9 +239,7 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
 
     bio = BIO_new_file(config.server_key_file.c_str(), "wb");
     if (bio) {
-        RSA* rsa = EVP_PKEY_get1_RSA(server_key);
-        PEM_write_bio_RSAPrivateKey(bio, rsa, NULL, NULL, 0, NULL, NULL);
-        RSA_free(rsa);
+        PEM_write_bio_PrivateKey(bio, server_key, NULL, NULL, 0, NULL, NULL);
         BIO_free(bio);
     }
 
@@ -214,6 +250,8 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
 
     return true;
 }
+
+
 
 } // namespace common
 } // namespace cfrp
