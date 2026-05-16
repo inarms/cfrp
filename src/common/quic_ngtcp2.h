@@ -84,7 +84,7 @@ private:
 
 class QuicSession : public std::enable_shared_from_this<QuicSession> {
 public:
-    QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server);
+    QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server, std::shared_ptr<BufferPool> buffer_pool = nullptr);
     ~QuicSession();
 
     void init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* dcid = nullptr, const ngtcp2_cid* scid = nullptr);

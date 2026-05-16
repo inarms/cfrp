@@ -242,13 +242,15 @@ namespace {
     }
 }
 
-QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server)
+QuicSession::QuicSession(asio::ip::udp::socket& socket, asio::ip::udp::endpoint remote_endpoint, bool is_server, std::shared_ptr<BufferPool> buffer_pool)
     : socket_(socket), 
       strand_(asio::make_strand(socket.get_executor())), 
-      buffer_pool_(BufferPool::CreateDefault()),
+      buffer_pool_(buffer_pool),
       remote_endpoint_(remote_endpoint), 
       is_server_(is_server), 
       timer_(strand_) {
+    
+    if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
     
     auto local_ep = socket_.local_endpoint();
     std::memcpy(&local_addr_, local_ep.data(), local_ep.size());
@@ -622,7 +624,7 @@ void QuicSession::do_write() {
     }
     is_writing_ = false;
 
-    if (!write_queue_.empty()) {
+    if (!write_queue_.empty() && packets_sent == 16) {
         asio::post(strand_, [this, self]() { do_write(); });
     }
 }

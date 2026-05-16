@@ -229,16 +229,27 @@ private:
         tcp::socket socket;
         std::vector<uint8_t> initial_data;
         std::string proxy_name;
+        std::chrono::steady_clock::time_point created_at;
     };
 
     struct UdpSessionInfo {
         std::shared_ptr<UdpProxyListener> listener;
         udp::endpoint endpoint;
         std::string proxy_name;
+        std::chrono::steady_clock::time_point created_at;
     };
 
     std::unordered_map<std::string, TcpSessionInfo> pending_user_conns_;
     std::unordered_map<std::string, UdpSessionInfo> pending_udp_sessions_;
+    
+    struct TicketExpiration {
+        std::string ticket;
+        bool is_udp;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+    std::deque<TicketExpiration> ticket_expiration_queue_;
+    static constexpr size_t MAX_PENDING_TICKETS = 512;
+
     std::unordered_set<std::string> active_client_names_;
     
     // Split locks for better concurrency
@@ -247,6 +258,8 @@ private:
     mutable std::shared_mutex rate_limit_mutex_;
     std::mutex pending_conn_mutex_;
     std::mutex client_name_mutex_;
+
+    void DoLazyCleanup();
 
     // ngtcp2 state
     std::unordered_map<asio::ip::udp::endpoint, std::shared_ptr<common::quic::QuicSession>, common::UdpEndpointHash> quic_sessions_;

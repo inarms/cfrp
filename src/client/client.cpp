@@ -383,7 +383,7 @@ bool Client::TryNextQuicEndpoint(int conn_id, const char* reason) {
 
 void Client::DoQuicConnect(int conn_id) {
     common::Logger::Info("Connecting to server via QUIC " + udp_endpoint_.address().to_string() + ":" + std::to_string(udp_endpoint_.port()) + "...");
-    quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false);
+    quic_session_ = std::make_shared<common::quic::QuicSession>(udp_socket_, udp_endpoint_, false, buffer_pool_);
 
     if (!quic_ssl_ctx_) {
         quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);

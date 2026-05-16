@@ -620,7 +620,7 @@ void Server::DoUdpRead() {
                     ngtcp2_cid_init(&n_dcid, vcid.dcid, vcid.dcidlen);
                     ngtcp2_cid_init(&n_scid, vcid.scid, vcid.scidlen);
 
-                    auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true);
+                    auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true, buffer_pool_);
 
                     if (!quic_ssl_ctx_) {
                         quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
@@ -673,12 +673,30 @@ void Server::DoUdpRead() {
 
 void Server::RegisterUserConn(const std::string& ticket, tcp::socket socket, const std::string& proxy_name, const std::vector<uint8_t>& initial_data) {
     std::lock_guard<std::mutex> lock(pending_conn_mutex_);
-    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name});
+    DoLazyCleanup();
+
+    if (pending_user_conns_.size() + pending_udp_sessions_.size() >= MAX_PENDING_TICKETS) {
+        common::Logger::Error("Max pending connections reached, rejecting new user connection.");
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    pending_user_conns_.emplace(ticket, TcpSessionInfo{std::move(socket), initial_data, proxy_name, now});
+    ticket_expiration_queue_.push_back({ticket, false, now + std::chrono::seconds(10)});
 }
 
 void Server::RegisterUdpSession(const std::string& ticket, std::shared_ptr<UdpProxyListener> listener, udp::endpoint endpoint, const std::string& proxy_name) {
     std::lock_guard<std::mutex> lock(pending_conn_mutex_);
-    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name});
+    DoLazyCleanup();
+
+    if (pending_user_conns_.size() + pending_udp_sessions_.size() >= MAX_PENDING_TICKETS) {
+        common::Logger::Error("Max pending UDP sessions reached, rejecting new session.");
+        return;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    pending_udp_sessions_.emplace(ticket, UdpSessionInfo{listener, endpoint, proxy_name, now});
+    ticket_expiration_queue_.push_back({ticket, true, now + std::chrono::seconds(10)});
 }
 
 std::string Server::AllocateClientName(const std::string& requested_name) {
@@ -1047,6 +1065,23 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
         }
         DoVhostAccept(acceptor, type);
     });
+}
+
+void Server::DoLazyCleanup() {
+    auto now = std::chrono::steady_clock::now();
+    while (!ticket_expiration_queue_.empty()) {
+        auto& oldest = ticket_expiration_queue_.front();
+        if (now >= oldest.expires_at) {
+            if (oldest.is_udp) {
+                pending_udp_sessions_.erase(oldest.ticket);
+            } else {
+                pending_user_conns_.erase(oldest.ticket);
+            }
+            ticket_expiration_queue_.pop_front();
+        } else {
+            break; // Since queue is chronological, others are not expired
+        }
+    }
 }
 
 bool Server::IsPortAllowed(uint16_t port) const {
