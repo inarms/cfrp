@@ -22,17 +22,12 @@
 #include "common/buffer_pool.h"
 #include <asio.hpp>
 #include <memory>
+#include <atomic>
 
 namespace cfrp {
 namespace common {
 
 // Bidirectional async pipe between two AsyncStream objects.
-// When use_compression is true:
-//   direction 1 (s1 → s2): raw data is zstd-compressed and framed with a
-//     4-byte big-endian length header (COMPRESSION_FLAG bit set if compressed).
-//   direction 2 (s2 → s1): header+body are read, optionally decompressed, then
-//     written verbatim to s1.
-// When use_compression is false, data passes through unchanged in both directions.
 class Bridge : public std::enable_shared_from_this<Bridge> {
 public:
     Bridge(std::shared_ptr<AsyncStream> s1,
@@ -44,8 +39,19 @@ public:
 
     void Start();
 
+    // Set optional counters for bandwidth tracking
+    void SetStatsCounters(std::atomic<uint64_t>* bytes_sent, std::atomic<uint64_t>* bytes_received) {
+        bytes_sent_ = bytes_sent;
+        bytes_received_ = bytes_received;
+    }
+
+    void SetOnStop(std::function<void()> on_stop) {
+        on_stop_ = std::move(on_stop);
+    }
+
 private:
     void DoRead(int direction);
+    void HandleStop();
 
     std::shared_ptr<AsyncStream> s1_;
     std::shared_ptr<AsyncStream> s2_;
@@ -56,6 +62,11 @@ private:
     std::shared_ptr<uint8_t[]> data1_;
     std::shared_ptr<uint8_t[]> data2_;
     uint32_t header2_{};
+
+    std::atomic<uint64_t>* bytes_sent_ = nullptr;     // Sent to user (s2 -> s1)
+    std::atomic<uint64_t>* bytes_received_ = nullptr; // Received from user (s1 -> s2)
+    std::function<void()> on_stop_;
+    std::atomic_bool stopped_{false};
 
     ZstdContext cctx_;
     ZstdContext dctx_;

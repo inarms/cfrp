@@ -22,6 +22,7 @@
 #define TOML_IMPLEMENTATION
 #include <toml++/toml.h>
 #include "server/server.h"
+#include "server/mgmt/mgmt_server.h"
 #include "client/client.h"
 #include "common/quic_ngtcp2.h"
 #include "common/utils.h"
@@ -508,6 +509,7 @@ ca_file = "certs/ca.crt"
 
         std::shared_ptr<cfrp::server::Server> server;
         std::shared_ptr<cfrp::client::Client> client;
+        std::shared_ptr<cfrp::server::ManagementServer> mgmt_server;
 
         asio::signal_set signals(io_context, SIGINT, SIGTERM);
         signals.async_wait([&](std::error_code /*ec*/, int /*signo*/) {
@@ -595,6 +597,20 @@ ca_file = "certs/ca.crt"
             server = std::make_shared<cfrp::server::Server>(io_context, bind_addr, bind_port, token, ssl_config, protocol, allowed_ports, allowed_clients, buffer_pool);
             server->SetVhostPorts(vhost_http_port, vhost_https_port);
             server->Run();
+
+            if (auto mgmt = config["server"]["management"].as_table()) {
+                bool enable = (*mgmt)["enable"].value_or(false);
+                if (enable) {
+                    std::string m_bind_addr = (*mgmt)["bind_addr"].value_or("127.0.0.1");
+                    uint16_t m_bind_port = static_cast<uint16_t>((*mgmt)["bind_port"].value_or(7002));
+                    std::string m_user = (*mgmt)["username"].value_or("");
+                    std::string m_pass = (*mgmt)["password"].value_or("");
+                    
+                    mgmt_server = std::make_shared<cfrp::server::ManagementServer>(io_context, m_bind_addr, m_bind_port, server);
+                    mgmt_server->SetCredentials(m_user, m_pass);
+                    mgmt_server->Start();
+                }
+            }
         } else if (config["client"] || (config["server"] && ca_provided)) {
             // Force client mode if -ca is provided, even if config has [server]
             auto client_node = config["client"];

@@ -46,6 +46,14 @@ void Bridge::Start() {
     DoRead(2);
 }
 
+void Bridge::HandleStop() {
+    if (!stopped_.exchange(true)) {
+        s1_->close();
+        s2_->close();
+        if (on_stop_) on_stop_();
+    }
+}
+
 void Bridge::DoRead(int direction) {
     auto self(shared_from_this());
 
@@ -60,6 +68,9 @@ void Bridge::DoRead(int direction) {
                     auto to_inner  = (direction == 1) ? s2_ : s1_;
 
                     auto write_op = [this, self, direction, to_inner, buf, length]() {
+                        if (direction == 1 && bytes_received_) *bytes_received_ += length;
+                        else if (direction == 2 && bytes_sent_) *bytes_sent_ += length;
+
                         to_inner->async_write(asio::buffer(buf.get(), length),
                             [this, self, direction](std::error_code ec2, std::size_t) {
                                 if (!ec2) {
@@ -69,7 +80,7 @@ void Bridge::DoRead(int direction) {
                                         Logger::Error("[Bridge] Write error (" + std::to_string(direction) +
                                                       "): " + ec2.message());
                                     }
-                                    s1_->close(); s2_->close();
+                                    HandleStop();
                                 }
                             });
                     };
@@ -86,7 +97,7 @@ void Bridge::DoRead(int direction) {
                     } else if (ec == asio::error::eof) {
                         Logger::Info("[Bridge] Connection closed by peer (" + std::to_string(direction) + ")");
                     }
-                    s1_->close(); s2_->close();
+                    HandleStop();
                 }
             });
 
@@ -121,13 +132,14 @@ void Bridge::DoRead(int direction) {
                     std::memcpy(packet.get(), &final_header, sizeof(final_header));
                     std::memcpy(packet.get() + sizeof(final_header), write_buf, write_len);
 
-                    auto write_op = [this, self, packet, packet_len]() {
+                    auto write_op = [this, self, packet, packet_len, length]() {
+                        if (bytes_received_) *bytes_received_ += length;
                         s2_->async_write(asio::buffer(packet.get(), packet_len),
                             [this, self, packet](std::error_code ec2, std::size_t) {
                                 if (!ec2) {
                                     DoRead(1);
                                 } else {
-                                    s1_->close(); s2_->close();
+                                    HandleStop();
                                 }
                             });
                     };
@@ -138,7 +150,7 @@ void Bridge::DoRead(int direction) {
                         write_op();
                     }
                 } else {
-                    s1_->close(); s2_->close();
+                    HandleStop();
                 }
             });
 
@@ -152,7 +164,7 @@ void Bridge::DoRead(int direction) {
                     bool compressed = (h2 & protocol::COMPRESSION_FLAG) != 0;
 
                     if (len > protocol::MAX_MESSAGE_SIZE) {
-                        s1_->close(); s2_->close(); return;
+                        HandleStop(); return;
                     }
 
                     auto body = buffer_pool_->Get(len);
@@ -165,7 +177,7 @@ void Bridge::DoRead(int direction) {
                                     if (decodedSize == ZSTD_CONTENTSIZE_ERROR ||
                                         decodedSize == ZSTD_CONTENTSIZE_UNKNOWN ||
                                         decodedSize > protocol::MAX_DECOMPRESSED_SIZE) {
-                                        s1_->close(); s2_->close(); return;
+                                        HandleStop(); return;
                                     }
                                     
                                     auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
@@ -173,17 +185,18 @@ void Bridge::DoRead(int direction) {
                                         decompressed_buf.data(), decodedSize,
                                         body.get(), len);
                                     if (ZSTD_isError(dSize)) {
-                                        s1_->close(); s2_->close(); return;
+                                        HandleStop(); return;
                                     }
 
                                     auto final_decompressed = buffer_pool_->Get(dSize);
                                     std::memcpy(final_decompressed.get(), decompressed_buf.data(), dSize);
 
                                     auto write_op = [this, self, final_decompressed, dSize]() {
+                                        if (bytes_sent_) *bytes_sent_ += dSize;
                                         s1_->async_write(asio::buffer(final_decompressed.get(), dSize),
                                             [this, self, final_decompressed](std::error_code ec3, std::size_t) {
                                                 if (!ec3) DoRead(2);
-                                                else { s1_->close(); s2_->close(); }
+                                                else { HandleStop(); }
                                             });
                                     };
 
@@ -195,10 +208,11 @@ void Bridge::DoRead(int direction) {
                                     }
                                 } else {
                                     auto write_op = [this, self, body, len]() {
+                                        if (bytes_sent_) *bytes_sent_ += len;
                                         s1_->async_write(asio::buffer(body.get(), len),
                                             [this, self, body](std::error_code ec3, std::size_t) {
                                                 if (!ec3) DoRead(2);
-                                                else { s1_->close(); s2_->close(); }
+                                                else { HandleStop(); }
                                             });
                                     };
 
@@ -210,11 +224,11 @@ void Bridge::DoRead(int direction) {
                                     }
                                 }
                             } else {
-                                s1_->close(); s2_->close();
+                                HandleStop();
                             }
                         });
                 } else {
-                    s1_->close(); s2_->close();
+                    HandleStop();
                 }
             });
     }

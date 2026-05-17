@@ -549,6 +549,9 @@ void Session::handle_frame(Header h, std::shared_ptr<uint8_t[]> body, size_t len
         }
     } else if (h.type == (uint8_t)Type::GoAway) {
         stop();
+    } else {
+        Logger::Error("[MuxSession] Unknown frame type: " + std::to_string(h.type) + " from " + remote_endpoint_string() + ". Closing session.");
+        stop();
     }
 }
 

@@ -32,6 +32,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <deque>
+#include <atomic>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
@@ -47,6 +48,39 @@ namespace server {
 
 using asio::ip::tcp;
 using asio::ip::udp;
+
+struct TrafficStats {
+    std::atomic<uint64_t> bytes_sent{0};
+    std::atomic<uint64_t> bytes_received{0};
+
+    TrafficStats() = default;
+    TrafficStats(const TrafficStats& other) {
+        bytes_sent = other.bytes_sent.load();
+        bytes_received = other.bytes_received.load();
+    }
+    TrafficStats& operator=(const TrafficStats& other) {
+        bytes_sent = other.bytes_sent.load();
+        bytes_received = other.bytes_received.load();
+        return *this;
+    }
+};
+
+struct ProxyStats {
+    std::string name;
+    std::string type;
+    uint16_t port;
+    uint32_t active_conns;
+    uint64_t total_conns;
+    uint64_t bytes_sent;
+    uint64_t bytes_received;
+};
+
+struct ClientInfo {
+    std::string name;
+    std::string endpoint;
+    std::string protocol;
+    std::vector<ProxyStats> proxies;
+};
 
 struct SslConfig {
     bool enable = true;
@@ -72,6 +106,11 @@ public:
     UdpBridge(asio::io_context& io_context, std::shared_ptr<common::AsyncStream> stream, udp::socket& socket, udp::endpoint remote_endpoint, bool use_compression, std::shared_ptr<common::RateLimiter> rate_limiter = nullptr, std::shared_ptr<common::BufferPool> buffer_pool = nullptr);
     void Start();
 
+    void SetStatsCounters(std::atomic<uint64_t>* bytes_sent, std::atomic<uint64_t>* bytes_received) {
+        bytes_sent_ = bytes_sent;
+        bytes_received_ = bytes_received;
+    }
+
 private:
     void DoReadFromStream();
 
@@ -84,6 +123,9 @@ private:
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
 
+    std::atomic<uint64_t>* bytes_sent_ = nullptr;
+    std::atomic<uint64_t>* bytes_received_ = nullptr;
+
     common::ZstdContext cctx_;
     common::ZstdContext dctx_;
 };
@@ -94,8 +136,12 @@ public:
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
+    uint16_t port() const { return port_; }
     void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
     udp::socket& socket() { return socket_; }
+    
+    ProxyStats GetStats() const;
+    TrafficStats& stats() { return stats_; }
 
 private:
     void DoReceive();
@@ -103,10 +149,14 @@ private:
     Server& server_;
     std::shared_ptr<common::BufferPool> buffer_pool_;
     udp::socket socket_;
+    uint16_t port_;
     udp::endpoint sender_endpoint_;
     std::weak_ptr<ControlSession> session_;
     std::string proxy_name_;
     std::unordered_map<udp::endpoint, std::string, common::UdpEndpointHash> endpoint_to_ticket_;
+    
+    mutable TrafficStats stats_;
+    std::atomic<uint64_t> total_conns_{0};
 };
 
 // --- Listeners & Sessions ---
@@ -117,25 +167,40 @@ public:
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
+    uint16_t port() const { return port_; }
+
+    ProxyStats GetStats() const;
+    TrafficStats& stats() { return stats_; }
+    void dec_active_conns() { if (active_conns_ > 0) active_conns_--; }
 
 private:
     void DoAccept();
 
     Server& server_;
     tcp::acceptor acceptor_;
+    uint16_t port_;
     asio::strand<asio::io_context::executor_type> strand_;
     std::weak_ptr<ControlSession> session_;
     std::string proxy_name_;
+    
+    TrafficStats stats_;
+    std::atomic<uint32_t> active_conns_{0};
+    std::atomic<uint64_t> total_conns_{0};
 };
 
 class ControlSession : public std::enable_shared_from_this<ControlSession> {
 public:
-    explicit ControlSession(Server& server, std::shared_ptr<common::AsyncStream> stream, asio::io_context& io_context)
-        : server_(server), stream_(std::move(stream)), io_context_(io_context), strand_(asio::make_strand(io_context)) {}
+    explicit ControlSession(Server& server, std::shared_ptr<common::AsyncStream> stream, asio::io_context& io_context, std::shared_ptr<common::mux::Session> mux_session = nullptr)
+        : server_(server), stream_(std::move(stream)), io_context_(io_context), strand_(asio::make_strand(io_context)), mux_session_(std::move(mux_session)) {}
 
     void Start();
     void Stop();
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
+
+    bool is_authenticated() const { return authenticated_; }
+    ClientInfo GetInfo() const;
+    std::shared_ptr<ProxyListener> FindProxy(const std::string& name);
+    std::shared_ptr<UdpProxyListener> FindUdpProxy(const std::string& name);
 
 private:
     void DoReadHeader();
@@ -147,6 +212,7 @@ private:
     std::shared_ptr<common::AsyncStream> stream_;
     asio::io_context& io_context_;
     asio::strand<asio::io_context::executor_type> strand_;
+    std::shared_ptr<common::mux::Session> mux_session_;
     std::string client_endpoint_;
     std::string client_name_;
     protocol::Header header_;
@@ -185,8 +251,14 @@ public:
     void RemoveRateLimiter(const std::string& proxy_name);
     void ClearPendingForProxy(const std::string& proxy_name);
 
-    std::string AllocateClientName(const std::string& requested_name);
+    std::string AllocateClientName(const std::string& requested_name, std::shared_ptr<ControlSession> session);
     void ReleaseClientName(const std::string& name);
+
+    std::vector<ClientInfo> GetClientsInfo() const;
+    TrafficStats GetTotalStats() const;
+    void RemoveMuxControl(std::shared_ptr<common::mux::Session> mux_session);
+
+    asio::io_context& get_io_context() { return io_context_; }
 
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
@@ -251,13 +323,15 @@ private:
     static constexpr size_t MAX_PENDING_TICKETS = 512;
 
     std::unordered_set<std::string> active_client_names_;
+    std::unordered_map<std::string, std::shared_ptr<ControlSession>> sessions_;
+    std::unordered_map<std::shared_ptr<common::mux::Session>, std::shared_ptr<ControlSession>> mux_to_control_;
     
     // Split locks for better concurrency
     mutable std::shared_mutex quic_mutex_;
     mutable std::shared_mutex vhost_mutex_;
     mutable std::shared_mutex rate_limit_mutex_;
     std::mutex pending_conn_mutex_;
-    std::mutex client_name_mutex_;
+    mutable std::mutex client_name_mutex_;
 
     void DoLazyCleanup();
 
