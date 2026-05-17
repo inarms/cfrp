@@ -24,6 +24,9 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <vector>
+#include <wolfssl/options.h>
+#include <wolfssl/wolfcrypt/coding.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -130,21 +133,21 @@ inline int64_t ParseBandwidth(const std::string& s) {
     }
 }
 
-inline std::string Base64Encode(const std::string& in) {
-    static const char lookup[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    int val = 0, valb = -6;
-    for (uint8_t c : in) {
-        val = (val << 8) + c;
-        valb += 8;
-        while (valb >= 0) {
-            out.push_back(lookup[(val >> valb) & 0x3F]);
-            valb -= 6;
-        }
+inline std::string Base64Encode(const uint8_t* data, size_t len) {
+    word32 outLen = 0;
+    Base64_Encode(reinterpret_cast<const byte*>(data), static_cast<word32>(len), NULL, &outLen);
+
+    std::vector<byte> out(outLen);
+    Base64_Encode(reinterpret_cast<const byte*>(data), static_cast<word32>(len), out.data(), &outLen);
+
+    while (outLen > 0 && (out[outLen - 1] == '\0' || out[outLen - 1] == '\n' || out[outLen - 1] == '\r')) {
+        --outLen;
     }
-    if (valb > -6) out.push_back(lookup[((val << 8) >> (valb + 8)) & 0x3F]);
-    while (out.size() % 4) out.push_back('=');
-    return out;
+    return std::string(reinterpret_cast<const char*>(out.data()), outLen);
+}
+
+inline std::string Base64Encode(const std::string& s) {
+    return Base64Encode(reinterpret_cast<const uint8_t*>(s.c_str()), s.length());
 }
 
 // ---------------------------------------------------------------------------

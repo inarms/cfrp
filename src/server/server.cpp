@@ -540,6 +540,10 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
 }
 
+ClientInfo ControlSession::GetClientInfo() const {
+    return GetInfo();
+}
+
 // --- Server ---
 Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint16_t bind_port, const std::string& token, const SslConfig& ssl_config, const std::string& protocol, const std::vector<PortRange>& allowed_ports, const std::vector<std::string>& allowed_clients, std::shared_ptr<common::BufferPool> buffer_pool)
     : io_context_(io_context),
@@ -786,6 +790,15 @@ void Server::ReleaseClientName(const std::string& name) {
     std::lock_guard<std::mutex> lock(client_name_mutex_);
     active_client_names_.erase(name);
     sessions_.erase(name);
+}
+
+void Server::RegisterSession(std::shared_ptr<ControlSession> session) {
+    std::unique_lock<std::shared_mutex> lock(session_mutex_);
+    // session registration is handled in AllocateClientName currently
+}
+
+void Server::UnregisterSession(std::shared_ptr<ControlSession> session) {
+    std::unique_lock<std::shared_mutex> lock(session_mutex_);
 }
 
 std::vector<ClientInfo> Server::GetClientsInfo() const {

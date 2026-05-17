@@ -61,6 +61,7 @@ add_definitions(-DNO_DH)
 add_executable(cfrp 
     main.cpp
     src/server/server.cpp
+    src/server/mgmt/mgmt_server.cpp
     src/client/client.cpp
     src/common/mux.cpp
     src/common/quic_ngtcp2.cpp

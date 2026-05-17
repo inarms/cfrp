@@ -49,6 +49,20 @@ namespace server {
 using asio::ip::tcp;
 using asio::ip::udp;
 
+struct SslConfig {
+    bool enable = true;
+    bool auto_generate = true;
+    std::string cert_file = "certs/server.crt";
+    std::string key_file = "certs/server.key";
+    std::string ca_file = "certs/ca.crt";
+    std::vector<std::string> domains;
+};
+
+struct PortRange {
+    uint16_t start;
+    uint16_t end;
+};
+
 struct TrafficStats {
     std::atomic<uint64_t> bytes_sent{0};
     std::atomic<uint64_t> bytes_received{0};
@@ -69,10 +83,10 @@ struct ProxyStats {
     std::string name;
     std::string type;
     uint16_t port;
-    uint32_t active_conns;
-    uint64_t total_conns;
-    uint64_t bytes_sent;
-    uint64_t bytes_received;
+    int32_t active_conns = 0;
+    int32_t total_conns = 0;
+    uint64_t bytes_sent = 0;
+    uint64_t bytes_received = 0;
 };
 
 struct ClientInfo {
@@ -80,20 +94,6 @@ struct ClientInfo {
     std::string endpoint;
     std::string protocol;
     std::vector<ProxyStats> proxies;
-};
-
-struct SslConfig {
-    bool enable = true;
-    bool auto_generate = true;
-    std::string cert_file = "certs/server.crt";
-    std::string key_file = "certs/server.key";
-    std::string ca_file = "certs/ca.crt";
-    std::vector<std::string> domains;
-};
-
-struct PortRange {
-    uint16_t start;
-    uint16_t end;
 };
 
 class Server;
@@ -136,10 +136,10 @@ public:
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
-    uint16_t port() const { return port_; }
+    uint16_t port() const { return socket_.local_endpoint().port(); }
     void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
     udp::socket& socket() { return socket_; }
-    
+
     ProxyStats GetStats() const;
     TrafficStats& stats() { return stats_; }
 
@@ -196,6 +196,7 @@ public:
     void Start();
     void Stop();
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
+    ClientInfo GetClientInfo() const;
 
     bool is_authenticated() const { return authenticated_; }
     ClientInfo GetInfo() const;
@@ -254,8 +255,11 @@ public:
     std::string AllocateClientName(const std::string& requested_name, std::shared_ptr<ControlSession> session);
     void ReleaseClientName(const std::string& name);
 
-    std::vector<ClientInfo> GetClientsInfo() const;
+    void RegisterSession(std::shared_ptr<ControlSession> session);
+    void UnregisterSession(std::shared_ptr<ControlSession> session);
+
     TrafficStats GetTotalStats() const;
+    std::vector<ClientInfo> GetClientsInfo() const;
     void RemoveMuxControl(std::shared_ptr<common::mux::Session> mux_session);
 
     asio::io_context& get_io_context() { return io_context_; }
@@ -330,6 +334,7 @@ private:
     mutable std::shared_mutex quic_mutex_;
     mutable std::shared_mutex vhost_mutex_;
     mutable std::shared_mutex rate_limit_mutex_;
+    mutable std::shared_mutex session_mutex_;
     std::mutex pending_conn_mutex_;
     mutable std::mutex client_name_mutex_;
 
