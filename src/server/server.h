@@ -32,6 +32,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <deque>
+#include <atomic>
 #include "common/protocol.h"
 #include "common/stream.h"
 #include "common/mux.h"
@@ -60,6 +61,31 @@ struct SslConfig {
 struct PortRange {
     uint16_t start;
     uint16_t end;
+};
+
+struct ProxyStats {
+    std::string name;
+    std::string type;
+    uint16_t port;
+    int32_t active_conns = 0;
+    int32_t total_conns = 0;
+    uint64_t bytes_sent = 0;
+    uint64_t bytes_received = 0;
+};
+
+struct ClientInfo {
+    std::string name;
+    std::string endpoint;
+    std::string protocol;
+    std::vector<ProxyStats> proxies;
+};
+
+struct TotalStats {
+    std::atomic<uint64_t> bytes_sent{0};
+    std::atomic<uint64_t> bytes_received{0};
+
+    TotalStats() : bytes_sent(0), bytes_received(0) {}
+    TotalStats(const TotalStats& other) : bytes_sent(other.bytes_sent.load()), bytes_received(other.bytes_received.load()) {}
 };
 
 class Server;
@@ -94,6 +120,7 @@ public:
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
+    uint16_t port() const { return socket_.local_endpoint().port(); }
     void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
     udp::socket& socket() { return socket_; }
 
@@ -117,6 +144,7 @@ public:
     void Start();
     void Stop();
     const std::string& name() const { return proxy_name_; }
+    uint16_t port() const { return acceptor_.local_endpoint().port(); }
 
 private:
     void DoAccept();
@@ -136,6 +164,7 @@ public:
     void Start();
     void Stop();
     void SendMessage(protocol::MessageType type, const std::vector<uint8_t>& body);
+    ClientInfo GetClientInfo() const;
 
 private:
     void DoReadHeader();
@@ -187,6 +216,12 @@ public:
 
     std::string AllocateClientName(const std::string& requested_name);
     void ReleaseClientName(const std::string& name);
+
+    void RegisterSession(std::shared_ptr<ControlSession> session);
+    void UnregisterSession(std::shared_ptr<ControlSession> session);
+
+    TotalStats GetTotalStats() const;
+    std::vector<ClientInfo> GetClientsInfo() const;
 
     const std::string& GetToken() const { return token_; }
     const SslConfig& GetSslConfig() const { return ssl_config_; }
@@ -251,11 +286,14 @@ private:
     static constexpr size_t MAX_PENDING_TICKETS = 512;
 
     std::unordered_set<std::string> active_client_names_;
+    std::unordered_set<std::shared_ptr<ControlSession>> active_sessions_;
+    TotalStats total_stats_;
     
     // Split locks for better concurrency
     mutable std::shared_mutex quic_mutex_;
     mutable std::shared_mutex vhost_mutex_;
     mutable std::shared_mutex rate_limit_mutex_;
+    mutable std::shared_mutex session_mutex_;
     std::mutex pending_conn_mutex_;
     std::mutex client_name_mutex_;
 

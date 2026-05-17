@@ -219,6 +219,7 @@ void ProxyListener::DoAccept() {
 void ControlSession::Start() {
     client_endpoint_ = stream_->remote_endpoint_string();
     common::Logger::Info("[Server] New " + stream_->protocol_name() + " client connecting from " + client_endpoint_ + "...");
+    server_.RegisterSession(shared_from_this());
     DoReadHeader();
 }
 
@@ -235,6 +236,8 @@ void ControlSession::Stop() {
         common::Logger::Info("[Server] Unauthenticated client disconnected: " + client_endpoint_);
     }
     
+    server_.UnregisterSession(shared_from_this());
+
     for (auto& proxy : proxies_) {
         common::Logger::Info("[Server] Cleaning up proxy [" + proxy->name() + "] for client [" + client_name_ + "]");
         server_.ClearPendingForProxy(proxy->name());
@@ -472,6 +475,37 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     resp.status = "ok";
     resp.name = client_name_;
     SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
+}
+
+ClientInfo ControlSession::GetClientInfo() const {
+    ClientInfo info;
+    info.name = client_name_;
+    info.endpoint = client_endpoint_;
+    info.protocol = stream_->protocol_name();
+    
+    for (auto& p : proxies_) {
+        ProxyStats ps;
+        ps.name = p->name();
+        ps.type = "tcp";
+        ps.port = p->port();
+        ps.active_conns = 0;
+        ps.total_conns = 0;
+        ps.bytes_sent = 0;
+        ps.bytes_received = 0;
+        info.proxies.push_back(ps);
+    }
+    for (auto& p : udp_proxies_) {
+        ProxyStats ps;
+        ps.name = p->name();
+        ps.type = "udp";
+        ps.port = p->port();
+        ps.active_conns = 0;
+        ps.total_conns = 0;
+        ps.bytes_sent = 0;
+        ps.bytes_received = 0;
+        info.proxies.push_back(ps);
+    }
+    return info;
 }
 
 // --- Server ---
@@ -718,6 +752,29 @@ std::string Server::AllocateClientName(const std::string& requested_name) {
 void Server::ReleaseClientName(const std::string& name) {
     std::lock_guard<std::mutex> lock(client_name_mutex_);
     active_client_names_.erase(name);
+}
+
+void Server::RegisterSession(std::shared_ptr<ControlSession> session) {
+    std::unique_lock<std::shared_mutex> lock(session_mutex_);
+    active_sessions_.insert(session);
+}
+
+void Server::UnregisterSession(std::shared_ptr<ControlSession> session) {
+    std::unique_lock<std::shared_mutex> lock(session_mutex_);
+    active_sessions_.erase(session);
+}
+
+TotalStats Server::GetTotalStats() const {
+    return total_stats_;
+}
+
+std::vector<ClientInfo> Server::GetClientsInfo() const {
+    std::shared_lock<std::shared_mutex> lock(session_mutex_);
+    std::vector<ClientInfo> clients;
+    for (auto& session : active_sessions_) {
+        clients.push_back(session->GetClientInfo());
+    }
+    return clients;
 }
 
 void Server::RemoveRateLimiter(const std::string& proxy_name) {
