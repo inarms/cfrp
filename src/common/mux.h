@@ -85,6 +85,7 @@ public:
 
 private:
     void do_read_from_buffer();
+    void do_write();
     void check_cleanup();
 
     uint32_t id_;
@@ -108,6 +109,13 @@ private:
         bool read_all;
     };
     std::deque<PendingRead> pending_reads_;
+
+    struct PendingWrite {
+        std::vector<asio::const_buffer> buffers;
+        std::function<void(std::error_code, std::size_t)> handler;
+    };
+    std::deque<PendingWrite> pending_writes_;
+
     bool local_closed_ = false;
     bool remote_closed_ = false;
 };
@@ -151,7 +159,7 @@ private:
     
     struct PendingWrite {
         uint8_t header_data[Header::size];
-        std::vector<asio::const_buffer> bodies;
+        std::vector<asio::const_buffer> write_buffers;
         std::shared_ptr<uint8_t[]> body_storage; // Used when we need to own the data
         std::function<void(std::error_code)> handler;
     };

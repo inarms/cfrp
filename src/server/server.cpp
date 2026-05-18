@@ -681,43 +681,45 @@ void Server::DoUdpRead() {
                     ngtcp2_version_cid vcid;
                     int res = ngtcp2_pkt_decode_version_cid(&vcid, buffer.get(), length, 8);
 
-                    if (res != 0) {
-                        DoUdpRead();
-                        return;
-                    }
+                    if (res == 0) {
+                        common::Logger::Info("[Server] New QUIC connection from " + endpoint->address().to_string() + ":" + std::to_string(endpoint->port()));
 
-                    ngtcp2_cid n_dcid, n_scid;
-                    ngtcp2_cid_init(&n_dcid, vcid.dcid, vcid.dcidlen);
-                    ngtcp2_cid_init(&n_scid, vcid.scid, vcid.scidlen);
+                        ngtcp2_cid n_dcid, n_scid;
+                        ngtcp2_cid_init(&n_dcid, vcid.dcid, vcid.dcidlen);
+                        ngtcp2_cid_init(&n_scid, vcid.scid, vcid.scidlen);
 
-                    auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true, buffer_pool_);
+                        auto new_session = std::make_shared<common::quic::QuicSession>(udp_socket_, *endpoint, true, buffer_pool_);
 
-                    if (!quic_ssl_ctx_) {
-                        quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
-                    }
+                        if (!quic_ssl_ctx_) {
+                            quic_ssl_ctx_ = std::make_unique<asio::ssl::context>(asio::ssl::context::tlsv13);
+                        }
 
-                    new_session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
-                        auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true, buffer_pool_);
-                        mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
-                            HandleNewMuxStream(mux_session, new_stream);
+                        new_session->set_on_new_stream([this](std::shared_ptr<common::quic::QuicStream> quic_stream) {
+                            auto mux_session = std::make_shared<common::mux::Session>(quic_stream, true, buffer_pool_);
+                            std::weak_ptr<common::mux::Session> weak_mux = mux_session;
+                            mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                                if (auto ms = weak_mux.lock()) {
+                                    HandleNewMuxStream(ms, new_stream);
+                                }
+                            });
                         });
-                    });
 
-                    new_session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
-                        common::Logger::Info("[Server] QUIC session closed for " + endpoint->address().to_string() + ":" + std::to_string(endpoint->port()));
-                        std::unique_lock<std::shared_mutex> lock(quic_mutex_);
-                        quic_sessions_.erase(*endpoint);
-                    });
+                        new_session->set_on_closed([this, endpoint](std::shared_ptr<common::quic::QuicSession> s) {
+                            common::Logger::Info("[Server] QUIC session closed for " + endpoint->address().to_string() + ":" + std::to_string(endpoint->port()));
+                            std::unique_lock<std::shared_mutex> lock(quic_mutex_);
+                            quic_sessions_.erase(*endpoint);
+                        });
 
-                    new_session->init(quic_ssl_ctx_->native_handle(), &n_dcid, &n_scid);
-                    {
-                        std::unique_lock<std::shared_mutex> lock(quic_mutex_);
-                        auto it = quic_sessions_.find(*endpoint);
-                        if (it != quic_sessions_.end()) {
-                            session = it->second;
-                        } else {
-                            quic_sessions_[*endpoint] = new_session;
-                            session = new_session;
+                        new_session->init(quic_ssl_ctx_->native_handle(), &n_dcid, &n_scid);
+                        {
+                            std::unique_lock<std::shared_mutex> lock(quic_mutex_);
+                            auto it = quic_sessions_.find(*endpoint);
+                            if (it != quic_sessions_.end()) {
+                                session = it->second;
+                            } else {
+                                quic_sessions_[*endpoint] = new_session;
+                                session = new_session;
+                            }
                         }
                     }
                 }
@@ -728,12 +730,9 @@ void Server::DoUdpRead() {
                         s->handle_packet(buffer.get(), length);
                     });
                 }
-                DoUdpRead();
-                return;
             }
 
             if (ec != asio::error::operation_aborted) {
-                common::Logger::Error("[Server] UDP receive error on QUIC socket: " + ec.message());
                 if (udp_socket_.is_open()) {
                     DoUdpRead();
                 }
@@ -888,9 +887,12 @@ void Server::DoAccept() {
                 if (!ec) {
                     auto start_mux = [this](std::shared_ptr<common::AsyncStream> s) {
                         auto mux_session = std::make_shared<common::mux::Session>(s, true, buffer_pool_);
+                        std::weak_ptr<common::mux::Session> weak_mux = mux_session;
 
-                        mux_session->start([this, mux_session](std::shared_ptr<common::mux::MuxStream> new_stream) {
-                            HandleNewMuxStream(mux_session, new_stream);
+                        mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                            if (auto ms = weak_mux.lock()) {
+                                HandleNewMuxStream(ms, new_stream);
+                            }
                         });
                     };
 

@@ -67,6 +67,12 @@ MuxStream::~MuxStream() {
         asio::post(strand_, [h]() { h(asio::error::operation_aborted, 0); });
     }
     pending_reads_.clear();
+    
+    for (auto& pw : pending_writes_) {
+        auto h = std::move(pw.handler);
+        asio::post(strand_, [h]() { h(asio::error::operation_aborted, 0); });
+    }
+    pending_writes_.clear();
 }
 
 void MuxStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -81,63 +87,96 @@ void MuxStream::async_read_some(asio::mutable_buffer buffer, std::function<void(
 }
 
 void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
-    auto self(shared_from_this());
-    auto session = session_.lock();
-    if (!session) {
-        asio::post(get_executor(), [handler]() {
-            handler(asio::error::connection_reset, 0);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {
+            async_write(buffer, handler);
         });
         return;
     }
 
-    size_t length = buffer.size();
-    
-    Header h;
-    h.version = 0;
-    h.type = (uint8_t)Type::Data;
-    h.flags = 0;
-    h.stream_id = id_;
-    h.length = static_cast<uint32_t>(length);
-    
-    // Zero-copy write: pass the user's buffer directly to the session.
-    // The AsyncStream contract guarantees buffer validity until handler is called.
-    session->async_send_frame(h, buffer, [self, handler, length](std::error_code ec) {
-        if (!ec) {
-            handler(ec, length);
-        } else {
-            handler(ec, 0);
-        }
-    });
+    pending_writes_.push_back({{buffer}, std::move(handler)});
+    do_write();
 }
 
 void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler) {
-    auto self(shared_from_this());
-    auto session = session_.lock();
-    if (!session) {
-        asio::post(get_executor(), [handler]() {
-            handler(asio::error::connection_reset, 0);
+    if (!strand_.running_in_this_thread()) {
+        asio::post(strand_, [this, self = shared_from_this(), buffers, handler]() {
+            async_write(buffers, handler);
         });
         return;
     }
 
-    size_t total_length = 0;
-    for (const auto& b : buffers) total_length += b.size();
+    pending_writes_.push_back({buffers, std::move(handler)});
+    do_write();
+}
 
-    Header h;
-    h.version = 0;
-    h.type = (uint8_t)Type::Data;
-    h.flags = 0;
-    h.stream_id = id_;
-    h.length = static_cast<uint32_t>(total_length);
-    
-    // Zero-copy write: pass the user's buffers directly to the session.
-    session->async_send_frame(h, buffers, [self, handler, total_length](std::error_code ec) {
-        if (!ec) {
-            handler(ec, total_length);
-        } else {
-            handler(ec, 0);
+void MuxStream::do_write() {
+    while (!pending_writes_.empty() && remote_window_size_ > 0) {
+        auto& pw = pending_writes_.front();
+        size_t total_length = 0;
+        for (const auto& b : pw.buffers) total_length += b.size();
+
+        if (total_length == 0) {
+            auto handler = std::move(pw.handler);
+            pending_writes_.pop_front();
+            asio::post(strand_, [handler]() { handler(std::error_code(), 0); });
+            continue;
         }
-    });
+
+        size_t to_send = std::min(total_length, remote_window_size_);
+        
+        auto session = session_.lock();
+        if (!session) {
+            auto handler = std::move(pw.handler);
+            pending_writes_.pop_front();
+            asio::post(strand_, [handler]() { handler(asio::error::connection_reset, 0); });
+            continue;
+        }
+
+        Header h;
+        h.version = 0;
+        h.type = (uint8_t)Type::Data;
+        h.flags = 0;
+        h.stream_id = id_;
+        h.length = static_cast<uint32_t>(to_send);
+
+        // Slice the buffers to 'to_send'
+        std::vector<asio::const_buffer> sliced_buffers;
+        size_t remaining = to_send;
+        for (const auto& b : pw.buffers) {
+            if (remaining == 0) break;
+            size_t take = std::min(remaining, b.size());
+            sliced_buffers.push_back(asio::buffer(b.data(), take));
+            remaining -= take;
+        }
+
+        remote_window_size_ -= to_send;
+        
+        if (to_send < total_length) {
+            // Partial send: update pw.buffers for the next iteration
+            std::vector<asio::const_buffer> next_buffers;
+            size_t skipped = to_send;
+            for (const auto& b : pw.buffers) {
+                if (skipped >= b.size()) {
+                    skipped -= b.size();
+                } else {
+                    next_buffers.push_back(asio::buffer((const uint8_t*)b.data() + skipped, b.size() - skipped));
+                    skipped = 0;
+                }
+            }
+            pw.buffers = std::move(next_buffers);
+            
+            session->async_send_frame(h, sliced_buffers); 
+        } else {
+            // Full send
+            auto handler = std::move(pw.handler);
+            pending_writes_.pop_front();
+            session->async_send_frame(h, sliced_buffers, [this, self = shared_from_this(), handler, to_send](std::error_code ec) {
+                if (!ec) handler(ec, to_send);
+                else handler(ec, 0);
+            });
+        }
+    }
 }
 
 void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -186,6 +225,15 @@ void MuxStream::close() {
         });
     }
     pending_reads_.clear();
+    
+    for (auto& pw : pending_writes_) {
+        auto h = std::move(pw.handler);
+        asio::post(strand_, [h]() {
+            h(asio::error::operation_aborted, 0);
+        });
+    }
+    pending_writes_.clear();
+
     check_cleanup();
 }
 
@@ -224,6 +272,7 @@ void MuxStream::handle_window_update(uint32_t delta) {
         return;
     }
     remote_window_size_ += delta;
+    do_write();
 }
 
 void MuxStream::handle_close() {
@@ -431,15 +480,21 @@ void Session::async_send_frame(Header h, const std::vector<asio::const_buffer>& 
 
     auto pw = std::make_shared<PendingWrite>();
     h.encode(pw->header_data);
-    pw->bodies = bodies;
     pw->body_storage = body_storage;
-    
-    // If we have body_storage and bodies is empty, it might mean the caller wants us to use body_storage as body
-    if (pw->bodies.empty() && pw->body_storage) {
-        pw->bodies.push_back(asio::buffer(pw->body_storage.get(), h.length));
-    }
-    
     pw->handler = std::move(handler);
+
+    // Prepare the final write buffer sequence.
+    // It must stay valid until the async_write operation completes.
+    pw->write_buffers.reserve(1 + (bodies.empty() && body_storage ? 1 : bodies.size()));
+    pw->write_buffers.push_back(asio::buffer(pw->header_data, Header::size));
+
+    if (bodies.empty() && body_storage) {
+        pw->write_buffers.push_back(asio::buffer(body_storage.get(), h.length));
+    } else {
+        for (const auto& b : bodies) {
+            if (b.size() > 0) pw->write_buffers.push_back(b);
+        }
+    }
 
     write_queue_.push_back(pw);
     if (!is_writing_) {
@@ -561,20 +616,10 @@ void Session::do_write() {
         return;
     }
     auto pw = write_queue_.front();
-
     auto self = shared_from_this();
     
-    // Scatter-gather write: header and all body buffers sent together without merging.
-    std::vector<asio::const_buffer> write_buffers;
-    write_buffers.reserve(1 + pw->bodies.size());
-    write_buffers.push_back(asio::buffer(pw->header_data, Header::size));
-    for (const auto& b : pw->bodies) {
-        if (b.size() > 0) {
-            write_buffers.push_back(b);
-        }
-    }
-
-    underlying_stream_->async_write(write_buffers,
+    // Use the pre-calculated write_buffers which is safe in pw
+    underlying_stream_->async_write(pw->write_buffers,
         asio::bind_executor(strand_, [this, self, pw](std::error_code ec, std::size_t) {
             if (!write_queue_.empty() && write_queue_.front() == pw) {
                 write_queue_.pop_front();
