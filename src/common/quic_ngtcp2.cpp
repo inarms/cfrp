@@ -394,6 +394,9 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
             } else {
                 socket_.send(asio::buffer(buf, (size_t)cc_res), 0, ec);
             }
+            if (ec && ec != asio::error::operation_aborted && ec != asio::error::would_block) {
+                close_session();
+            }
         }
         check_closed();
         return;
@@ -429,8 +432,9 @@ void QuicSession::send_packets() {
             socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
         }
         if (ec) {
-            if (ec != asio::error::operation_aborted) {
+            if (ec != asio::error::operation_aborted && ec != asio::error::would_block) {
                 Logger::Error("[QUIC] send_to error: " + ec.message());
+                close_session();
             }
             break;
         }
@@ -476,6 +480,7 @@ void QuicSession::close_session() {
     
     // Explicitly trigger closure notification
     closed_notified_ = true;
+    timer_.cancel();
     auto streams_to_close = std::move(streams_);
     streams_.clear();
     for (auto& pair : streams_to_close) {
@@ -598,8 +603,9 @@ void QuicSession::do_write() {
                 socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
             }
             if (ec) {
-                if (ec != asio::error::operation_aborted) {
+                if (ec != asio::error::operation_aborted && ec != asio::error::would_block) {
                     Logger::Error("[QUIC] do_write send_to error: " + ec.message());
+                    close_session();
                 }
                 break;
             }
@@ -678,7 +684,7 @@ int QuicSession::on_stream_close(int64_t stream_id) {
 }
 
 void QuicSession::schedule_timer() {
-    if (!conn_) return;
+    if (!conn_ || closed_notified_) return;
     ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(conn_);
     ngtcp2_tstamp now = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
     std::weak_ptr<QuicSession> weak_self = shared_from_this();
@@ -687,7 +693,7 @@ void QuicSession::schedule_timer() {
             auto self = weak_self.lock();
             if (!self) return;
             std::lock_guard lock(ngtcp2_mutex_);
-            if (!conn_) return;
+            if (!conn_ || closed_notified_) return;
             ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
             send_packets();
             check_closed();
@@ -698,7 +704,7 @@ void QuicSession::schedule_timer() {
             auto self = weak_self.lock();
             if (self && !ec) {
                 std::lock_guard lock(ngtcp2_mutex_);
-                if (conn_) {
+                if (conn_ && !closed_notified_) {
                     ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
                     send_packets();
                     check_closed();
