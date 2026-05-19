@@ -75,11 +75,21 @@ MuxStream::~MuxStream() {
     pending_writes_.clear();
 }
 
+// Bounds to defend against unbounded queue growth (peer not draining or local stall).
+// If exceeded, the operation is failed with no_buffer_space rather than OOM-ing the process.
+static constexpr size_t kMuxStreamMaxPendingReads = 1024;
+static constexpr size_t kMuxStreamMaxPendingWrites = 1024;
+
 void MuxStream::async_read_some(asio::mutable_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
     if (!strand_.running_in_this_thread()) {
         asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {
             async_read_some(buffer, handler);
         });
+        return;
+    }
+    if (pending_reads_.size() >= kMuxStreamMaxPendingReads) {
+        auto h = std::move(handler);
+        asio::post(strand_, [h]() { h(asio::error::no_buffer_space, 0); });
         return;
     }
     pending_reads_.push_back({buffer, std::move(handler), false});
@@ -94,6 +104,11 @@ void MuxStream::async_write(asio::const_buffer buffer, std::function<void(std::e
         return;
     }
 
+    if (pending_writes_.size() >= kMuxStreamMaxPendingWrites) {
+        auto h = std::move(handler);
+        asio::post(strand_, [h]() { h(asio::error::no_buffer_space, 0); });
+        return;
+    }
     pending_writes_.push_back({{buffer}, std::move(handler)});
     do_write();
 }
@@ -106,6 +121,11 @@ void MuxStream::async_write(const std::vector<asio::const_buffer>& buffers, std:
         return;
     }
 
+    if (pending_writes_.size() >= kMuxStreamMaxPendingWrites) {
+        auto h = std::move(handler);
+        asio::post(strand_, [h]() { h(asio::error::no_buffer_space, 0); });
+        return;
+    }
     pending_writes_.push_back({buffers, std::move(handler)});
     do_write();
 }
@@ -184,6 +204,11 @@ void MuxStream::async_read(asio::mutable_buffer buffer, std::function<void(std::
         asio::post(strand_, [this, self = shared_from_this(), buffer, handler]() {
             async_read(buffer, handler);
         });
+        return;
+    }
+    if (pending_reads_.size() >= kMuxStreamMaxPendingReads) {
+        auto h = std::move(handler);
+        asio::post(strand_, [h]() { h(asio::error::no_buffer_space, 0); });
         return;
     }
     pending_reads_.push_back({buffer, std::move(handler), true});

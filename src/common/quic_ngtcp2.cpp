@@ -546,14 +546,23 @@ void QuicSession::write_stream(int64_t stream_id, const std::vector<asio::const_
         return;
     }
 
-    std::lock_guard lock(ngtcp2_mutex_);
-    auto pw = std::make_shared<PendingWrite>();
-    pw->stream_id = stream_id;
-    pw->bodies = buffers;
-    pw->handler = std::move(handler);
+    // Bound the per-session pending write queue so a stalled transport cannot OOM the
+    // process. If exceeded, fail the write with no_buffer_space to apply backpressure.
+    static constexpr size_t kQuicSessionMaxPendingWrites = 1024;
+    {
+        std::lock_guard lock(ngtcp2_mutex_);
+        if (write_queue_.size() >= kQuicSessionMaxPendingWrites) {
+            asio::post(strand_, [handler]() { handler(asio::error::no_buffer_space, 0); });
+            return;
+        }
+        auto pw = std::make_shared<PendingWrite>();
+        pw->stream_id = stream_id;
+        pw->bodies = buffers;
+        pw->handler = std::move(handler);
 
-    write_queue_.push_back(pw);
-    
+        write_queue_.push_back(pw);
+    }
+
     do_write();
 }
 
@@ -642,8 +651,17 @@ void QuicSession::do_write() {
     }
     is_writing_ = false;
 
-    if (!write_queue_.empty() && packets_sent == 16) {
-        asio::post(strand_, [this, self]() { do_write(); });
+    // NOTE: previously this re-posted do_write() unconditionally when packets_sent
+    // hit the cap, which under sustained load created a constant rescheduling loop
+    // (high CPU even when no real progress could be made each turn). The send_packets()
+    // path and the ngtcp2 expiry timer will drain remaining queued data; if the queue
+    // is still non-empty we schedule a single timer-based retry instead of an
+    // immediate self-post.
+    if (!write_queue_.empty() && packets_sent >= 16) {
+        timer_.expires_after(std::chrono::milliseconds(1));
+        timer_.async_wait(asio::bind_executor(strand_, [this, self](std::error_code ec) {
+            if (!ec) do_write();
+        }));
     }
 }
 
@@ -703,9 +721,10 @@ void QuicSession::schedule_timer() {
     std::weak_ptr<QuicSession> weak_self = shared_from_this();
     
     if (expiry <= now) {
-        // If expired, handle it and then schedule next. 
-        // We use a tiny delay instead of asio::post to prevent 100% CPU tight loops.
-        timer_.expires_after(std::chrono::milliseconds(1));
+        // If expired, handle it and then schedule next.
+        // Use a small floor delay (5ms) instead of 1ms or asio::post to prevent CPU
+        // spin under loss/congestion when ngtcp2 keeps returning an expired expiry.
+        timer_.expires_after(std::chrono::milliseconds(5));
         timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
             auto self = weak_self.lock();
             if (self && !ec) {

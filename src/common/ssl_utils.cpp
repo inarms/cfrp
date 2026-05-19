@@ -217,38 +217,35 @@ bool SslUtils::GenerateFullChain(const CertConfig& config) {
         return false;
     }
 
-    // Write CA
-    BIO* bio = BIO_new_file(config.ca_cert_file.c_str(), "wb");
-    if (bio) {
-        PEM_write_bio_X509(bio, ca_cert);
+    // Write CA / Server material. BIO is freed on every path; write failures
+    // are logged and cause GenerateFullChain to return false so the caller
+    // doesn't proceed with a half-written cert set.
+    bool write_ok = true;
+    auto write_pem = [&](const std::string& path, auto writer) {
+        BIO* bio = BIO_new_file(path.c_str(), "wb");
+        if (!bio) {
+            std::cerr << "[SslUtils] Failed to open for writing: " << path << std::endl;
+            write_ok = false;
+            return;
+        }
+        if (writer(bio) <= 0) {
+            std::cerr << "[SslUtils] Failed to write PEM to: " << path << std::endl;
+            write_ok = false;
+        }
         BIO_free(bio);
-    }
+    };
 
-    bio = BIO_new_file(config.ca_key_file.c_str(), "wb");
-    if (bio) {
-        PEM_write_bio_PrivateKey(bio, ca_key, NULL, NULL, 0, NULL, NULL);
-        BIO_free(bio);
-    }
-
-    // Write Server
-    bio = BIO_new_file(config.server_cert_file.c_str(), "wb");
-    if (bio) {
-        PEM_write_bio_X509(bio, server_cert);
-        BIO_free(bio);
-    }
-
-    bio = BIO_new_file(config.server_key_file.c_str(), "wb");
-    if (bio) {
-        PEM_write_bio_PrivateKey(bio, server_key, NULL, NULL, 0, NULL, NULL);
-        BIO_free(bio);
-    }
+    write_pem(config.ca_cert_file,     [&](BIO* b){ return PEM_write_bio_X509(b, ca_cert); });
+    write_pem(config.ca_key_file,      [&](BIO* b){ return PEM_write_bio_PrivateKey(b, ca_key, NULL, NULL, 0, NULL, NULL); });
+    write_pem(config.server_cert_file, [&](BIO* b){ return PEM_write_bio_X509(b, server_cert); });
+    write_pem(config.server_key_file,  [&](BIO* b){ return PEM_write_bio_PrivateKey(b, server_key, NULL, NULL, 0, NULL, NULL); });
 
     X509_free(server_cert);
     X509_free(ca_cert);
     EVP_PKEY_free(ca_key);
     EVP_PKEY_free(server_key);
 
-    return true;
+    return write_ok;
 }
 
 
