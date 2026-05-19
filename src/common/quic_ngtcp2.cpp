@@ -204,6 +204,11 @@ void QuicStream::do_read() {
 // --- QuicSession Implementation ---
 
 namespace {
+    ngtcp2_tstamp util_now() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
     ngtcp2_conn* get_conn(ngtcp2_crypto_conn_ref *conn_ref) {
         return static_cast<QuicSession*>(conn_ref->user_data)->conn();
     }
@@ -294,7 +299,7 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
     wolfSSL_set_app_data(ssl_, conn_ref);
 
     ngtcp2_settings settings; ngtcp2_settings_default(&settings);
-    settings.initial_ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    settings.initial_ts = util_now();
     
     ngtcp2_transport_params params; ngtcp2_transport_params_default(&params);
     params.initial_max_stream_data_bidi_local = 10 * 1024 * 1024;
@@ -370,7 +375,7 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
 
     std::lock_guard lock(ngtcp2_mutex_);
     if (!conn_) return;
-    ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    ngtcp2_tstamp ts = util_now();
     int res = ngtcp2_conn_read_pkt(conn_, &path_, nullptr, data, len, ts);
     if (res < 0) {
         if (res != NGTCP2_ERR_DRAINING) {
@@ -416,7 +421,7 @@ void QuicSession::send_packets() {
     std::lock_guard lock(ngtcp2_mutex_);
     if (!conn_) return;
     uint8_t buf[1500];
-    ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    ngtcp2_tstamp ts = util_now();
     
     // Limit to 32 packets per turn to keep event loop responsive
     for (int i = 0; i < 32; ++i) {
@@ -432,7 +437,11 @@ void QuicSession::send_packets() {
             socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
         }
         if (ec) {
-            if (ec != asio::error::operation_aborted && ec != asio::error::would_block) {
+            if (ec == asio::error::would_block || ec == asio::error::try_again) {
+                // Network buffer full, stop for now and wait for timer or next packet
+                break;
+            }
+            if (ec != asio::error::operation_aborted) {
                 Logger::Error("[QUIC] send_to error: " + ec.message());
                 close_session();
             }
@@ -467,7 +476,7 @@ void QuicSession::close_session() {
     ngtcp2_ccerr ccerr;
     ngtcp2_ccerr_default(&ccerr);
     
-    ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    ngtcp2_tstamp ts = util_now();
     ngtcp2_ssize res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
     if (res > 0) {
         std::error_code ec;
@@ -591,7 +600,7 @@ void QuicSession::do_write() {
         ngtcp2_pkt_info pi;
         uint8_t buf[1500];
         
-        ngtcp2_tstamp ts = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+        ngtcp2_tstamp ts = util_now();
         ngtcp2_ssize res = ngtcp2_conn_writev_stream(conn_, &path_, &pi, buf, sizeof(buf), &consumed_datalen, 0, pw->stream_id, v.data(), v.size(), ts);
         
         if (res > 0) {
@@ -603,7 +612,10 @@ void QuicSession::do_write() {
                 socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
             }
             if (ec) {
-                if (ec != asio::error::operation_aborted && ec != asio::error::would_block) {
+                if (ec == asio::error::would_block || ec == asio::error::try_again) {
+                    break;
+                }
+                if (ec != asio::error::operation_aborted) {
                     Logger::Error("[QUIC] do_write send_to error: " + ec.message());
                     close_session();
                 }
@@ -668,6 +680,7 @@ int QuicSession::on_stream_data(int64_t stream_id, const uint8_t* data, size_t l
 }
 
 int QuicSession::on_stream_close(int64_t stream_id) {
+    std::shared_ptr<QuicSession> session_shared = shared_from_this();
     std::shared_ptr<QuicStream> stream;
     {
         std::lock_guard lock(ngtcp2_mutex_);
@@ -686,18 +699,23 @@ int QuicSession::on_stream_close(int64_t stream_id) {
 void QuicSession::schedule_timer() {
     if (!conn_ || closed_notified_) return;
     ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(conn_);
-    ngtcp2_tstamp now = ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count());
+    ngtcp2_tstamp now = util_now();
     std::weak_ptr<QuicSession> weak_self = shared_from_this();
+    
     if (expiry <= now) {
-        asio::post(strand_, [this, weak_self]() {
+        // If expired, handle it and then schedule next. 
+        // We use a tiny delay instead of asio::post to prevent 100% CPU tight loops.
+        timer_.expires_after(std::chrono::milliseconds(1));
+        timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
             auto self = weak_self.lock();
-            if (!self) return;
-            std::lock_guard lock(ngtcp2_mutex_);
-            if (!conn_ || closed_notified_) return;
-            ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
-            send_packets();
-            check_closed();
-        });
+            if (self && !ec) {
+                std::lock_guard lock(ngtcp2_mutex_);
+                if (conn_ && !closed_notified_) {
+                    ngtcp2_conn_handle_expiry(conn_, util_now());
+                    send_packets();
+                }
+            }
+        }));
     } else if (expiry != UINT64_MAX) {
         timer_.expires_after(std::chrono::nanoseconds(expiry - now));
         timer_.async_wait(asio::bind_executor(strand_, [this, weak_self](std::error_code ec) {
@@ -705,9 +723,8 @@ void QuicSession::schedule_timer() {
             if (self && !ec) {
                 std::lock_guard lock(ngtcp2_mutex_);
                 if (conn_ && !closed_notified_) {
-                    ngtcp2_conn_handle_expiry(conn_, ngtcp2_tstamp(std::chrono::steady_clock::now().time_since_epoch().count()));
+                    ngtcp2_conn_handle_expiry(conn_, util_now());
                     send_packets();
-                    check_closed();
                 }
             }
         }));
