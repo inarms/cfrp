@@ -53,9 +53,18 @@ void ManagementServer::DoAccept() {
     acceptor_.async_accept(*socket, [this, self, socket](std::error_code ec) {
         if (!ec) {
             HandleRequest(socket);
-        }
-        if (acceptor_.is_open()) {
-            DoAccept();
+            if (acceptor_.is_open()) {
+                DoAccept();
+            }
+        } else {
+            if (ec != asio::error::operation_aborted && acceptor_.is_open()) {
+                common::Logger::Error("[Mgmt] Accept error: " + ec.message());
+                auto timer = std::make_shared<asio::steady_timer>(io_context_);
+                timer->expires_after(std::chrono::milliseconds(100));
+                timer->async_wait([this, self, timer](std::error_code) {
+                    if (acceptor_.is_open()) DoAccept();
+                });
+            }
         }
     });
 }

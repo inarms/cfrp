@@ -173,7 +173,11 @@ void UdpProxyListener::DoReceive() {
 
             if (ec != asio::error::operation_aborted && socket_.is_open()) {
                 common::Logger::Error("UDP receive error for [" + proxy_name_ + "]: " + ec.message());
-                DoReceive();
+                auto timer = std::make_shared<asio::steady_timer>(server_.get_io_context());
+                timer->expires_after(std::chrono::milliseconds(100));
+                timer->async_wait([this, self, timer](std::error_code) {
+                    if (socket_.is_open()) DoReceive();
+                });
             }
         });
 }
@@ -222,7 +226,11 @@ void ProxyListener::DoAccept() {
         if (ec) {
             if (ec != asio::error::operation_aborted) {
                 common::Logger::Error("Proxy accept error: " + ec.message());
-                DoAccept();
+                auto timer = std::make_shared<asio::steady_timer>(server_.get_io_context());
+                timer->expires_after(std::chrono::milliseconds(100));
+                timer->async_wait(asio::bind_executor(strand_, [this, self, timer](std::error_code) {
+                    DoAccept();
+                }));
             }
             return;
         }
@@ -734,7 +742,16 @@ void Server::DoUdpRead() {
 
             if (ec != asio::error::operation_aborted) {
                 if (udp_socket_.is_open()) {
-                    DoUdpRead();
+                    if (ec) {
+                        common::Logger::Error("UDP read error: " + ec.message());
+                        auto timer = std::make_shared<asio::steady_timer>(io_context_);
+                        timer->expires_after(std::chrono::milliseconds(100));
+                        timer->async_wait([this, timer](std::error_code) {
+                            if (udp_socket_.is_open()) DoUdpRead();
+                        });
+                    } else {
+                        DoUdpRead();
+                    }
                 }
             }
         });
@@ -859,7 +876,11 @@ void Server::DoAccept() {
             if (ec) {
                 if (ec != asio::error::operation_aborted) {
                     common::Logger::Error("Accept error: " + ec.message());
-                    DoAccept();
+                    auto timer = std::make_shared<asio::steady_timer>(io_context_);
+                    timer->expires_after(std::chrono::milliseconds(100));
+                    timer->async_wait([this, timer](std::error_code) {
+                        DoAccept();
+                    });
                 }
                 return;
             }
@@ -1215,8 +1236,17 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
                     }
                 }
             });
+            DoVhostAccept(acceptor, type);
+        } else {
+            if (ec != asio::error::operation_aborted) {
+                common::Logger::Error("Vhost accept error (" + type + "): " + ec.message());
+                auto timer = std::make_shared<asio::steady_timer>(io_context_);
+                timer->expires_after(std::chrono::milliseconds(100));
+                timer->async_wait([this, &acceptor, type, timer](std::error_code) {
+                    DoVhostAccept(acceptor, type);
+                });
+            }
         }
-        DoVhostAccept(acceptor, type);
     });
 }
 
