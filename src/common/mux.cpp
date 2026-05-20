@@ -259,6 +259,7 @@ void MuxStream::close() {
     }
     pending_writes_.clear();
 
+    read_queue_.clear();
     check_cleanup();
 }
 

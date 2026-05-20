@@ -138,6 +138,7 @@ public:
     const std::string& name() const { return proxy_name_; }
     uint16_t port() const { return socket_.local_endpoint().port(); }
     void SendTo(const std::vector<uint8_t>& data, const udp::endpoint& endpoint);
+    void RemoveEndpoint(const udp::endpoint& endpoint);
     udp::socket& socket() { return socket_; }
 
     ProxyStats GetStats() const;

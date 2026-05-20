@@ -27,7 +27,7 @@ namespace common {
 
 class WebsocketStream : public AsyncStream {
 public:
-    WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake = true);
+    WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake = true, std::shared_ptr<BufferPool> buffer_pool = nullptr);
 
     void async_read_some(asio::mutable_buffer buffer, 
                          std::function<void(std::error_code, std::size_t)> handler) override;

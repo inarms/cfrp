@@ -186,6 +186,10 @@ void UdpProxyListener::SendTo(const std::vector<uint8_t>& data, const udp::endpo
     socket_.async_send_to(asio::buffer(data), endpoint, [](std::error_code, std::size_t) {});
 }
 
+void UdpProxyListener::RemoveEndpoint(const udp::endpoint& endpoint) {
+    endpoint_to_ticket_.erase(endpoint);
+}
+
 // --- ProxyListener ---
 ProxyListener::ProxyListener(Server& server, asio::io_context& io_context, uint16_t port, std::shared_ptr<ControlSession> session, const std::string& proxy_name)
     : server_(server),
@@ -901,7 +905,7 @@ void Server::DoAccept() {
             }
 
             if (protocol_ == "websocket") {
-                stream = std::make_shared<common::WebsocketStream>(stream, false);
+                stream = std::make_shared<common::WebsocketStream>(stream, false, true, buffer_pool_);
             }
 
             stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr](std::error_code ec) {
@@ -923,7 +927,7 @@ void Server::DoAccept() {
                             if (!ec) {
                                 std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
                                 if (*first_byte == 'G') { // 'G' from GET (WebSocket)
-                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false);
+                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false, buffer_pool_);
                                     ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux](std::error_code ec) {
                                         if (!ec) {
                                             start_mux(ws_stream);
@@ -1009,6 +1013,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                                 udp_listener = it_udp->second.listener;
                                 udp_endpoint = it_udp->second.endpoint;
                                 proxy_name = it_udp->second.proxy_name;
+                                udp_listener->RemoveEndpoint(udp_endpoint);
                                 pending_udp_sessions_.erase(it_udp);
                                 found_udp = true;
                             }
@@ -1256,7 +1261,11 @@ void Server::DoLazyCleanup() {
         auto& oldest = ticket_expiration_queue_.front();
         if (now >= oldest.expires_at) {
             if (oldest.is_udp) {
-                pending_udp_sessions_.erase(oldest.ticket);
+                auto it = pending_udp_sessions_.find(oldest.ticket);
+                if (it != pending_udp_sessions_.end()) {
+                    it->second.listener->RemoveEndpoint(it->second.endpoint);
+                    pending_udp_sessions_.erase(it);
+                }
             } else {
                 pending_user_conns_.erase(oldest.ticket);
             }

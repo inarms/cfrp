@@ -23,11 +23,12 @@
 namespace cfrp {
 namespace common {
 
-WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake)
+WebsocketStream::WebsocketStream(std::shared_ptr<AsyncStream> underlying, bool is_client, bool perform_underlying_handshake, std::shared_ptr<BufferPool> buffer_pool)
     : underlying_(std::move(underlying)), 
-      buffer_pool_(BufferPool::CreateDefault()),
+      buffer_pool_(std::move(buffer_pool)),
       is_client_(is_client), 
       perform_underlying_handshake_(perform_underlying_handshake) {
+    if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
     std::random_device rd;
     rng_.seed(rd());
 }

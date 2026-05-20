@@ -305,7 +305,7 @@ void Client::DoConnect() {
                         }
 
                         if (current_protocol_ == "websocket") {
-                            stream = std::make_shared<common::WebsocketStream>(stream, true);
+                            stream = std::make_shared<common::WebsocketStream>(stream, true, true, buffer_pool_);
                         }
 
                         stream->async_handshake(asio::ssl::stream_base::client, asio::bind_executor(strand_, [this, stream, conn_id](std::error_code ec) {
