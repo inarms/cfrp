@@ -362,6 +362,14 @@ void QuicSession::init(WOLFSSL_CTX* ssl_ctx, const ngtcp2_cid* client_dcid, cons
     }
 
     ngtcp2_conn_set_tls_native_handle(conn_, (void*)ssl_);
+
+    std::weak_ptr<QuicSession> weak_self = shared_from_this();
+    asio::post(strand_, [weak_self]() {
+        if (auto self = weak_self.lock()) {
+            std::lock_guard lock(self->ngtcp2_mutex_);
+            self->schedule_timer();
+        }
+    });
 }
 
 void QuicSession::handle_packet(const uint8_t* data, size_t len) {

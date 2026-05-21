@@ -908,34 +908,51 @@ void Server::DoAccept() {
                 stream = std::make_shared<common::WebsocketStream>(stream, false, true, buffer_pool_);
             }
 
-            stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr](std::error_code ec) {
+            auto handshake_timer = std::make_shared<asio::steady_timer>(io_context_);
+            handshake_timer->expires_after(std::chrono::seconds(10));
+            std::weak_ptr<common::AsyncStream> weak_stream = stream;
+            handshake_timer->async_wait([weak_stream, handshake_timer](std::error_code ec) {
                 if (!ec) {
-                    auto start_mux = [this](std::shared_ptr<common::AsyncStream> s) {
-                        auto mux_session = std::make_shared<common::mux::Session>(s, true, buffer_pool_);
-                        std::weak_ptr<common::mux::Session> weak_mux = mux_session;
+                    if (auto s = weak_stream.lock()) {
+                        common::Logger::Info("[Server] Handshake/Auth connection timeout. Closing connection.");
+                        s->close();
+                    }
+                }
+            });
 
-                        mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
-                            if (auto ms = weak_mux.lock()) {
-                                HandleNewMuxStream(ms, new_stream);
-                            }
-                        });
-                    };
+            auto start_mux = [this, handshake_timer](std::shared_ptr<common::AsyncStream> s) {
+                handshake_timer->cancel();
+                auto mux_session = std::make_shared<common::mux::Session>(s, true, buffer_pool_);
+                std::weak_ptr<common::mux::Session> weak_mux = mux_session;
 
+                mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                    if (auto ms = weak_mux.lock()) {
+                        HandleNewMuxStream(ms, new_stream);
+                    }
+                });
+            };
+
+            stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr, handshake_timer, start_mux](std::error_code ec) {
+                if (!ec) {
                     if (protocol_ == "auto") {
                         auto first_byte = std::make_shared<uint8_t>(0);
-                        stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux](std::error_code ec, std::size_t) {
+                        stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux, handshake_timer](std::error_code ec, std::size_t) {
                             if (!ec) {
                                 std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
                                 if (*first_byte == 'G') { // 'G' from GET (WebSocket)
                                     auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false, buffer_pool_);
-                                    ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux](std::error_code ec) {
+                                    ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux, handshake_timer](std::error_code ec) {
                                         if (!ec) {
                                             start_mux(ws_stream);
+                                        } else {
+                                            handshake_timer->cancel();
                                         }
                                     });
                                 } else {
                                     start_mux(buffered);
                                 }
+                            } else {
+                                handshake_timer->cancel();
                             }
                         });
                     } else if (protocol_ == "websocket") {
@@ -944,6 +961,7 @@ void Server::DoAccept() {
                         start_mux(stream);
                     }
                 } else {
+                    handshake_timer->cancel();
                     common::Logger::Error("[Server] TLS handshake failed from " + peer_addr + ": " + ec.message() + " (likely a non-TLS probe)");
                 }
             });
@@ -1149,7 +1167,22 @@ void Server::DoVhostAccept(std::unique_ptr<tcp::acceptor>& acceptor, const std::
     acceptor->async_accept(*socket, [this, socket, &acceptor, type](std::error_code ec) {
         if (!ec) {
             auto buffer = std::make_shared<std::vector<uint8_t>>(4096);
-            socket->async_read_some(asio::buffer(*buffer), [this, socket, buffer, type](std::error_code ec, std::size_t length) {
+            
+            auto read_timer = std::make_shared<asio::steady_timer>(io_context_);
+            read_timer->expires_after(std::chrono::seconds(10));
+            std::weak_ptr<tcp::socket> weak_socket = socket;
+            read_timer->async_wait([weak_socket, read_timer](std::error_code ec) {
+                if (!ec) {
+                    if (auto s = weak_socket.lock()) {
+                        common::Logger::Info("[Server] Vhost HTTP/HTTPS read timeout. Closing connection.");
+                        std::error_code close_ec;
+                        s->close(close_ec);
+                    }
+                }
+            });
+
+            socket->async_read_some(asio::buffer(*buffer), [this, socket, buffer, type, read_timer](std::error_code ec, std::size_t length) {
+                read_timer->cancel();
                 if (!ec) {
                     buffer->resize(length);
                     std::string domain;
