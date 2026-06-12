@@ -97,7 +97,7 @@ public:
     void trigger_connected() { if (on_connected_cb_) on_connected_cb_(shared_from_this()); }
     
     std::shared_ptr<QuicStream> open_stream();
-    void close_session();
+    void close_session(bool send_close = true);
     void close_stream(int64_t stream_id);
     void write_stream(int64_t stream_id, const uint8_t* data, size_t len, std::function<void(std::error_code, std::size_t)> handler);
     void write_stream(int64_t stream_id, const std::vector<asio::const_buffer>& buffers, std::function<void(std::error_code, std::size_t)> handler);

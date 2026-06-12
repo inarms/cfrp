@@ -25,6 +25,9 @@
 #include <iostream>
 #include <mutex>
 #include <vector>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/coding.h>
 
@@ -177,23 +180,40 @@ public:
     static void Error(const std::string& msg) {
         if (level_ >= LogLevel::Error) {
             std::lock_guard<std::mutex> lock(mutex_);
-            std::cerr << msg << '\n';
+            std::cerr << GetTimestamp() << msg << '\n';
         }
     }
     static void Info(const std::string& msg) {
         if (level_ >= LogLevel::Info) {
             std::lock_guard<std::mutex> lock(mutex_);
-            std::cout << msg << std::endl;
+            std::cout << GetTimestamp() << msg << std::endl;
         }
     }
     static void Debug(const std::string& msg) {
         if (level_ >= LogLevel::Debug) {
             std::lock_guard<std::mutex> lock(mutex_);
-            std::cout << "[DEBUG] " << msg << std::endl;
+            std::cout << GetTimestamp() << "[DEBUG] " << msg << std::endl;
         }
     }
 
 private:
+    static std::string GetTimestamp() {
+        auto now = std::chrono::system_clock::now();
+        auto in_time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        std::stringstream ss;
+        struct tm buf;
+#ifdef _WIN32
+        localtime_s(&buf, &in_time_t);
+#else
+        localtime_r(&in_time_t, &buf);
+#endif
+        ss << "[" << std::put_time(&buf, "%Y-%m-%d %H:%M:%S") 
+           << "." << std::setfill('0') << std::setw(3) << ms.count() << "] ";
+        return ss.str();
+    }
+
     inline static LogLevel level_ = LogLevel::Info;
     inline static std::mutex mutex_;
 };

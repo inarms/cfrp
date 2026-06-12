@@ -600,22 +600,22 @@ Server::Server(asio::io_context& io_context, const std::string& bind_addr, uint1
             quic_ssl_ctx_->use_certificate_chain_file(cert);
             quic_ssl_ctx_->use_private_key_file(key, asio::ssl::context::pem);
             
-            std::cout << "SSL/QUIC certificate loaded: " << cert << std::endl;
+            common::Logger::Info("SSL/QUIC certificate loaded: " + cert);
         } catch (const std::exception& e) {
             if (protocol_ == "quic" || protocol_ == "auto") {
-                std::cerr << "Warning: Failed to load certificate for QUIC/SSL: " << e.what() << std::endl;
-                std::cerr << "QUIC requires a certificate to function. Please check config_server.toml" << std::endl;
+                common::Logger::Error("Warning: Failed to load certificate for QUIC/SSL: " + std::string(e.what()));
+                common::Logger::Error("QUIC requires a certificate to function. Please check config_server.toml");
             }
         }
     }
     
     std::string display_proto = protocol_;
     if (protocol_ == "auto") display_proto = "auto (TCP/QUIC)";
-    std::cout << "Server initialized on " << bind_addr << ":" << bind_port << " (" << display_proto << " Mux Enabled)" << std::endl;
+    common::Logger::Info("Server initialized on " + bind_addr + ":" + std::to_string(bind_port) + " (" + display_proto + " Mux Enabled)");
 }
 
 void Server::Run() {
-    std::cout << "Starting cfrp server loop..." << std::endl;
+    common::Logger::Info("Starting cfrp server loop...");
     DoAccept();
     if (protocol_ == "quic" || protocol_ == "auto") {
         DoUdpRead();
@@ -624,26 +624,26 @@ void Server::Run() {
     if (vhost_http_port_ > 0) {
         try {
             vhost_http_acceptor_ = std::make_unique<tcp::acceptor>(io_context_, tcp::endpoint(tcp::v4(), vhost_http_port_));
-            std::cout << "[Server] Vhost HTTP listener started on port " << vhost_http_port_ << std::endl;
+            common::Logger::Info("[Server] Vhost HTTP listener started on port " + std::to_string(vhost_http_port_));
             DoVhostAccept(vhost_http_acceptor_, "http");
         } catch (const std::exception& e) {
-            std::cerr << "[Server] Failed to start Vhost HTTP listener: " << e.what() << std::endl;
+            common::Logger::Error("[Server] Failed to start Vhost HTTP listener: " + std::string(e.what()));
         }
     }
 
     if (vhost_https_port_ > 0) {
         try {
             vhost_https_acceptor_ = std::make_unique<tcp::acceptor>(io_context_, tcp::endpoint(tcp::v4(), vhost_https_port_));
-            std::cout << "[Server] Vhost HTTPS listener started on port " << vhost_https_port_ << std::endl;
+            common::Logger::Info("[Server] Vhost HTTPS listener started on port " + std::to_string(vhost_https_port_));
             DoVhostAccept(vhost_https_acceptor_, "https");
         } catch (const std::exception& e) {
-            std::cerr << "[Server] Failed to start Vhost HTTPS listener: " << e.what() << std::endl;
+            common::Logger::Error("[Server] Failed to start Vhost HTTPS listener: " + std::string(e.what()));
         }
     }
 }
 
 void Server::Stop() {
-    std::cout << "Stopping server..." << std::endl;
+    common::Logger::Info("Stopping server...");
     std::error_code ec;
     // 1. Stop accepting new connections
     acceptor_.close(ec);

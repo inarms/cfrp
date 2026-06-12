@@ -382,7 +382,7 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
     }
 
     std::lock_guard lock(ngtcp2_mutex_);
-    if (!conn_) return;
+    if (!conn_ || closed_notified_) return;
     ngtcp2_tstamp ts = util_now();
     int res = ngtcp2_conn_read_pkt(conn_, &path_, nullptr, data, len, ts);
     if (res < 0) {
@@ -390,28 +390,10 @@ void QuicSession::handle_packet(const uint8_t* data, size_t len) {
             Logger::Error("[QUIC] Packet read error: " + std::string(ngtcp2_strerror(res)) + " (" + std::to_string(res) + ")");
         }
         if (res == NGTCP2_ERR_DROP_CONN) {
-            check_closed();
+            close_session(false);
             return;
         }
-        
-        // Protocol error, send connection close
-        uint8_t buf[1500];
-        ngtcp2_pkt_info pi;
-        ngtcp2_ccerr ccerr;
-        ngtcp2_ccerr_default(&ccerr);
-        ngtcp2_ssize cc_res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
-        if (cc_res > 0) {
-            std::error_code ec;
-            if (is_server_) {
-                socket_.send_to(asio::buffer(buf, (size_t)cc_res), remote_endpoint_, 0, ec);
-            } else {
-                socket_.send(asio::buffer(buf, (size_t)cc_res), 0, ec);
-            }
-            if (ec && ec != asio::error::operation_aborted && ec != asio::error::would_block) {
-                close_session();
-            }
-        }
-        check_closed();
+        close_session(true);
         return;
     }
     send_packets();
@@ -427,7 +409,7 @@ void QuicSession::send_packets() {
     }
 
     std::lock_guard lock(ngtcp2_mutex_);
-    if (!conn_) return;
+    if (!conn_ || closed_notified_) return;
     uint8_t buf[1500];
     ngtcp2_tstamp ts = util_now();
     
@@ -466,7 +448,7 @@ void QuicSession::send_packets() {
 
 std::shared_ptr<QuicStream> QuicSession::open_stream() {
     std::lock_guard lock(ngtcp2_mutex_);
-    if (!conn_) return nullptr;
+    if (!conn_ || closed_notified_) return nullptr;
     int64_t stream_id;
     if (ngtcp2_conn_open_bidi_stream(conn_, &stream_id, nullptr) != 0) return nullptr;
     auto stream = std::make_shared<QuicStream>(stream_id, shared_from_this());
@@ -475,23 +457,25 @@ std::shared_ptr<QuicStream> QuicSession::open_stream() {
     return stream;
 }
 
-void QuicSession::close_session() {
+void QuicSession::close_session(bool send_close) {
     std::lock_guard lock(ngtcp2_mutex_);
     if (!conn_ || closed_notified_) return;
     
-    uint8_t buf[1500];
-    ngtcp2_pkt_info pi;
-    ngtcp2_ccerr ccerr;
-    ngtcp2_ccerr_default(&ccerr);
-    
-    ngtcp2_tstamp ts = util_now();
-    ngtcp2_ssize res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
-    if (res > 0) {
-        std::error_code ec;
-        if (is_server_) {
-            socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
-        } else {
-            socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
+    if (send_close) {
+        uint8_t buf[1500];
+        ngtcp2_pkt_info pi;
+        ngtcp2_ccerr ccerr;
+        ngtcp2_ccerr_default(&ccerr);
+        
+        ngtcp2_tstamp ts = util_now();
+        ngtcp2_ssize res = ngtcp2_conn_write_connection_close(conn_, &path_, &pi, buf, sizeof(buf), &ccerr, ts);
+        if (res > 0) {
+            std::error_code ec;
+            if (is_server_) {
+                socket_.send_to(asio::buffer(buf, (size_t)res), remote_endpoint_, 0, ec);
+            } else {
+                socket_.send(asio::buffer(buf, (size_t)res), 0, ec);
+            }
         }
     }
     
@@ -521,7 +505,7 @@ void QuicSession::close_stream(int64_t stream_id) {
     }
     {
         std::lock_guard lock(ngtcp2_mutex_);
-        if (!conn_) return;
+        if (!conn_ || closed_notified_) return;
         ngtcp2_conn_shutdown_stream(conn_, 0, stream_id, 0);
     }
     send_packets();
@@ -549,7 +533,7 @@ void QuicSession::write_stream(int64_t stream_id, const std::vector<asio::const_
         return;
     }
 
-    if (!conn_) {
+    if (!conn_ || closed_notified_) {
         asio::post(strand_, [handler]() { handler(asio::error::connection_reset, 0); });
         return;
     }
@@ -738,8 +722,12 @@ void QuicSession::schedule_timer() {
             if (self && !ec) {
                 std::lock_guard lock(ngtcp2_mutex_);
                 if (conn_ && !closed_notified_) {
-                    ngtcp2_conn_handle_expiry(conn_, util_now());
-                    send_packets();
+                    int res = ngtcp2_conn_handle_expiry(conn_, util_now());
+                    if (res < 0) {
+                        close_session(false);
+                    } else {
+                        send_packets();
+                    }
                 }
             }
         }));
@@ -750,8 +738,12 @@ void QuicSession::schedule_timer() {
             if (self && !ec) {
                 std::lock_guard lock(ngtcp2_mutex_);
                 if (conn_ && !closed_notified_) {
-                    ngtcp2_conn_handle_expiry(conn_, util_now());
-                    send_packets();
+                    int res = ngtcp2_conn_handle_expiry(conn_, util_now());
+                    if (res < 0) {
+                        close_session(false);
+                    } else {
+                        send_packets();
+                    }
                 }
             }
         }));
