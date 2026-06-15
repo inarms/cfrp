@@ -373,13 +373,13 @@ void ControlSession::DoReadHeader() {
                 header_.body_length = h; // Store host-byte order back
                 uint32_t length = h & protocol::LENGTH_MASK;
                 if (length > protocol::MAX_CONTROL_MESSAGE_SIZE) {
-                    common::Logger::Error("Control message too large: " + std::to_string(length));
+                    common::Logger::Error("Control message too large: " + std::to_string(length) + " from " + client_endpoint_);
                     Stop();
                     return;
                 }
                 DoReadBody(length);
             } else {
-                common::Logger::Info("Control session closed: " + ec.message());
+                common::Logger::Info("Control session closed: " + ec.message() + " for " + client_endpoint_);
                 Stop();
             }
         }));
@@ -400,7 +400,7 @@ void ControlSession::DoReadBody(uint32_t length) {
                         if (decodedSize == ZSTD_CONTENTSIZE_ERROR ||
                             decodedSize == ZSTD_CONTENTSIZE_UNKNOWN ||
                             decodedSize > protocol::MAX_DECOMPRESSED_SIZE) {
-                            common::Logger::Error("Invalid compressed control message size");
+                            common::Logger::Error("Invalid compressed control message size from " + client_endpoint_);
                             Stop();
                             return;
                         }
@@ -408,7 +408,7 @@ void ControlSession::DoReadBody(uint32_t length) {
                         auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
                         size_t const dSize = dctx_.decompress(decompressed_buf.data(), decodedSize, data.data(), data.size());
                         if (ZSTD_isError(dSize)) {
-                            common::Logger::Error("Failed to decompress control message");
+                            common::Logger::Error("Failed to decompress control message from " + client_endpoint_);
                             Stop();
                             return;
                         }
@@ -423,7 +423,7 @@ void ControlSession::DoReadBody(uint32_t length) {
                 }
                 DoReadHeader();
             } else {
-                common::Logger::Info("Control session closed: " + ec.message());
+                common::Logger::Info("Control session closed: " + ec.message() + " for " + client_endpoint_);
                 Stop();
             }
         }));
@@ -436,7 +436,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     }
 
     if (!authenticated_) {
-        common::Logger::Error("Unauthenticated message received: " + std::to_string(static_cast<int>(msg.type)));
+        common::Logger::Error("Unauthenticated message received from " + client_endpoint_ + ": " + std::to_string(static_cast<int>(msg.type)));
         Stop();
         return;
     }
@@ -454,7 +454,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
         }
 
         if (type != "http" && type != "https" && !server_.IsPortAllowed(remote_port)) {
-            common::Logger::Error("[Server] Proxy registration rejected: port " + std::to_string(remote_port) + " is not in allowed ranges.");
+            common::Logger::Error("[Server] Proxy registration rejected for client " + client_name_ + " (" + client_endpoint_ + "): port " + std::to_string(remote_port) + " is not in allowed ranges.");
             protocol::RegisterProxyRespMessage resp;
             resp.status = "error";
             resp.message = "port not allowed";
@@ -484,7 +484,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             resp.name = name;
             SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
         } catch (const std::exception& e) {
-            common::Logger::Error("Failed to start proxy listener: " + std::string(e.what()));
+            common::Logger::Error("Failed to start proxy listener for client " + client_name_ + " (" + client_endpoint_ + "): " + std::string(e.what()));
             protocol::RegisterProxyRespMessage resp;
             resp.status = "error";
             resp.message = e.what();
@@ -493,7 +493,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
     } else if (msg.type == protocol::MessageType::UnregisterProxy) {
         auto m = protocol::UnregisterProxyMessage::Deserialize(msg.body);
         std::string name = m.name;
-        common::Logger::Info("[Server] Unregistering proxy [" + name + "]");
+        common::Logger::Info("[Server] Unregistering proxy [" + name + "] for client [" + client_name_ + "] (" + client_endpoint_ + ")");
         
         auto it = std::find_if(proxies_.begin(), proxies_.end(), [&](const std::shared_ptr<ProxyListener>& p) {
             return p->name() == name;
@@ -522,7 +522,7 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     protocol::LoginRespMessage resp;
 
     if (token != server_.GetToken()) {
-        common::Logger::Info("Client authentication failed: invalid token.");
+        common::Logger::Info("[Server] Client authentication failed from " + client_endpoint_ + ": invalid token.");
         resp.status = "error";
         resp.message = "Invalid token";
         SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
@@ -531,7 +531,7 @@ void ControlSession::HandleLogin(const std::vector<uint8_t>& body) {
     }
 
     if (!server_.IsClientAllowed(requested_name)) {
-        common::Logger::Info("[Server] Client registration rejected: name [" + requested_name + "] is not in whitelist.");
+        common::Logger::Info("[Server] Client registration rejected from " + client_endpoint_ + ": name [" + requested_name + "] is not in whitelist.");
         resp.status = "error";
         resp.message = "client name not allowed";
         SendMessage(protocol::MessageType::LoginResp, resp.Serialize());
@@ -898,74 +898,137 @@ void Server::DoAccept() {
                 if (!peer_ec) peer_addr = ep.address().to_string() + ":" + std::to_string(ep.port());
             }
 
-            std::shared_ptr<common::AsyncStream> stream;            if (ssl_config_.enable) {
-                stream = std::make_shared<common::SslStream>(std::move(socket), *ssl_ctx_);
-            } else {
-                stream = std::make_shared<common::TcpStream>(std::move(socket));
-            }
+            // Connection state helper to safely close either the raw socket 
+            // or the wrapped stream when a timeout or error occurs.
+            struct ConnectionState {
+                std::shared_ptr<tcp::socket> socket;
+                std::shared_ptr<common::AsyncStream> stream;
+                std::mutex mutex;
+                bool closed = false;
 
-            if (protocol_ == "websocket") {
-                stream = std::make_shared<common::WebsocketStream>(stream, false, true, buffer_pool_);
-            }
+                void Close() {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (closed) return;
+                    closed = true;
+                    if (stream) {
+                        stream->close();
+                    } else if (socket) {
+                        std::error_code ec;
+                        socket->close(ec);
+                    }
+                }
+            };
+
+            auto state = std::make_shared<ConnectionState>();
+            state->socket = std::make_shared<tcp::socket>(std::move(socket));
 
             auto handshake_timer = std::make_shared<asio::steady_timer>(io_context_);
             handshake_timer->expires_after(std::chrono::seconds(10));
-            std::weak_ptr<common::AsyncStream> weak_stream = stream;
-            handshake_timer->async_wait([weak_stream, handshake_timer](std::error_code ec) {
+            std::weak_ptr<ConnectionState> weak_state = state;
+            handshake_timer->async_wait([weak_state, handshake_timer, peer_addr](std::error_code ec) {
                 if (!ec) {
-                    if (auto s = weak_stream.lock()) {
-                        common::Logger::Info("[Server] Handshake/Auth connection timeout. Closing connection.");
-                        s->close();
+                    if (auto s = weak_state.lock()) {
+                        common::Logger::Info("[Server] Handshake/Auth connection timeout from " + peer_addr + ". Closing connection.");
+                        s->Close();
                     }
                 }
             });
 
-            auto start_mux = [this, handshake_timer](std::shared_ptr<common::AsyncStream> s) {
-                handshake_timer->cancel();
-                auto mux_session = std::make_shared<common::mux::Session>(s, true, buffer_pool_);
-                std::weak_ptr<common::mux::Session> weak_mux = mux_session;
+            auto start_handshake = [this, state, handshake_timer, peer_addr](std::shared_ptr<common::AsyncStream> stream) {
+                if (protocol_ == "websocket") {
+                    stream = std::make_shared<common::WebsocketStream>(stream, false, true, buffer_pool_);
+                    {
+                        std::lock_guard<std::mutex> lock(state->mutex);
+                        state->stream = stream;
+                    }
+                }
 
-                mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
-                    if (auto ms = weak_mux.lock()) {
-                        HandleNewMuxStream(ms, new_stream);
+                auto start_mux = [this, handshake_timer](std::shared_ptr<common::AsyncStream> s) {
+                    handshake_timer->cancel();
+                    auto mux_session = std::make_shared<common::mux::Session>(s, true, buffer_pool_);
+                    std::weak_ptr<common::mux::Session> weak_mux = mux_session;
+
+                    mux_session->start([this, weak_mux](std::shared_ptr<common::mux::MuxStream> new_stream) {
+                        if (auto ms = weak_mux.lock()) {
+                            HandleNewMuxStream(ms, new_stream);
+                        }
+                    });
+                };
+
+                stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr, handshake_timer, start_mux](std::error_code ec) {
+                    if (!ec) {
+                        if (protocol_ == "auto") {
+                            auto first_byte = std::make_shared<uint8_t>(0);
+                            stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux, handshake_timer](std::error_code ec, std::size_t) {
+                                if (!ec) {
+                                    std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
+                                    if (*first_byte == 'G') { // 'G' from GET (WebSocket)
+                                        auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false, buffer_pool_);
+                                        ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux, handshake_timer](std::error_code ec) {
+                                            if (!ec) {
+                                                start_mux(ws_stream);
+                                            } else {
+                                                handshake_timer->cancel();
+                                            }
+                                        });
+                                    } else {
+                                        start_mux(buffered);
+                                    }
+                                } else {
+                                    handshake_timer->cancel();
+                                }
+                            });
+                        } else if (protocol_ == "websocket") {
+                            start_mux(stream);
+                        } else {
+                            start_mux(stream);
+                        }
+                    } else {
+                        handshake_timer->cancel();
+                        common::Logger::Error("[Server] TLS handshake failed from " + peer_addr + ": " + ec.message() + " (likely a non-TLS probe)");
                     }
                 });
             };
 
-            stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr, handshake_timer, start_mux](std::error_code ec) {
-                if (!ec) {
-                    if (protocol_ == "auto") {
-                        auto first_byte = std::make_shared<uint8_t>(0);
-                        stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux, handshake_timer](std::error_code ec, std::size_t) {
-                            if (!ec) {
-                                std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
-                                if (*first_byte == 'G') { // 'G' from GET (WebSocket)
-                                    auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false, buffer_pool_);
-                                    ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux, handshake_timer](std::error_code ec) {
-                                        if (!ec) {
-                                            start_mux(ws_stream);
-                                        } else {
-                                            handshake_timer->cancel();
-                                        }
-                                    });
-                                } else {
-                                    start_mux(buffered);
-                                }
-                            } else {
-                                handshake_timer->cancel();
-                            }
-                        });
-                    } else if (protocol_ == "websocket") {
-                        start_mux(stream);
-                    } else {
-                        start_mux(stream);
+            if (ssl_config_.enable) {
+                auto first_byte = std::make_shared<uint8_t>(0);
+                state->socket->async_receive(
+                    asio::buffer(first_byte.get(), 1),
+                    asio::socket_base::message_peek,
+                    [this, state, first_byte, handshake_timer, start_handshake](std::error_code ec, std::size_t bytes_transferred) {
+                        if (ec || bytes_transferred != 1) {
+                            state->Close();
+                            handshake_timer->cancel();
+                            return;
+                        }
+
+                        if (*first_byte != 0x16) {
+                            // Non-TLS connection: Silently drop connection without response
+                            state->Close();
+                            handshake_timer->cancel();
+                            return;
+                        }
+
+                        std::shared_ptr<common::AsyncStream> stream;
+                        {
+                            std::lock_guard<std::mutex> lock(state->mutex);
+                            if (state->closed) return;
+                            stream = std::make_shared<common::SslStream>(std::move(*(state->socket)), *ssl_ctx_);
+                            state->stream = stream;
+                        }
+                        start_handshake(stream);
                     }
-                } else {
-                    handshake_timer->cancel();
-                    common::Logger::Error("[Server] TLS handshake failed from " + peer_addr + ": " + ec.message() + " (likely a non-TLS probe)");
+                );
+            } else {
+                std::shared_ptr<common::AsyncStream> stream;
+                {
+                    std::lock_guard<std::mutex> lock(state->mutex);
+                    stream = std::make_shared<common::TcpStream>(std::move(*(state->socket)));
+                    state->stream = stream;
                 }
-            });
-            
+                start_handshake(stream);
+            }
+
             DoAccept();
         });
 }
@@ -987,7 +1050,7 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
             if (!ec) {
                 if (auto c = weak_control.lock()) {
                     if (!c->is_authenticated()) {
-                        common::Logger::Info("[Server] Authentication timeout for client. Closing.");
+                        common::Logger::Info("[Server] Authentication timeout for client from " + c->GetInfo().endpoint + ". Closing.");
                         c->Stop();
                     }
                 }

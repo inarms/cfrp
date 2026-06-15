@@ -73,20 +73,29 @@ void ManagementServer::HandleRequest(std::shared_ptr<asio::ip::tcp::socket> sock
     auto self(shared_from_this());
     auto buffer = std::make_shared<asio::streambuf>();
     
+    std::string peer_addr;
+    {
+        std::error_code peer_ec;
+        auto ep = socket->remote_endpoint(peer_ec);
+        if (!peer_ec) {
+            peer_addr = ep.address().to_string() + ":" + std::to_string(ep.port());
+        }
+    }
+    
     auto read_timer = std::make_shared<asio::steady_timer>(io_context_);
     read_timer->expires_after(std::chrono::seconds(10));
     std::weak_ptr<asio::ip::tcp::socket> weak_socket = socket;
-    read_timer->async_wait([weak_socket, read_timer](std::error_code ec) {
+    read_timer->async_wait([weak_socket, read_timer, peer_addr](std::error_code ec) {
         if (!ec) {
             if (auto s = weak_socket.lock()) {
-                common::Logger::Info("[Mgmt] Read timeout. Closing connection.");
+                common::Logger::Info("[Mgmt] Read timeout from " + peer_addr + ". Closing connection.");
                 std::error_code close_ec;
                 s->close(close_ec);
             }
         }
     });
 
-    asio::async_read_until(*socket, *buffer, "\r\n\r\n", [this, self, socket, buffer, read_timer](std::error_code ec, std::size_t length) {
+    asio::async_read_until(*socket, *buffer, "\r\n\r\n", [this, self, socket, buffer, read_timer, peer_addr](std::error_code ec, std::size_t length) {
         read_timer->cancel();
         if (!ec) {
             std::istream is(buffer.get());
@@ -120,6 +129,7 @@ void ManagementServer::HandleRequest(std::shared_ptr<asio::ip::tcp::socket> sock
             std::string extra_headers;
 
             if (!authorized) {
+                common::Logger::Info("[Mgmt] Unauthorized API access attempt from " + peer_addr + " (requested path: " + path + ")");
                 status_code = 401;
                 status_text = "Unauthorized";
                 extra_headers = "WWW-Authenticate: Basic realm=\"cfrp management\"\r\n";
