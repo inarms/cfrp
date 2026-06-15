@@ -923,7 +923,7 @@ void Server::DoAccept() {
             state->socket = std::make_shared<tcp::socket>(std::move(socket));
 
             auto handshake_timer = std::make_shared<asio::steady_timer>(io_context_);
-            handshake_timer->expires_after(std::chrono::seconds(10));
+            handshake_timer->expires_after(std::chrono::seconds(3));
             std::weak_ptr<ConnectionState> weak_state = state;
             handshake_timer->async_wait([weak_state, handshake_timer, peer_addr](std::error_code ec) {
                 if (!ec) {
