@@ -209,7 +209,7 @@ jobs:
   # =========================
   build-windows-amd64:
     name: Windows-amd64
-    runs-on: windows-latest
+    runs-on: windows-2022
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
 
@@ -269,7 +269,7 @@ jobs:
   # =========================
   build-windows-arm64:
     name: Windows-arm64
-    runs-on: windows-latest
+    runs-on: windows-2022
     env:
       VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_cache,readwrite"
 
