@@ -969,6 +969,7 @@ void Server::DoAccept() {
                                                 start_mux(ws_stream);
                                             } else {
                                                 handshake_timer->cancel();
+                                                ws_stream->close();
                                             }
                                         });
                                     } else {
@@ -976,6 +977,7 @@ void Server::DoAccept() {
                                     }
                                 } else {
                                     handshake_timer->cancel();
+                                    stream->close();
                                 }
                             });
                         } else if (protocol_ == "websocket") {
@@ -986,6 +988,7 @@ void Server::DoAccept() {
                     } else {
                         handshake_timer->cancel();
                         common::Logger::Error("[Server] TLS handshake failed from " + peer_addr + ": " + ec.message() + " (likely a non-TLS probe)");
+                        stream->close();
                     }
                 });
             };
