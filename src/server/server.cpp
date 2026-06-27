@@ -955,16 +955,16 @@ void Server::DoAccept() {
                     });
                 };
 
-                stream->async_handshake(asio::ssl::stream_base::server, [this, stream, peer_addr, handshake_timer, start_mux](std::error_code ec) {
+                stream->async_handshake(asio::ssl::stream_base::server, [this, state, stream, peer_addr, handshake_timer, start_mux](std::error_code ec) {
                     if (!ec) {
                         if (protocol_ == "auto") {
                             auto first_byte = std::make_shared<uint8_t>(0);
-                            stream->async_read(asio::buffer(first_byte.get(), 1), [this, stream, first_byte, start_mux, handshake_timer](std::error_code ec, std::size_t) {
+                            stream->async_read(asio::buffer(first_byte.get(), 1), [this, state, stream, first_byte, start_mux, handshake_timer](std::error_code ec, std::size_t) {
                                 if (!ec) {
                                     std::shared_ptr<common::AsyncStream> buffered = std::make_shared<common::BufferedStream>(stream, std::vector<uint8_t>{*first_byte});
                                     if (*first_byte == 'G') { // 'G' from GET (WebSocket)
                                         auto ws_stream = std::make_shared<common::WebsocketStream>(buffered, false, false, buffer_pool_);
-                                        ws_stream->async_handshake(asio::ssl::stream_base::server, [ws_stream, start_mux, handshake_timer](std::error_code ec) {
+                                        ws_stream->async_handshake(asio::ssl::stream_base::server, [state, ws_stream, start_mux, handshake_timer](std::error_code ec) {
                                             if (!ec) {
                                                 start_mux(ws_stream);
                                             } else {
