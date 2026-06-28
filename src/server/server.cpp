@@ -87,6 +87,8 @@ void UdpBridge::DoReadFromStream() {
                                     [this, self, final_buf](std::error_code ec, std::size_t) {
                                         if (!ec) {
                                             DoReadFromStream();
+                                        } else {
+                                            stream_->close();
                                         }
                                     });
                             };
@@ -305,6 +307,7 @@ void ControlSession::Stop() {
     }
     
     if (mux_session_) {
+        mux_session_->stop();
         server_.RemoveMuxControl(mux_session_);
     }
 
@@ -1138,15 +1141,12 @@ void Server::HandleNewMuxStream(std::shared_ptr<common::mux::Session> mux_sessio
                         auto bridge = std::make_shared<common::Bridge>(user_stream, stream, use_compression, 1, rl, buffer_pool_);
                         if (tcp_pl) {
                             bridge->SetStatsCounters(&tcp_pl->stats().bytes_sent, &tcp_pl->stats().bytes_received);
-                            struct Cleanup {
-                                std::weak_ptr<ProxyListener> pl_weak;
-                                ~Cleanup() { 
-                                    if (auto pl = pl_weak.lock()) pl->dec_active_conns(); 
+                            std::weak_ptr<ProxyListener> pl_weak = tcp_pl;
+                            bridge->SetOnStop([pl_weak]() {
+                                if (auto pl = pl_weak.lock()) {
+                                    pl->dec_active_conns();
                                 }
-                            };
-                            auto cleanup = std::make_shared<Cleanup>();
-                            cleanup->pl_weak = tcp_pl;
-                            bridge->SetOnStop([cleanup]() { cleanup->pl_weak.reset(); });
+                            });
                         }
 
                         if (!initial_data->empty()) {

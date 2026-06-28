@@ -54,6 +54,7 @@ public:
 private:
     void DoClientHandshake(std::function<void(std::error_code)> handler);
     void DoServerHandshake(std::function<void(std::error_code)> handler);
+    void DoServerHandshakeRead(std::shared_ptr<std::string> request_buf, std::shared_ptr<std::vector<char>> temp_buf, std::function<void(std::error_code)> handler);
     
     void ReadWsFrame(std::function<void(std::error_code, std::size_t)> handler, asio::mutable_buffer user_buffer);
 

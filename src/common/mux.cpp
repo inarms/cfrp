@@ -16,6 +16,7 @@
 
 #include "common/mux.h"
 #include "common/utils.h"
+#include "common/protocol.h"
 #include <unordered_map>
 #include <asio/read.hpp>
 #include <asio/write.hpp>
@@ -546,6 +547,11 @@ void Session::do_read_header() {
             if (!ec) {
                 auto header = Header::decode(header_buf_);
                 if (header.type == (uint8_t)Type::Data && header.length > 0) {
+                    if (header.length > protocol::MAX_MESSAGE_SIZE) {
+                        Logger::Error("[MuxSession] Frame length exceeds limit: " + std::to_string(header.length));
+                        stop();
+                        return;
+                    }
                     do_read_body(header);
                 } else {
                     handle_frame(header, {}, 0);
