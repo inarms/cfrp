@@ -21,6 +21,7 @@
 #include <vector>
 #include <string>
 #include <random>
+#include <deque>
 
 namespace cfrp {
 namespace common {
@@ -56,7 +57,8 @@ private:
     void DoServerHandshake(std::function<void(std::error_code)> handler);
     void DoServerHandshakeRead(std::shared_ptr<std::string> request_buf, std::shared_ptr<std::vector<char>> temp_buf, std::function<void(std::error_code)> handler);
     
-    void ReadWsFrame(std::function<void(std::error_code, std::size_t)> handler, asio::mutable_buffer user_buffer);
+    void ReadWsFrame(std::function<void(std::error_code, std::size_t)> handler);
+    void SendPong(const uint8_t* payload, size_t len);
 
     std::shared_ptr<AsyncStream> underlying_;
     std::shared_ptr<BufferPool> buffer_pool_;
@@ -71,6 +73,19 @@ private:
     size_t read_remaining_ = 0;
     
     std::mt19937 rng_;
+
+    struct WriteOp {
+        std::vector<asio::const_buffer> buffers;
+        std::function<void(std::error_code, std::size_t)> handler;
+        std::shared_ptr<void> keep_alive1;
+        std::shared_ptr<void> keep_alive2;
+    };
+
+    std::deque<WriteOp> write_queue_;
+    bool is_writing_ = false;
+    asio::strand<asio::any_io_executor> strand_;
+
+    void do_write();
 };
 
 } // namespace common

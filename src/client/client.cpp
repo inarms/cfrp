@@ -538,6 +538,8 @@ void Client::HandleDisconnect(const std::string& reason) {
         quic_session_->close_session();
         quic_session_.reset();
     }
+    std::error_code udp_close_ec;
+    udp_socket_.close(udp_close_ec);
     if (control_stream_) {
         control_stream_.reset();
     }
