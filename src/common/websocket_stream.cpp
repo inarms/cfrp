@@ -16,6 +16,7 @@
 
 #include "common/websocket_stream.h"
 #include "common/websocket_utils.h"
+#include "common/protocol.h"
 #include <iostream>
 #include <sstream>
 #include <array>
@@ -100,50 +101,49 @@ void WebsocketStream::DoClientHandshake(std::function<void(std::error_code)> han
 }
 
 void WebsocketStream::DoServerHandshake(std::function<void(std::error_code)> handler) {
-    auto self = shared_from_this();
     auto request_buf = std::make_shared<std::string>();
     auto temp_buf = std::make_shared<std::vector<char>>(1024);
-    
-    auto read_op = std::make_shared<std::function<void()>>();
-    *read_op = [this, self, request_buf, temp_buf, read_op, handler]() {
-        underlying_->async_read_some(asio::buffer(*temp_buf), [this, self, request_buf, temp_buf, read_op, handler](std::error_code ec, std::size_t length) {
-            if (ec) {
-                handler(ec);
+    DoServerHandshakeRead(request_buf, temp_buf, handler);
+}
+
+void WebsocketStream::DoServerHandshakeRead(std::shared_ptr<std::string> request_buf, std::shared_ptr<std::vector<char>> temp_buf, std::function<void(std::error_code)> handler) {
+    auto self = shared_from_this();
+    underlying_->async_read_some(asio::buffer(*temp_buf), [this, self, request_buf, temp_buf, handler](std::error_code ec, std::size_t length) {
+        if (ec) {
+            handler(ec);
+            return;
+        }
+        
+        request_buf->append(temp_buf->data(), length);
+        if (request_buf->find("\r\n\r\n") != std::string::npos) {
+            std::string req = *request_buf;
+            size_t key_pos = req.find("Sec-WebSocket-Key: ");
+            if (key_pos == std::string::npos) {
+                handler(asio::error::invalid_argument);
                 return;
             }
             
-            request_buf->append(temp_buf->data(), length);
-            if (request_buf->find("\r\n\r\n") != std::string::npos) {
-                std::string req = *request_buf;
-                size_t key_pos = req.find("Sec-WebSocket-Key: ");
-                if (key_pos == std::string::npos) {
-                    handler(asio::error::invalid_argument);
-                    return;
-                }
-                
-                size_t key_end = req.find("\r\n", key_pos);
-                std::string client_key = req.substr(key_pos + 19, key_end - (key_pos + 19));
-                std::string accept_key = WebSocketUtils::GenerateAcceptKey(client_key);
-                
-                std::stringstream ss;
-                ss << "HTTP/1.1 101 Switching Protocols\r\n";
-                ss << "Upgrade: websocket\r\n";
-                ss << "Connection: Upgrade\r\n";
-                ss << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
-                
-                auto response = std::make_shared<std::string>(ss.str());
-                underlying_->async_write(asio::buffer(*response), [this, self, response, handler](std::error_code ec, std::size_t) {
-                    if (!ec) handshaked_ = true;
-                    handler(ec);
-                });
-            } else if (request_buf->size() > 8192) {
-                handler(asio::error::message_size);
-            } else {
-                (*read_op)();
-            }
-        });
-    };
-    (*read_op)();
+            size_t key_end = req.find("\r\n", key_pos);
+            std::string client_key = req.substr(key_pos + 19, key_end - (key_pos + 19));
+            std::string accept_key = WebSocketUtils::GenerateAcceptKey(client_key);
+            
+            std::stringstream ss;
+            ss << "HTTP/1.1 101 Switching Protocols\r\n";
+            ss << "Upgrade: websocket\r\n";
+            ss << "Connection: Upgrade\r\n";
+            ss << "Sec-WebSocket-Accept: " << accept_key << "\r\n\r\n";
+            
+            auto response = std::make_shared<std::string>(ss.str());
+            underlying_->async_write(asio::buffer(*response), [this, self, response, handler](std::error_code ec, std::size_t) {
+                if (!ec) handshaked_ = true;
+                handler(ec);
+            });
+        } else if (request_buf->size() > 8192) {
+            handler(asio::error::message_size);
+        } else {
+            DoServerHandshakeRead(request_buf, temp_buf, handler);
+        }
+    });
 }
 
 void WebsocketStream::async_write(asio::const_buffer buffer, std::function<void(std::error_code, std::size_t)> handler) {
@@ -304,6 +304,11 @@ void WebsocketStream::ReadWsFrame(std::function<void(std::error_code, std::size_
         uint64_t payload_len = b1 & 0x7F;
         
         auto next_step = [this, self, masked, handler](uint64_t len) {
+            if (len > protocol::MAX_MESSAGE_SIZE) {
+                close();
+                handler(asio::error::no_buffer_space, 0);
+                return;
+            }
             size_t extra = masked ? 4 : 0;
             auto payload = buffer_pool_->Get(len + extra);
             
