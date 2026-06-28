@@ -82,7 +82,8 @@ public:
         }
 
         size_t bucket_size = *it;
-        auto& bucket = buckets_[bucket_size];
+        auto it_bucket = buckets_.find(bucket_size);
+        auto& bucket = it_bucket->second;
 
         std::unique_lock<std::mutex> lock(bucket.mutex);
         if (!bucket.buffers.empty()) {
@@ -105,14 +106,20 @@ public:
             bucket.allocated_count++;
             lock.unlock();
             
-            std::weak_ptr<BufferPool> weak_pool = shared_from_this();
-            return std::shared_ptr<uint8_t[]>(new uint8_t[bucket_size], [weak_pool, bucket_size](uint8_t* ptr) {
-                if (auto pool = weak_pool.lock()) {
-                    pool->Return(bucket_size, std::unique_ptr<uint8_t[]>(ptr));
-                } else {
-                    delete[] ptr;
-                }
-            });
+            try {
+                std::weak_ptr<BufferPool> weak_pool = shared_from_this();
+                return std::shared_ptr<uint8_t[]>(new uint8_t[bucket_size], [weak_pool, bucket_size](uint8_t* ptr) {
+                    if (auto pool = weak_pool.lock()) {
+                        pool->Return(bucket_size, std::unique_ptr<uint8_t[]>(ptr));
+                    } else {
+                        delete[] ptr;
+                    }
+                });
+            } catch (...) {
+                std::lock_guard<std::mutex> relock(bucket.mutex);
+                bucket.allocated_count--;
+                throw;
+            }
         }
 
         // Max reached, allocate temporary
@@ -121,7 +128,11 @@ public:
     }
 
     void Return(size_t bucket_size, std::unique_ptr<uint8_t[]> buffer) {
-        auto& bucket = buckets_[bucket_size];
+        auto it_bucket = buckets_.find(bucket_size);
+        if (it_bucket == buckets_.end()) {
+            return;
+        }
+        auto& bucket = it_bucket->second;
         std::lock_guard<std::mutex> lock(bucket.mutex);
         if (bucket.buffers.size() < bucket.config.max_count) {
             bucket.buffers.push_back(std::move(buffer));
