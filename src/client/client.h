@@ -81,8 +81,7 @@ private:
     uint16_t packet_len_;
     std::vector<uint8_t> read_buf_;
 
-    common::ZstdContext cctx_;
-    common::ZstdContext dctx_;
+    common::ZstdContext zstd_;
 };
 
 class Client : public std::enable_shared_from_this<Client> {
@@ -156,8 +155,7 @@ private:
     std::shared_ptr<common::quic::QuicSession> quic_session_;
     bool stopping_ = false;
 
-    common::ZstdContext cctx_;
-    common::ZstdContext dctx_;
+    common::ZstdContext zstd_;
 };
 
 } // namespace client

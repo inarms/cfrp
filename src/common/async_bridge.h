@@ -68,8 +68,7 @@ private:
     std::function<void()> on_stop_;
     std::atomic_bool stopped_{false};
 
-    ZstdContext cctx_;
-    ZstdContext dctx_;
+    ZstdContext zstd_;
 };
 
 } // namespace common

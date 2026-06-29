@@ -107,8 +107,8 @@ void Bridge::DoRead(int direction) {
             [this, self](std::error_code ec, std::size_t length) {
                 if (!ec) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
-                    auto& compressed_buf = cctx_.get_compress_buf(cSizeBound);
-                    size_t const cSize = cctx_.compress(
+                    auto& compressed_buf = zstd_.get_compress_buf(cSizeBound);
+                    size_t const cSize = zstd_.compress(
                         compressed_buf.data(), cSizeBound, data1_.get(), length, compression_level_);
 
                     uint32_t final_header;
@@ -180,8 +180,8 @@ void Bridge::DoRead(int direction) {
                                         HandleStop(); return;
                                     }
                                     
-                                    auto& decompressed_buf = dctx_.get_decompress_buf(decodedSize);
-                                    size_t const dSize = dctx_.decompress(
+                                    auto& decompressed_buf = zstd_.get_decompress_buf(decodedSize);
+                                    size_t const dSize = zstd_.decompress(
                                         decompressed_buf.data(), decodedSize,
                                         body.get(), len);
                                     if (ZSTD_isError(dSize)) {
