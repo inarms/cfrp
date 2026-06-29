@@ -23,33 +23,50 @@
 namespace cfrp {
 namespace common {
 
-class ZstdContext {
+class ZstdCompressor {
 public:
-    ZstdContext() {
+    ZstdCompressor() {
         cctx_ = ZSTD_createCCtx();
-        dctx_ = ZSTD_createDCtx();
     }
 
-    ~ZstdContext() {
+    ~ZstdCompressor() {
         if (cctx_) ZSTD_freeCCtx(cctx_);
-        if (dctx_) ZSTD_freeDCtx(dctx_);
     }
 
     // Non-copyable
-    ZstdContext(const ZstdContext&) = delete;
-    ZstdContext& operator=(const ZstdContext&) = delete;
+    ZstdCompressor(const ZstdCompressor&) = delete;
+    ZstdCompressor& operator=(const ZstdCompressor&) = delete;
 
     size_t compress(void* dst, size_t dstCapacity, const void* src, size_t srcSize, int compressionLevel) {
         return ZSTD_compressCCtx(cctx_, dst, dstCapacity, src, srcSize, compressionLevel);
     }
 
-    size_t decompress(void* dst, size_t dstCapacity, const void* src, size_t compressedSize) {
-        return ZSTD_decompressDCtx(dctx_, dst, dstCapacity, src, compressedSize);
-    }
-
     std::vector<uint8_t>& get_compress_buf(size_t size) {
         if (compress_buf_.size() < size) compress_buf_.resize(size);
         return compress_buf_;
+    }
+
+private:
+    ZSTD_CCtx* cctx_ = nullptr;
+    std::vector<uint8_t> compress_buf_;
+};
+
+class ZstdDecompressor {
+public:
+    ZstdDecompressor() {
+        dctx_ = ZSTD_createDCtx();
+    }
+
+    ~ZstdDecompressor() {
+        if (dctx_) ZSTD_freeDCtx(dctx_);
+    }
+
+    // Non-copyable
+    ZstdDecompressor(const ZstdDecompressor&) = delete;
+    ZstdDecompressor& operator=(const ZstdDecompressor&) = delete;
+
+    size_t decompress(void* dst, size_t dstCapacity, const void* src, size_t compressedSize) {
+        return ZSTD_decompressDCtx(dctx_, dst, dstCapacity, src, compressedSize);
     }
 
     std::vector<uint8_t>& get_decompress_buf(size_t size) {
@@ -58,9 +75,7 @@ public:
     }
 
 private:
-    ZSTD_CCtx* cctx_ = nullptr;
     ZSTD_DCtx* dctx_ = nullptr;
-    std::vector<uint8_t> compress_buf_;
     std::vector<uint8_t> decompress_buf_;
 };
 

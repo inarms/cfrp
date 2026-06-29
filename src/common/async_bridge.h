@@ -68,7 +68,8 @@ private:
     std::function<void()> on_stop_;
     std::atomic_bool stopped_{false};
 
-    ZstdContext zstd_;
+    alignas(64) ZstdCompressor compressor_;
+    alignas(64) ZstdDecompressor decompressor_;
 };
 
 } // namespace common

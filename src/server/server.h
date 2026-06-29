@@ -126,7 +126,7 @@ private:
     std::atomic<uint64_t>* bytes_sent_ = nullptr;
     std::atomic<uint64_t>* bytes_received_ = nullptr;
 
-    common::ZstdContext zstd_;
+    common::ZstdDecompressor decompressor_;
 };
 
 class UdpProxyListener : public std::enable_shared_from_this<UdpProxyListener> {
@@ -224,7 +224,8 @@ private:
     bool authenticated_ = false;
     bool compression_enabled_ = false;
 
-    common::ZstdContext zstd_;
+    alignas(64) common::ZstdCompressor compressor_;
+    alignas(64) common::ZstdDecompressor decompressor_;
 };
 
 class Server {

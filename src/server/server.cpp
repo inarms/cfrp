@@ -66,8 +66,8 @@ void UdpBridge::DoReadFromStream() {
                                     return;
                                 }
                                 
-                                auto& decompressed_buf = zstd_.get_decompress_buf(decodedSize);
-                                size_t const dSize = zstd_.decompress(decompressed_buf.data(), decodedSize, read_buf_.data(), len);
+                                auto& decompressed_buf = decompressor_.get_decompress_buf(decodedSize);
+                                size_t const dSize = decompressor_.decompress(decompressed_buf.data(), decodedSize, read_buf_.data(), len);
                                 if (ZSTD_isError(dSize)) {
                                     stream_->close();
                                     return;
@@ -344,8 +344,8 @@ void ControlSession::SendMessage(protocol::MessageType type, const std::vector<u
 
     if (compression_enabled_) {
         size_t const cSizeBound = ZSTD_compressBound(encoded.size());
-        auto& compressed_buf = zstd_.get_compress_buf(cSizeBound);
-        size_t const cSize = zstd_.compress(compressed_buf.data(), cSizeBound, encoded.data(), encoded.size(), 1);
+        auto& compressed_buf = compressor_.get_compress_buf(cSizeBound);
+        size_t const cSize = compressor_.compress(compressed_buf.data(), cSizeBound, encoded.data(), encoded.size(), 1);
         if (!ZSTD_isError(cSize)) {
             to_send_body.assign(compressed_buf.begin(), compressed_buf.begin() + cSize);
             final_len = static_cast<uint32_t>(cSize) | protocol::COMPRESSION_FLAG;
@@ -408,8 +408,8 @@ void ControlSession::DoReadBody(uint32_t length) {
                             return;
                         }
                         
-                        auto& decompressed_buf = zstd_.get_decompress_buf(decodedSize);
-                        size_t const dSize = zstd_.decompress(decompressed_buf.data(), decodedSize, data.data(), data.size());
+                        auto& decompressed_buf = decompressor_.get_decompress_buf(decodedSize);
+                        size_t const dSize = decompressor_.decompress(decompressed_buf.data(), decodedSize, data.data(), data.size());
                         if (ZSTD_isError(dSize)) {
                             common::Logger::Error("Failed to decompress control message from " + client_endpoint_);
                             Stop();
