@@ -783,6 +783,13 @@ void Client::PollConfDirectory() {
                         pc.local_ip = data["local_ip"].value_or("127.0.0.1");
                         pc.local_port = static_cast<uint16_t>(data["local_port"].value_or(0));
                         pc.remote_port = static_cast<uint16_t>(data["remote_port"].value_or(0));
+                        if (auto domains = data["custom_domains"].as_array()) {
+                            for (auto& d : *domains) {
+                                if (auto s = d.as_string()) pc.custom_domains.push_back(s->get());
+                            }
+                        } else if (auto d = data["custom_domains"].as_string()) {
+                            pc.custom_domains.push_back(d->get());
+                        }
                         
                         if (auto bw = data["bandwidth_limit"].as_string()) {
                             pc.bandwidth_limit = common::ParseBandwidth(bw->get());
@@ -820,7 +827,8 @@ void Client::PollConfDirectory() {
             bool changed = (it->second.type != pc.type || 
                             it->second.local_ip != pc.local_ip ||
                             it->second.local_port != pc.local_port ||
-                            it->second.remote_port != pc.remote_port);
+                            it->second.remote_port != pc.remote_port ||
+                            it->second.custom_domains != pc.custom_domains);
             if (changed) {
                 common::Logger::Info("[Client] Updating dynamic proxy [" + name + "]");
                 UnregisterProxy(name);
