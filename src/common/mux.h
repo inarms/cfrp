@@ -19,6 +19,7 @@
 #include <asio.hpp>
 #include <memory>
 #include <vector>
+#include <chrono>
 #include <unordered_map>
 #include <deque>
 #include <mutex>
@@ -168,6 +169,7 @@ private:
     
     uint8_t header_buf_[Header::size];
     asio::steady_timer heartbeat_timer_;
+    std::chrono::steady_clock::time_point last_read_time_;
 };
 
 } // namespace mux

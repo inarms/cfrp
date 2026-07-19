@@ -144,7 +144,8 @@ void MuxStream::do_write() {
             continue;
         }
 
-        size_t to_send = std::min(total_length, remote_window_size_);
+        // Also cap at MAX_MESSAGE_SIZE so we never send a frame the receiver will reject.
+        size_t to_send = std::min({total_length, remote_window_size_, (size_t)protocol::MAX_MESSAGE_SIZE});
         
         auto session = session_.lock();
         if (!session) {
@@ -187,7 +188,18 @@ void MuxStream::do_write() {
             }
             pw.buffers = std::move(next_buffers);
             
-            session->async_send_frame(h, sliced_buffers); 
+            // Propagate send errors back so the pending write handler fires on failure.
+            session->async_send_frame(h, sliced_buffers, [this, self = shared_from_this()](std::error_code ec) {
+                if (ec) {
+                    asio::post(strand_, [this, self, ec]() {
+                        for (auto& pw : pending_writes_) {
+                            auto h = std::move(pw.handler);
+                            asio::post(strand_, [h, ec]() { h(ec, 0); });
+                        }
+                        pending_writes_.clear();
+                    });
+                }
+            });
         } else {
             // Full send
             auto handler = std::move(pw.handler);
@@ -298,7 +310,9 @@ void MuxStream::handle_window_update(uint32_t delta) {
         });
         return;
     }
-    remote_window_size_ += delta;
+    // Cap the window to prevent a single frame from exceeding MAX_MESSAGE_SIZE,
+    // which would cause the receiver to kill the session.
+    remote_window_size_ = std::min(remote_window_size_ + delta, (size_t)protocol::MAX_MESSAGE_SIZE);
     do_write();
 }
 
@@ -405,7 +419,8 @@ Session::Session(std::shared_ptr<AsyncStream> underlying_stream, bool is_server,
       buffer_pool_(std::move(buffer_pool)),
       is_server_(is_server), 
       next_stream_id_(is_server ? 2 : 1),
-      heartbeat_timer_(strand_) {
+      heartbeat_timer_(strand_),
+      last_read_time_(std::chrono::steady_clock::now()) {
     if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
 }
 
@@ -453,6 +468,19 @@ void Session::schedule_heartbeat() {
         if (!ec) {
             auto self = weak_self.lock();
             if (!self) return;
+
+            // Dead-connection detection: if we haven't received anything in 90 seconds
+            // the tunnel is a zombie (silent NAT drop, network blip without RST).
+            // RDP/SFTP will have already timed out their application protocol by then.
+            auto idle = std::chrono::steady_clock::now() - last_read_time_;
+            if (idle > std::chrono::seconds(90)) {
+                Logger::Error("[MuxSession] No data received for " +
+                    std::to_string(std::chrono::duration_cast<std::chrono::seconds>(idle).count()) +
+                    "s from " + remote_endpoint_string() + ". Closing zombie connection.");
+                stop();
+                return;
+            }
+
             Header h;
             h.version = 0;
             h.type = (uint8_t)Type::Ping;
@@ -545,6 +573,7 @@ void Session::do_read_header() {
                 if (stopped_) return;
             }
             if (!ec) {
+                last_read_time_ = std::chrono::steady_clock::now();
                 auto header = Header::decode(header_buf_);
                 if (header.type == (uint8_t)Type::Data && header.length > 0) {
                     if (header.length > protocol::MAX_MESSAGE_SIZE) {
@@ -573,6 +602,7 @@ void Session::do_read_body(Header h) {
                 if (stopped_) return;
             }
             if (!ec) {
+                last_read_time_ = std::chrono::steady_clock::now();
                 handle_frame(h, body, h.length);
                 do_read_header();
             } else {

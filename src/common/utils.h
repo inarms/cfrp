@@ -107,10 +107,31 @@ inline void SetTcpKeepalive(asio::ip::tcp::socket& socket) {
     socket.set_option(asio::ip::tcp::no_delay(true), ec);
     socket.set_option(asio::socket_base::keep_alive(true), ec);
 #ifdef _WIN32
-    // Windows specific keepalive settings could go here
-#else
-    // For Linux/macOS, we can set more fine-grained options if needed
-    // but the basic keep_alive(true) is a good start.
+    // On Windows, set keepalive idle=10s, interval=5s via SIO_KEEPALIVE_VALS
+    struct tcp_keepalive {
+        u_long onoff;
+        u_long keepalivetime;   // milliseconds
+        u_long keepaliveinterval; // milliseconds
+    } ka{ 1, 10000, 5000 };
+    DWORD bytes_returned = 0;
+    WSAIoctl(socket.native_handle(), SIO_KEEPALIVE_VALS,
+             &ka, sizeof(ka), nullptr, 0, &bytes_returned, nullptr, nullptr);
+#elif defined(__linux__) || defined(__APPLE__)
+    // Start probing after 10s idle, retry every 5s, drop after 3 failures (~25s total).
+    // This detects silent NAT drops / network blips much faster than the OS default (2h).
+    int native = socket.native_handle();
+    int idle     = 10;
+    int interval = 5;
+    int count    = 3;
+# ifdef __linux__
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,     sizeof(idle));
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPCNT,   &count,    sizeof(count));
+# elif defined(__APPLE__)
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPALIVE, &idle,     sizeof(idle));
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+    setsockopt(native, IPPROTO_TCP, TCP_KEEPCNT,   &count,    sizeof(count));
+# endif
 #endif
 }
 
