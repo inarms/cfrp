@@ -108,11 +108,11 @@ inline void SetTcpKeepalive(asio::ip::tcp::socket& socket) {
     socket.set_option(asio::socket_base::keep_alive(true), ec);
 #ifdef _WIN32
     // On Windows, set keepalive idle=10s, interval=5s via SIO_KEEPALIVE_VALS
-    struct tcp_keepalive {
-        u_long onoff;
-        u_long keepalivetime;   // milliseconds
-        u_long keepaliveinterval; // milliseconds
-    } ka{ 1, 10000, 5000 };
+#   include <mstcpip.h>
+    struct tcp_keepalive ka;
+    ka.onoff             = 1;
+    ka.keepalivetime     = 10000; // milliseconds
+    ka.keepaliveinterval = 5000;  // milliseconds
     DWORD bytes_returned = 0;
     WSAIoctl(socket.native_handle(), SIO_KEEPALIVE_VALS,
              &ka, sizeof(ka), nullptr, 0, &bytes_returned, nullptr, nullptr);
