@@ -33,6 +33,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <mstcpip.h>
+#include <winsock2.h>
 #elif defined(__APPLE__)
 #include <unistd.h>
 #include <signal.h>
@@ -108,8 +110,7 @@ inline void SetTcpKeepalive(asio::ip::tcp::socket& socket) {
     socket.set_option(asio::socket_base::keep_alive(true), ec);
 #ifdef _WIN32
     // On Windows, set keepalive idle=10s, interval=5s via SIO_KEEPALIVE_VALS
-#   include <mstcpip.h>
-    struct tcp_keepalive ka;
+    tcp_keepalive ka;
     ka.onoff             = 1;
     ka.keepalivetime     = 10000; // milliseconds
     ka.keepaliveinterval = 5000;  // milliseconds
