@@ -42,7 +42,11 @@ ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CCACHE_DIR=/root/.cache/ccache
 
 # Clone vcpkg (use partial clone to save space/time while allowing access to baseline commits)
+# Pin the tool checkout to the same commit as builtin-baseline in vcpkg.json,
+# so vcpkg's shared scripts/ (not just port versions) are reproducible and
+# don't drift ahead of what Alpine's system CMake supports.
 RUN git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /vcpkg && \
+   git -C /vcpkg checkout 0ca64b4e1c70fa6d9f53b369b8f3f0843797c20c && \
    /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 # Inject the flag into vcpkg's Linux configurations to prevent warnings from crashing the build
