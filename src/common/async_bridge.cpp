@@ -39,6 +39,10 @@ Bridge::Bridge(std::shared_ptr<AsyncStream> s1,
     if (!buffer_pool_) buffer_pool_ = BufferPool::CreateDefault();
     data1_ = buffer_pool_->Get(32768);
     data2_ = buffer_pool_->Get(32768);
+    if (use_compression_) {
+        compressor_ = std::make_unique<ZstdCompressor>();
+        decompressor_ = std::make_unique<ZstdDecompressor>();
+    }
 }
 
 void Bridge::Start() {
@@ -107,8 +111,8 @@ void Bridge::DoRead(int direction) {
             [this, self](std::error_code ec, std::size_t length) {
                 if (!ec) {
                     size_t const cSizeBound = ZSTD_compressBound(length);
-                    auto& compressed_buf = compressor_.get_compress_buf(cSizeBound);
-                    size_t const cSize = compressor_.compress(
+                    auto& compressed_buf = compressor_->get_compress_buf(cSizeBound);
+                    size_t const cSize = compressor_->compress(
                         compressed_buf.data(), cSizeBound, data1_.get(), length, compression_level_);
 
                     uint32_t final_header;
@@ -180,8 +184,8 @@ void Bridge::DoRead(int direction) {
                                         HandleStop(); return;
                                     }
                                     
-                                    auto& decompressed_buf = decompressor_.get_decompress_buf(decodedSize);
-                                    size_t const dSize = decompressor_.decompress(
+                                    auto& decompressed_buf = decompressor_->get_decompress_buf(decodedSize);
+                                    size_t const dSize = decompressor_->decompress(
                                         decompressed_buf.data(), decodedSize,
                                         body.get(), len);
                                     if (ZSTD_isError(dSize)) {

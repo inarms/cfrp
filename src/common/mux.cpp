@@ -58,7 +58,7 @@ Header Header::decode(const uint8_t* buf) {
 // --- MuxStream ---
 
 MuxStream::MuxStream(uint32_t id, std::shared_ptr<Session> session)
-    : id_(id), session_(session), strand_(asio::make_strand(session->get_executor())), local_window_size_(256 * 1024), remote_window_size_(256 * 1024) {}
+    : id_(id), session_(session), strand_(asio::make_strand(session->get_executor())), local_window_size_(128 * 1024), remote_window_size_(128 * 1024) {}
 
 MuxStream::~MuxStream() {
     // Synchronous cleanup only in destructor
@@ -394,7 +394,7 @@ void MuxStream::do_read_from_buffer() {
 
         // Send window update to peer
         consumed_since_last_update_ += total_copied;
-        if (consumed_since_last_update_ >= 128 * 1024) {
+        if (consumed_since_last_update_ >= 32 * 1024) {
             auto session = session_.lock();
             if (session) {
                 Header h;
@@ -473,7 +473,7 @@ void Session::schedule_heartbeat() {
             // the tunnel is a zombie (silent NAT drop, network blip without RST).
             // RDP/SFTP will have already timed out their application protocol by then.
             auto idle = std::chrono::steady_clock::now() - last_read_time_;
-            if (idle > std::chrono::seconds(90)) {
+            if (idle > std::chrono::seconds(120)) {
                 Logger::Error("[MuxSession] No data received for " +
                     std::to_string(std::chrono::duration_cast<std::chrono::seconds>(idle).count()) +
                     "s from " + remote_endpoint_string() + ". Closing zombie connection.");
