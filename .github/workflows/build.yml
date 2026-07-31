@@ -392,11 +392,22 @@ jobs:
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
+        env:
+          BUILDKIT_PROGRESS: plain
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+      
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      
+          provenance: false
+          sbom: false
+      
+          no-cache: true
+      
+          pull: true
