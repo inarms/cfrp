@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM alpine:3.22 AS builder
 
-# Install build dependencies
-# Alpine 3.22 provides native Ninja 1.12+ in the main repositories
+# 1. Install Alpine's native build tools
 RUN --mount=type=cache,target=/var/cache/apk \
     apk add --no-cache \
     build-base \
@@ -18,41 +17,40 @@ RUN --mount=type=cache,target=/var/cache/apk \
     python3 \
     ccache
 
-# Force vcpkg to ONLY use system-installed binaries (Ninja, CMake, etc.)
-# and never download pre-built glibc executables
+# 2. Strict system binary environment setup for vcpkg on Alpine
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
+ENV VCPKG_USE_SYSTEM_BINARIES=1
 ENV VCPKG_ROOT=/vcpkg
 ENV VCPKG_DEFAULT_BINARY_CACHE=/root/.cache/vcpkg
 
-# Use ccache for faster incremental builds
+# Use ccache
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CCACHE_DIR=/root/.cache/ccache
 
-# Clone vcpkg
+# 3. Clone and setup vcpkg
 RUN git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /vcpkg && \
     git -C /vcpkg checkout 0ca64b4e1c70fa6d9f53b369b8f3f0843797c20c && \
     /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-# Inject warning suppressions into triplets
-RUN find /vcpkg/triplets -name "*-linux.cmake" -exec sh -c 'echo "set(VCPKG_C_FLAGS \"\${VCPKG_C_FLAGS} -Wno-error=stringop-overflow\")" >> "{}"' \; && \
+# 4. Create symlinks in vcpkg downloads directory so Meson uses native system Ninja/CMake
+# instead of trying to download glibc binaries from GitHub releases
+RUN mkdir -p /vcpkg/downloads/tools/ninja/1.12.1-linux/ && \
+    ln -sf /usr/bin/ninja /vcpkg/downloads/tools/ninja/1.12.1-linux/ninja && \
+    find /vcpkg/triplets -name "*-linux.cmake" -exec sh -c 'echo "set(VCPKG_C_FLAGS \"\${VCPKG_C_FLAGS} -Wno-error=stringop-overflow\")" >> "{}"' \; && \
     find /vcpkg/triplets -name "*-linux.cmake" -exec sh -c 'echo "set(VCPKG_CXX_FLAGS \"\${VCPKG_CXX_FLAGS} -Wno-error=stringop-overflow\")" >> "{}"' \;
 
 WORKDIR /src
 
-# Cache dependencies by copying vcpkg.json first
 COPY vcpkg.json .
 ARG TARGETARCH
 
-# Disable downloads of external tools inside vcpkg
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
     /vcpkg/vcpkg install --triplet $TRIPLET --x-manifest-root=.
 
-# Copy source code
 COPY . .
 
-# Build project
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     --mount=type=cache,target=/root/.cache/ccache \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
@@ -65,7 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg \
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --build build
 
-# Final runtime stage
+# Final Stage
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
