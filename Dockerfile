@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Runtime stage
-FROM alpine:latest AS builder
+FROM alpine:3.22 AS builder
 
  # Install build dependencies required by Alpine, CMake, and vcpkg
 RUN --mount=type=cache,target=/var/cache/apk \
@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg \
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --build build
 
-FROM alpine:latest
+FROM alpine:3.22
 # Install minimal runtime dependencies
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
