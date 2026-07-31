@@ -2,7 +2,8 @@
 # Runtime stage
 FROM alpine:3.22 AS builder
 
- # Install build dependencies required by Alpine, CMake, and vcpkg
+# Install build dependencies required by Alpine, CMake, and vcpkg
+# Alpine 3.22 ships native ninja (v1.12+), gcompat handles glibc tools downloaded by vcpkg if needed
 RUN --mount=type=cache,target=/var/cache/apk \
     apk add --no-cache \
     build-base \
@@ -16,21 +17,8 @@ RUN --mount=type=cache,target=/var/cache/apk \
     pkgconf \
     linux-headers \
     python3 \
-    ccache
-
-# --- The Alpine Samurai Patch ---
-# Alpine's 'ninja' is actually a POSIX-strict clone called 'samurai'.
-# It crashes when vcpkg runs `ninja install -v` (it expects `ninja -v install`).
-# We replace the symlink with a Python wrapper that intercepts and re-orders the arguments.
-RUN rm /usr/bin/ninja && \
-    echo '#!/usr/bin/env python3' > /usr/bin/ninja && \
-    echo 'import sys, os' >> /usr/bin/ninja && \
-    echo 'args = sys.argv[1:]' >> /usr/bin/ninja && \
-    echo 'if "-v" in args:' >> /usr/bin/ninja && \
-    echo '    args.remove("-v")' >> /usr/bin/ninja && \
-    echo '    args.insert(0, "-v")' >> /usr/bin/ninja && \
-    echo 'os.execv("/usr/bin/samu", ["samu"] + args)' >> /usr/bin/ninja && \
-    chmod +x /usr/bin/ninja
+    ccache \
+    gcompat
 
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 ENV VCPKG_ROOT=/vcpkg
@@ -41,27 +29,21 @@ ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 ENV CMAKE_C_COMPILER_LAUNCHER=ccache
 ENV CCACHE_DIR=/root/.cache/ccache
 
-# Clone vcpkg (use partial clone to save space/time while allowing access to baseline commits)
-# Pin the tool checkout to the same commit as builtin-baseline in vcpkg.json,
-# so vcpkg's shared scripts/ (not just port versions) are reproducible and
-# don't drift ahead of what Alpine's system CMake supports.
+# Clone vcpkg
 RUN git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /vcpkg && \
-   git -C /vcpkg checkout 0ca64b4e1c70fa6d9f53b369b8f3f0843797c20c && \
-   /vcpkg/bootstrap-vcpkg.sh -disableMetrics
+    git -C /vcpkg checkout 0ca64b4e1c70fa6d9f53b369b8f3f0843797c20c && \
+    /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-# Inject the flag into vcpkg's Linux configurations to prevent warnings from crashing the build
+# Inject warning suppressions into triplets
 RUN find /vcpkg/triplets -name "*-linux.cmake" -exec sh -c 'echo "set(VCPKG_C_FLAGS \"\${VCPKG_C_FLAGS} -Wno-error=stringop-overflow\")" >> "{}"' \; && \
     find /vcpkg/triplets -name "*-linux.cmake" -exec sh -c 'echo "set(VCPKG_CXX_FLAGS \"\${VCPKG_CXX_FLAGS} -Wno-error=stringop-overflow\")" >> "{}"' \;
 
-# Install minimal runtime dependencies
-RUN apk add --no-cache ca-certificates libstdc++ libgcc
-
 WORKDIR /src
 
-# NEW: Cache dependencies by copying only vcpkg.json first
+# Cache dependencies by copying vcpkg.json first
 COPY vcpkg.json .
 ARG TARGETARCH
-# Use a cache mount for vcpkg downloads and artifacts
+
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
     /vcpkg/vcpkg install --triplet $TRIPLET --x-manifest-root=.
@@ -69,21 +51,21 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg \
 # Copy the rest of the project source code
 COPY . .
 
- # Build the project using CMake and vcpkg toolchain
+# Build the project using CMake and vcpkg toolchain
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     --mount=type=cache,target=/root/.cache/ccache \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
-  cmake -B build -S . \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
-  -DVCPKG_TARGET_TRIPLET=$TRIPLET \
-  -G Ninja
+    cmake -B build -S . \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE=/vcpkg/scripts/buildsystems/vcpkg.cmake \
+    -DVCPKG_TARGET_TRIPLET=$TRIPLET \
+    -G Ninja
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --build build
 
+# Final lightweight image stage
 FROM alpine:3.22
-# Install minimal runtime dependencies
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
 WORKDIR /app
@@ -91,11 +73,9 @@ COPY --from=builder /src/build/cfrp /app/
 COPY --from=builder /src/server.toml /app/
 COPY --from=builder /src/client.toml /app/
 
-# Create a non-root user for security
 RUN addgroup -S cfrp && adduser -S cfrp -G cfrp && \
     chown -R cfrp:cfrp /app
 
 USER cfrp
-# Application entry point
 ENTRYPOINT ["/app/cfrp"]
 CMD ["--help"]
