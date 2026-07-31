@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
-# Runtime stage
 FROM alpine:3.22 AS builder
 
-# Install build dependencies required by Alpine, CMake, and vcpkg
-# Alpine 3.22 ships native ninja (v1.12+), gcompat handles glibc tools downloaded by vcpkg if needed
+# Install build dependencies
+# Alpine 3.22 provides native Ninja 1.12+ in the main repositories
 RUN --mount=type=cache,target=/var/cache/apk \
     apk add --no-cache \
     build-base \
@@ -17,9 +16,10 @@ RUN --mount=type=cache,target=/var/cache/apk \
     pkgconf \
     linux-headers \
     python3 \
-    ccache \
-    gcompat
+    ccache
 
+# Force vcpkg to ONLY use system-installed binaries (Ninja, CMake, etc.)
+# and never download pre-built glibc executables
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 ENV VCPKG_ROOT=/vcpkg
 ENV VCPKG_DEFAULT_BINARY_CACHE=/root/.cache/vcpkg
@@ -44,14 +44,15 @@ WORKDIR /src
 COPY vcpkg.json .
 ARG TARGETARCH
 
+# Disable downloads of external tools inside vcpkg
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
     /vcpkg/vcpkg install --triplet $TRIPLET --x-manifest-root=.
 
-# Copy the rest of the project source code
+# Copy source code
 COPY . .
 
-# Build the project using CMake and vcpkg toolchain
+# Build project
 RUN --mount=type=cache,target=/root/.cache/vcpkg \
     --mount=type=cache,target=/root/.cache/ccache \
     if [ "$TARGETARCH" = "arm64" ]; then TRIPLET=arm64-linux; else TRIPLET=x64-linux; fi && \
@@ -64,7 +65,7 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg \
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cmake --build build
 
-# Final lightweight image stage
+# Final runtime stage
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates libstdc++ libgcc
 
