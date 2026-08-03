@@ -699,8 +699,20 @@ ca_file = "certs/ca.crt"
         
         std::vector<std::thread> threads;
         for (unsigned int i = 0; i < thread_count; ++i) {
-            threads.emplace_back([&io_context]() {
-                io_context.run();
+            threads.emplace_back([&io_context, i]() {
+                for (;;) {
+                    try {
+                        io_context.run();
+                        break; // run() returned normally: no more work, exit the loop.
+                    } catch (const std::exception& e) {
+                        cfrp::common::Logger::Error("[EventLoop " + std::to_string(i) +
+                                                     "] Unhandled exception: " + std::string(e.what()) +
+                                                     " -- resuming event loop.");
+                    } catch (...) {
+                        cfrp::common::Logger::Error("[EventLoop " + std::to_string(i) +
+                                                     "] Unhandled non-standard exception -- resuming event loop.");
+                    }
+                }
             });
         }
         
