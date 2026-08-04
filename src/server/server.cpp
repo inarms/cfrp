@@ -490,6 +490,7 @@ void ControlSession::HandleMessage(const protocol::Message& msg) {
             common::Logger::Error("Failed to start proxy listener for client " + client_name_ + " (" + client_endpoint_ + "): " + std::string(e.what()));
             protocol::RegisterProxyRespMessage resp;
             resp.status = "error";
+            resp.name = name;
             resp.message = e.what();
             SendMessage(protocol::MessageType::RegisterProxyResp, resp.Serialize());
         }
